@@ -69,7 +69,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1OEQwMUI3NTI2QUNFNkIKUldScnptcFN0d0dOeFErSFgyekxZWUl2Nmx5VDI3QUNreWw2VDUxQnNUWkJVZWpRNHpqa014TTcK",
       "endpoints": [
-        "https://github.com/zeytun-labs/zeytun-release/releases/latest/download/latest.json"
+        "https://github.com/zeytun-labs/zeytun-app/releases/latest/download/latest.json"
       ]
     }
   }

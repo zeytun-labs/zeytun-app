@@ -6,11 +6,11 @@
 
 Free and open source. No account. No telemetry.
 
-[![Latest release](https://img.shields.io/github/v/release/zeytun-labs/zeytun-release?label=release&color=6B8F71)](https://github.com/zeytun-labs/zeytun-release/releases)
+[![Latest release](https://img.shields.io/github/v/release/zeytun-labs/zeytun-app?include_prereleases&label=release&color=6B8F71)](https://github.com/zeytun-labs/zeytun-app/releases)
 ![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 
-[Download](https://github.com/zeytun-labs/zeytun-release/releases) · [Features](#features) · [Support](#support)
+[Download](https://github.com/zeytun-labs/zeytun-app/releases) · [Features](#features) · [Support](#support)
 
 </div>
 
@@ -36,7 +36,7 @@ You see which app is talking, where it is going, and what happened to it. A new 
 
 macOS, Apple Silicon.
 
-Grab the latest build from [Releases](https://github.com/zeytun-labs/zeytun-release/releases).
+Grab the latest build from [Releases](https://github.com/zeytun-labs/zeytun-app/releases).
 
 ## Support
 

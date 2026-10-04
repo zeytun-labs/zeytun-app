@@ -6,8 +6,8 @@ use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
-const RELEASES_API: &str = "https://api.github.com/repos/zeytun-labs/zeytun-release/releases";
-const RELEASE_DOWNLOAD: &str = "https://github.com/zeytun-labs/zeytun-release/releases/download/";
+const RELEASES_API: &str = "https://api.github.com/repos/zeytun-labs/zeytun-app/releases";
+const RELEASE_DOWNLOAD: &str = "https://github.com/zeytun-labs/zeytun-app/releases/download/";
 
 fn newest_release(releases: &[Value], include_prerelease: bool) -> Option<Version> {
     releases
