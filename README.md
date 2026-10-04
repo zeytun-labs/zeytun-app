@@ -1,86 +1,90 @@
+<div align="center">
+
 # Zeytun
 
-[![Download Latest Release](https://img.shields.io/badge/Download-Latest%20Release-blue?style=for-the-badge&logo=apple)](https://github.com/zeytun-labs/zeytun-release/releases)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-green.svg?style=for-the-badge)](LICENSE)
+**A macOS app that shows every connection your Mac makes, names the app that opened it, and lets you allow, route, or refuse it.**
 
-Zeytun is a free and open-source macOS desktop network manager. It shows
-every connection your machine makes, attributes it to the app that opened
-it, and lets you route, hold, or refuse it — with live rules, policies,
-DNS control, and a checkpoint that asks before anything new connects.
+Free and open source. No account. No telemetry.
 
-## Architecture
+[![Latest release](https://img.shields.io/github/v/release/zeytun-labs/zeytun-release?label=release&color=6B8F71)](https://github.com/zeytun-labs/zeytun-release/releases)
+![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 
-Zeytun is composed of three independent repositories:
+[Download](https://github.com/zeytun-labs/zeytun-release/releases) · [Features](#features) · [Support](#support)
 
-| Repository | Language | Description |
-|---|---|---|
-| **zeytun-app** (this repo) | TypeScript + Rust | Tauri v2 + Svelte 5 desktop client |
-| [zeytun-core](https://github.com/zeytun-labs/zeytun-core) | Go | Network engine — a sing-box derivative (GPLv3) |
-| [zeytun-config](https://github.com/zeytun-labs/zeytun-config) | Rust | Proxy link parser & config generator |
+</div>
 
-The app fetches a pre-built `zeytun-core` binary from
-[zeytun-core releases](https://github.com/zeytun-labs/zeytun-core/releases)
-in CI. For local development, build it from source (below).
+---
 
-## Prerequisites
+## What it does
 
-- **macOS** (Apple Silicon)
-- **Node.js 22** + pnpm 10
-- **Rust** + Cargo
-- **Go** 1.25+ (only for building zeytun-core locally)
+Most proxy apps hide the network behind a single on/off switch. Zeytun puts the connections on screen.
 
-## Quick start
+You see which app is talking, where it is going, and what happened to it. A new connection can wait for you before it proceeds. Rules and policies decide the rest, and you can change them without restarting anything.
+
+## Features
+
+- **See every connection** — live traffic, attributed to the app that opened it
+- **Ask before connecting** — hold a new connection until you allow or refuse it
+- **Route per app, domain, or process** — rules you can edit while the tunnel is up
+- **Policies** — group proxies and pick how traffic is chosen between them
+- **DNS** — your own servers, rules, and local hosts
+- **Subscriptions** — import a link, update it automatically, keep several profiles
+- **Dark and light** — follows the system, or stays where you set it
+
+## Download
+
+macOS, Apple Silicon.
+
+Grab the latest build from [Releases](https://github.com/zeytun-labs/zeytun-release/releases).
+
+## Support
+
+Zeytun is free. If it is useful to you, a donation helps keep it that way.
+
+| Network | Address |
+|---|---|
+| Bitcoin | `bc1q2a7aywmekl3kmqzw9t5rg5ds643avetnymg5n6` |
+| TRON (TRX, USDT) | `TPEtVbd7rrguo9KjfDvBfPZnqsiURY1fp7` |
+| TON | `UQADcpf4-JT_4vrR17DntsHH0Ryj0o2LBycr3iEyGu7L8WVK` |
+| Solana (SOL, USDT) | `5wHu7Zra6SbeEmbJbx79ixdnhjoWhfqwQCFjeBcSKZcz` |
+| EVM (ETH, BSC, Arbitrum, Base, Polygon) | `0x1308E77d3C332F862A3cE87eeA8CfAFF019e90A3` |
+
+A star on this repo helps too.
+
+## Build from source
+
+macOS, Apple Silicon. Node.js 22, pnpm 10, Rust. Go 1.25+ only if you also build the network engine.
 
 ```bash
 git clone https://github.com/zeytun-labs/zeytun-app.git
 cd zeytun-app
 pnpm install
 
-# Build the core daemon (optional — skip if you only need the UI):
 git clone --branch zeytun-port https://github.com/zeytun-labs/zeytun-core.git ../zeytun-core
 make build-core
 sudo chown root src-tauri/resources/bin/macos-aarch64/zeytun-core
 sudo chmod 4755 src-tauri/resources/bin/macos-aarch64/zeytun-core
 
-# Start dev:
 pnpm run tauri dev
 ```
 
-Without the setuid step, the app starts but every proxy fails to establish.
+The setuid step is required. Without it the app opens, but no proxy connects.
 
-## Makefile targets
+`make help` lists the other targets. The engine is [zeytun-core](https://github.com/zeytun-labs/zeytun-core), a sing-box derivative. Proxy link parsing lives in [zeytun-config](https://github.com/zeytun-labs/zeytun-config).
 
-| Target | Description |
-|---|---|
-| `make build-core` | Compile zeytun-core (from `../zeytun-core`) and stage the binary |
-| `make dev` | Start the Tauri + Svelte dev server |
-| `make build-ui` | Build the Tauri release bundle |
-| `make check` | Run svelte-check (frontend type checking) |
-| `make check-rs` | Run Rust fmt + clippy + tests |
-| `make version` | Verify version parity across manifests |
-| `make install-deps` | Install Node dependencies |
-| `make clean` | Remove the staged core binary |
+## Contributing
 
-## Downloads
-
-Pre-built binaries are available on the [releases page](https://github.com/zeytun-labs/zeytun-release/releases).
-
-## Donations & Support
-
-If you find Zeytun useful, donations are welcome:
-
-| Network / Asset | Address |
-|---|---|
-| **Bitcoin (BTC)** | `bc1q2a7aywmekl3kmqzw9t5rg5ds643avetnymg5n6` |
-| **TRON (TRX / USDT-TRC20)** | `TPEtVbd7rrguo9KjfDvBfPZnqsiURY1fp7` |
-| **TON / Gram** | `UQADcpf4-JT_4vrR17DntsHH0Ryj0o2LBycr3iEyGu7L8WVK` |
-| **Solana (SOL / USDT-SPL)** | `5wHu7Zra6SbeEmbJbx79ixdnhjoWhfqwQCFjeBcSKZcz` |
-| **EVM (ETH, BSC, Arbitrum, Base, Polygon)** | `0x1308E77d3C332F862A3cE87eeA8CfAFF019e90A3` |
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Zeytun is free and open-source software licensed under the GNU General
-Public License v3.0 (GPL-3.0). See [LICENSE](LICENSE) for details.
+[GPL-3.0](LICENSE).
 
-`zeytun-core` is a derivative work of [sing-box](https://github.com/SagerNet/sing-box),
-also distributed under GPLv3.
+The network engine is a derivative of [sing-box](https://github.com/SagerNet/sing-box), also under GPLv3. It does not use the sing-box name and is not affiliated with it.
+
+<div align="center">
+
+Built by [AmirHossein Sadeghi](https://github.com/sadeqi-ah).
+
+</div>
