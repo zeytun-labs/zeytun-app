@@ -1,0 +1,1 @@
+ALTER TABLE rule_set ADD COLUMN name TEXT;

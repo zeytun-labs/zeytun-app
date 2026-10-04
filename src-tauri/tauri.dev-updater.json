@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0RUFBQzI1MjYyOTQ0RUMKUldUc1JDa21KYXpxZERLaGFxWDVpTkQ4OEkrQVJ1bGJUQXRCcDhMNk44RnRISU9LRUQxWHFDQmUK",
+      "endpoints": [
+        "http://127.0.0.1:8787/latest.json"
+      ],
+      "dangerousInsecureTransportProtocol": true
+    }
+  }
+}

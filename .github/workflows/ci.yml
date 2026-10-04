@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4.1.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm run build
+      - run: python3 scripts/check-csp-hashes.py
+      - run: pnpm run test
+
+  rust:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2.8.0
+        with:
+          workspaces: src-tauri
+      - name: Install protobuf
+        run: brew install protobuf
+      - name: Fetch zeytun-core and resources
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dest="src-tauri/resources/bin/macos-aarch64"
+          mkdir -p "$dest"
+          CORE_TAG="$(gh release list --repo zeytun-labs/zeytun-core --limit 1 --json tagName --jq '.[0].tagName')"
+          curl -fsSL -o core.tar.gz "https://github.com/zeytun-labs/zeytun-core/releases/download/${CORE_TAG}/zeytun-core-darwin-arm64.tar.gz"
+          tar -xzf core.tar.gz -C "$dest"
+          mv "$dest/zeytun-core-darwin-arm64" "$dest/zeytun-core"
+          chmod +x "$dest/zeytun-core"
+          url="https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz"
+          curl -fsSL --retry 3 "$url" | gunzip > src-tauri/resources/geoip.mmdb
+      - name: fmt
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+      - name: clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::result_large_err
+      - name: tests
+        working-directory: src-tauri
+        run: cargo test --all-targets

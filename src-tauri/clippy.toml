@@ -1,0 +1,4 @@
+# `decide_connection_ask` carries one parameter per rule field (8) + state;
+# bundling them into a struct would force a cross-layer api.ts change for a
+# single call site. Raise instead of abstract.
+too-many-arguments-threshold = 9

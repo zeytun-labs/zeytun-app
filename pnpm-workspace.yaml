@@ -1,0 +1,12 @@
+allowBuilds:
+  '@bufbuild/buf': true
+  '@hugeicons/svelte': true
+  esbuild: true
+
+ignoredBuiltDependencies:
+  - esbuild
+
+onlyBuiltDependencies:
+  - '@hugeicons/svelte'
+  - '@tailwindcss/oxide'
+  - esbuild

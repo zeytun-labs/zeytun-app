@@ -1,0 +1,62 @@
+[package]
+name = "zeytun"
+version = "0.1.0-alpha"
+description = "Zeytun macOS desktop client for application-aware network routing"
+authors = ["AmirHossein Sadeghi"]
+license = "GPL-3.0-only"
+edition = "2021"
+
+[lib]
+name = "zeytun_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "Zeytun"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+tonic-build = "0.11"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset", "macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.150"
+semver = "1"
+base64 = "0.22.1"
+percent-encoding = "2.3.2"
+url = "2.5.8"
+zeytun-config = { git = "https://github.com/zeytun-labs/zeytun-config.git" }
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSWindow", "NSToolbar", "NSView", "NSResponder", "NSApplication"] }
+thiserror = "2.0.18"
+strum_macros = "0.28.0"
+strum = "0.28.0"
+ureq = { version = "2.12.1", features = [] }
+rusqlite = { version = "0.34.0", features = ["bundled"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-websocket = "2.4.2"
+sysinfo = "0.38.4"
+tonic = "0.11"
+prost = "0.12"
+tokio-stream = "0.1"
+maxminddb = "0.28.1"
+objc2-foundation = "0.3.2"
+uuid = { version = "1", features = ["v4"] }
+image = "0.25"
+rusttype = "0.9"
+imageproc = "0.25"
+ab_glyph = "0.2.32"
+libc = "0.2.188"
+regex = "1"
+tauri-plugin-process = "2"
+# GeoIP database download: gunzip the DB-IP archive, and month arithmetic for the
+# URL. Both are already in the lockfile as transitive deps — no new versions.
+flate2 = "1.1.9"
+time = "0.3.47"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"

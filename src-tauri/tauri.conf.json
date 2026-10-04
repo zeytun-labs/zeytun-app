@@ -1,0 +1,76 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Zeytun",
+  "version": "0.1.0-alpha",
+  "identifier": "com.zeytun.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "Zeytun",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 970,
+        "minHeight": 700,
+        "decorations": true,
+        "visible": false
+      },
+      {
+        "label": "connection-ask",
+        "title": "Connection Request",
+        "width": 680,
+        "height": 650,
+        "minWidth": 680,
+        "minHeight": 650,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "url": "/connection-ask"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo=' 'sha256-4SoiunBIwmhafU00ZMCQplkLnwDRqBqqZYaNOBD8aZw='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 ws://localhost:1420; font-src 'self' data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPCACHE/icons/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "resources": [
+      "resources/bin/**/*",
+      "resources/geoip.mmdb",
+      "resources/licenses/**/*",
+      "icons/dock/**/*",
+      "Assets.car"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM1OEQwMUI3NTI2QUNFNkIKUldScnptcFN0d0dOeFErSFgyekxZWUl2Nmx5VDI3QUNreWw2VDUxQnNUWkJVZWpRNHpqa014TTcK",
+      "endpoints": [
+        "https://github.com/zeytun-labs/zeytun-release/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
