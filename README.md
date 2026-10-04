@@ -37,7 +37,7 @@ cd zeytun-app
 pnpm install
 
 # Build the core daemon (optional — skip if you only need the UI):
-git clone https://github.com/zeytun-labs/zeytun-core.git ../zeytun-core
+git clone --branch zeytun-port https://github.com/zeytun-labs/zeytun-core.git ../zeytun-core
 make build-core
 sudo chown root src-tauri/resources/bin/macos-aarch64/zeytun-core
 sudo chmod 4755 src-tauri/resources/bin/macos-aarch64/zeytun-core
