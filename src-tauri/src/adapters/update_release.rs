@@ -7,7 +7,7 @@ use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 const RELEASES_API: &str = "https://api.github.com/repos/zeytun-labs/zeytun-app/releases";
-const RELEASE_DOWNLOAD: &str = "https://github.com/zeytun-labs/zeytun-app/releases/download/";
+const RELEASE_DOWNLOAD: &str = "https://github.com/zeytun-labs/zeytun-app/releases/download";
 
 fn newest_release(releases: &[Value], include_prerelease: bool) -> Option<Version> {
     releases
@@ -143,6 +143,20 @@ pub async fn check_release_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_manifest_url_has_single_path_separator() {
+        let mut endpoint = Url::parse(RELEASE_DOWNLOAD).unwrap();
+        endpoint
+            .path_segments_mut()
+            .unwrap()
+            .push("v0.2.0-alpha")
+            .push("latest.json");
+        assert_eq!(
+            endpoint.as_str(),
+            "https://github.com/zeytun-labs/zeytun-app/releases/download/v0.2.0-alpha/latest.json"
+        );
+    }
 
     #[test]
     fn stable_channel_ignores_prereleases() {
