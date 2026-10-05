@@ -252,8 +252,14 @@ pub enum GeoipAutoUpdate {
 ///
 /// Cheap by design — the no-op path is one HEAD round trip, not an 8 MB pull —
 /// so it is safe to call on every app launch.
-pub fn auto_update_country_db(dest: &Path, proxy: Option<&str>) -> GeoipAutoUpdate {
-    let installed = installed_month(dest);
+pub fn auto_update_country_db(
+    dest: &Path,
+    current_db: &Path,
+    proxy: Option<&str>,
+) -> GeoipAutoUpdate {
+    // Match the database used by IP lookups, including the bundled fallback on
+    // a fresh install. Downloads still go exclusively into app data (`dest`).
+    let installed = installed_month(current_db);
     let Some(latest) = latest_published_month(proxy) else {
         return GeoipAutoUpdate::ProbeFailed;
     };
@@ -454,6 +460,39 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A fresh install already has a current database in its read-only bundle.
+    /// The background check must not download it again into app data.
+    #[test]
+    #[ignore = "requires network: downloads and probes the live DB-IP database"]
+    fn auto_update_keeps_current_bundled_db() {
+        let dir = std::env::temp_dir().join(format!(
+            "zeytun-geoip-bundled-{}-{}",
+            std::process::id(),
+            time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+        ));
+        let app_data = dir.join("app-data");
+        let resource_dir = dir.join("bundle");
+        let bundled = resource_dir.join(crate::core::constants::GEOIP_COUNTRY_PATH);
+        let dest = app_data.join(crate::core::constants::GEOIP_DB_FILENAME);
+        let fixture = update_country_db(&bundled, None).expect("download bundle fixture");
+        assert_eq!(
+            latest_published_month(None).as_deref(),
+            Some(fixture.month.as_str())
+        );
+        assert_eq!(resolve_db_path(&app_data, &resource_dir), bundled);
+        let before = std::fs::read(&bundled).unwrap();
+
+        let current_db = resolve_db_path(&app_data, &resource_dir);
+        let result = auto_update_country_db(&dest, &current_db, None);
+        assert!(
+            matches!(result, GeoipAutoUpdate::Current { ref month } if month.as_deref() == Some(fixture.month.as_str())),
+            "current bundled database must not download again: {result:?}"
+        );
+        assert!(!dest.exists(), "no downloaded copy should be created");
+        assert_eq!(std::fs::read(&bundled).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Proves the *auto* path: first launch (empty dest) downloads, a second
     /// launch sees the same month and no-ops. This is the wiring behind the
     /// settings toggle, exercised end to end against the live CDN.
@@ -471,7 +510,7 @@ mod tests {
         // No database installed yet → the month is unknown, so a probe can't
         // claim "current" and must fall through to a real download.
         assert_eq!(installed_month(&dest), None);
-        match auto_update_country_db(&dest, None) {
+        match auto_update_country_db(&dest, &dest, None) {
             GeoipAutoUpdate::Updated(u) => {
                 println!("first launch: downloaded {}", u.month);
                 assert_eq!(lookup_iso(&dest, "8.8.8.8").as_deref(), Some("US"));
@@ -482,7 +521,7 @@ mod tests {
 
         let first = installed_month(&dest).expect("installed db has a month");
         // Second launch: same month is published, so nothing downloads.
-        match auto_update_country_db(&dest, None) {
+        match auto_update_country_db(&dest, &dest, None) {
             GeoipAutoUpdate::Current { month } => {
                 println!("second launch: already current ({month:?})");
                 assert_eq!(month.as_deref(), Some(first.as_str()));

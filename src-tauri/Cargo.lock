@@ -7387,7 +7387,7 @@ dependencies = [
 
 [[package]]
 name = "zeytun"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",

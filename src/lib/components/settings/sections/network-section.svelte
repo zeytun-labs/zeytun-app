@@ -119,7 +119,7 @@
 
     <SettingRow
       label="GeoIP Database"
-      description="Country database used by GeoIP routing rules."
+      description="Country lookup for IP details and flags. Routing rules use separate rule sets."
     >
       <Button
         variant="secondary"
@@ -138,7 +138,7 @@
 
     <SettingRow
       label="Automatic Update"
-      description="Refresh the GeoIP database in the background."
+      description="Check for a newer country database when Zeytun starts."
       for="autoGeo"
     >
       <Switch id="autoGeo" bind:checked={draft.settings.autoUpdateGeoIp} />

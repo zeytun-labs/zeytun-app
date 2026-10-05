@@ -80,7 +80,10 @@ jobs:
         run: |
           pnpm run check
           pnpm run build
+          pnpm run test
           python3 scripts/check-csp-hashes.py
+      - name: Check GeoIP updates against DB-IP
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib adapters::geoip_update::tests -- --include-ignored
       - name: Smoke-test app and DMG bundles
         if: env.DRY_RUN == 'true'
         run: pnpm exec tauri build --target aarch64-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'

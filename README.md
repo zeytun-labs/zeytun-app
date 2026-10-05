@@ -62,13 +62,19 @@ Prompts have a timeout. If you do not respond, the configured final route applie
 Once a public build is available:
 
 1. Download the Apple Silicon `.dmg` from Releases and move **Zeytun.app** to **Applications**.
-2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. Only approve opening a build if you trust its source.
+2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. If you trust the source, follow [Apple's instructions](https://support.apple.com/en-us/102445#openanyway) to approve this app in **System Settings → Privacy & Security → Open Anyway**. Do not disable Gatekeeper globally.
 3. Add a subscription from the profile menu, or import a proxy link in **Policy**. Select a proxy in the group you want to use.
 4. Choose **Global Proxy** to use your selected proxy, or **Rule-based Proxy** to follow routing rules. Zeytun starts in **Direct Outbound** mode on each launch.
 5. Enable **System Proxy** for applications that respect macOS proxy settings, or **TUN** for tunnel-based capture. TUN requires administrator permission.
 6. Open **Traffic Monitor** to inspect the connections handled by Zeytun and create rules from them.
 
 Some settings need **Restart Core** before they take effect. To try Connection Ask, enable it under **Settings → Network**, restart the core, and use Rule-based Proxy mode.
+
+### Core and country data
+
+Release builds include the network core and a DB-IP Country Lite database; no separate core download is required. The core is updated with the app.
+
+Country lookups for IP details and flags use the bundled database until a downloaded update is available. **Settings → Network** offers a manual update and an optional startup check; a current bundled database is not downloaded again. Updates are validated and stored in app data, leaving the app bundle unchanged. Country-based routing uses separate rule sets, not this display database.
 
 ## Help and feedback
 

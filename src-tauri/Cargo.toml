@@ -1,6 +1,6 @@
 [package]
 name = "zeytun"
-version = "0.1.0-alpha"
+version = "0.1.1-alpha"
 description = "Zeytun macOS desktop client for application-aware network routing"
 authors = ["AmirHossein Sadeghi"]
 license = "GPL-3.0-only"

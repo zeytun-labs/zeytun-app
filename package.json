@@ -1,6 +1,6 @@
 {
   "name": "zeytun",
-  "version": "0.1.0-alpha",
+  "version": "0.1.1-alpha",
   "packageManager": "pnpm@10.27.0",
   "description": "Zeytun macOS desktop client for application-aware network routing",
   "type": "module",

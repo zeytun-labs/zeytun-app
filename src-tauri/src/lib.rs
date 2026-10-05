@@ -1596,14 +1596,19 @@ async fn core_auto_update_geoip_db(
         let core = state.core.lock().await;
         core.proxy_for_traffic(crate::core::network_policy::TRAFFIC_GEOIP)
     };
-    let dest = app
+    let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|e| crate::error::CommandError::Internal(e.to_string()))?
-        .join(crate::core::constants::GEOIP_DB_FILENAME);
+        .map_err(|e| crate::error::CommandError::Internal(e.to_string()))?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| crate::error::CommandError::Internal(e.to_string()))?;
+    let dest = app_data_dir.join(crate::core::constants::GEOIP_DB_FILENAME);
+    let current_db = crate::adapters::geoip_update::resolve_db_path(&app_data_dir, &resource_dir);
 
     tauri::async_runtime::spawn_blocking(move || {
-        crate::adapters::geoip_update::auto_update_country_db(&dest, proxy.as_deref())
+        crate::adapters::geoip_update::auto_update_country_db(&dest, &current_db, proxy.as_deref())
     })
     .await
     .map_err(|e| crate::error::CommandError::Internal(e.to_string()))
