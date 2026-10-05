@@ -168,10 +168,10 @@
     return dashboardStore.processes.find((p) => p.name === name)?.path ?? "";
   }
 
-  const chartConfig = {
+  const chartConfig: Chart.ChartConfig = {
     up: { label: "Upload", color: "var(--chart-2)" },
     down: { label: "Download", color: "var(--chart-1)" },
-  } satisfies Chart.ChartConfig;
+  };
 
   const xTicks = $derived.by(() => {
     const n = buckets.length;
@@ -268,7 +268,7 @@
           <div class="flex w-full items-center gap-2">
             <div
               class="h-2.5 w-2.5 shrink-0 rounded-xs"
-              style="background-color: {item.color}"
+              style="background-color: {chartConfig[item.key]?.color}"
             ></div>
             <span class="text-muted-foreground">{name}</span>
             <span class="text-foreground ml-auto font-medium">

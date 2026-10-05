@@ -96,6 +96,10 @@
   }
 
   onMount(() => {
+    // Tauri opens index.html by default; SvelteKit's Home route is /.
+    if (window.location.pathname === "/index.html") {
+      void goto("/", { replaceState: true });
+    }
     themePreference.init();
     settingsStore.init();
     // Register backend sync listeners before the core boots so we don't miss the
