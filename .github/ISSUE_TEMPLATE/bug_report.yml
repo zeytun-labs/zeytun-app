@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible problem with Zeytun.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Zeytun. Report one problem per issue.
+        Do not report vulnerabilities here. Follow the [security guidance](https://github.com/zeytun-labs/zeytun-app/blob/main/CONTRIBUTING.md#security).
+        Remove subscription URLs, credentials, and identifying traffic details from all attachments.
+  - type: checkboxes
+    id: preparation
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests for this problem.
+          required: true
+        - label: This is not a vulnerability report and contains no credentials or private network data.
+          required: true
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: What happened?
+      description: Describe the problem and the actual behavior, including any error message.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest sequence that reproduces the problem. If it is intermittent, describe when it occurs.
+      placeholder: |
+        1. Open ...
+        2. Change ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: Zeytun version or source commit
+      description: Include whether this is a release build or a local source build.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version and hardware
+      placeholder: macOS version, Apple Silicon model or architecture
+    validations:
+      required: true
+  - type: textarea
+    id: network-context
+    attributes:
+      label: Network context
+      description: For network-related bugs, include the capture mode (local proxy, System Proxy, or TUN), routing mode, and relevant settings. Do not paste subscription URLs or credentials.
+    validations:
+      required: false
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs, screenshots, or additional context
+      description: Optional supporting evidence. Review text and attachments for secrets and identifying data before uploading.
+    validations:
+      required: false

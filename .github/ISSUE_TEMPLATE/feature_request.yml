@@ -1,0 +1,46 @@
+name: Feature request
+description: Discuss a user problem and a proposed improvement before implementation.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the user problem, not just the implementation you want.
+        Please wait for maintainer agreement before implementing a new feature or substantial change.
+        See [Contributing](https://github.com/zeytun-labs/zeytun-app/blob/main/CONTRIBUTING.md#before-you-start).
+        Do not include credentials, subscription URLs, or private network data.
+  - type: checkboxes
+    id: preparation
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and pull requests for this proposal.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What are you trying to do, what is difficult today, and who would benefit?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the intended user experience and how it solves the problem. Include UI sketches if useful, without private data.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe existing options or workarounds and why they are insufficient.
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Risks, scope, or related work
+      description: Mention potential behavior changes, permissions, new dependencies, or work in other Zeytun repositories. Link related issues if known.
+    validations:
+      required: false
