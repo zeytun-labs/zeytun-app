@@ -4,7 +4,7 @@
   import { Switch } from "$lib/components/ui/switch/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { GlobalRefreshIcon } from "@hugeicons/core-free-icons";
+  import { GlobalIcon } from "@hugeicons/core-free-icons";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { type TrafficKind } from "$lib/core/api";
   import { geoipStore } from "$lib/stores/geoip.svelte";
@@ -130,7 +130,7 @@
         {#if geoipStore.updating}
           <Spinner class="size-4 border-secondary-foreground/30 border-t-secondary-foreground" />
         {:else}
-          <HugeiconsIcon icon={GlobalRefreshIcon} />
+          <HugeiconsIcon icon={GlobalIcon} />
         {/if}
         {geoipStore.updating ? "Updating…" : "Update Now"}
       </Button>

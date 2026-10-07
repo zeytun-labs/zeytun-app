@@ -3,7 +3,12 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { Button } from "$lib/components/ui/button/index.js";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { SystemUpdate01Icon, Link04Icon } from "@hugeicons/core-free-icons";
+  import {
+    SystemUpdate01Icon,
+    Refresh04Icon,
+    GithubIcon,
+    LaptopIssueIcon,
+  } from "@hugeicons/core-free-icons";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { Spinner } from "$lib/components/ui/spinner/index.js";
   import { updaterStore } from "$lib/stores/updater.svelte";
@@ -79,7 +84,7 @@
         {#if phase === "checking"}
           <Spinner class="size-3.5 border-secondary-foreground/30 border-t-secondary-foreground" />
         {:else}
-          <HugeiconsIcon icon={SystemUpdate01Icon} class="size-3.5" />
+          <HugeiconsIcon icon={Refresh04Icon} class="size-3.5" />
         {/if}
         {phase === "checking" ? "Checking…" : "Check for Updates"}
       </Button>
@@ -110,7 +115,7 @@
       class="gap-1.5"
       onclick={() => void openUrl("https://github.com/zeytun-labs/zeytun-app")}
     >
-      <HugeiconsIcon icon={Link04Icon} class="size-3.5" />
+      <HugeiconsIcon icon={GithubIcon} class="size-3.5" />
       GitHub
     </Button>
   </SettingRow>
@@ -124,7 +129,7 @@
       class="gap-1.5"
       onclick={() => void openUrl("https://github.com/zeytun-labs/zeytun-app/issues")}
     >
-      <HugeiconsIcon icon={Link04Icon} class="size-3.5" />
+      <HugeiconsIcon icon={LaptopIssueIcon} class="size-3.5" />
       Issues
     </Button>
   </SettingRow>

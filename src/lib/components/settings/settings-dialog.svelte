@@ -4,10 +4,10 @@
   import { ScrollArea } from "$lib/components/ui/scroll-area/index.js";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
-    Settings01Icon,
-    EarthIcon,
-    ServerStack01Icon,
-    CpuSettingsIcon,
+    Setting06Icon,
+    InternetIcon,
+    AddressBookIcon,
+    Activity04Icon,
     InformationCircleIcon,
     ReloadIcon,
   } from "@hugeicons/core-free-icons";
@@ -37,12 +37,12 @@
   let draft = $state<SettingsDraft>(new SettingsDraft());
 
   const categories = [
-    { id: "general", label: "General", icon: Settings01Icon },
-    { id: "network", label: "Network", icon: EarthIcon },
-    { id: "dns", label: "DNS", icon: ServerStack01Icon },
+    { id: "general", label: "General", icon: Setting06Icon },
+    { id: "network", label: "Network", icon: InternetIcon },
+    { id: "dns", label: "DNS", icon: AddressBookIcon },
     // Holds test endpoints, not connection settings — "Connectivity" read as a
     // synonym of "Network" next to it.
-    { id: "connectivity", label: "Diagnostics", icon: CpuSettingsIcon },
+    { id: "connectivity", label: "Diagnostics", icon: Activity04Icon },
     { id: "about", label: "About", icon: InformationCircleIcon },
   ];
 
