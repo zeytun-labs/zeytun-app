@@ -1,1 +1,0 @@
-ALTER TABLE dns_server ADD COLUMN name TEXT;

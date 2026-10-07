@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::json;
 use zeytun_lib::core::{
     dto::*,
@@ -9,39 +9,128 @@ fn fixture() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("subscription-storage-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("fixture.db");
-    let conn = Connection::open(&path).unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migration(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_unix_ms INTEGER NOT NULL);").unwrap();
-    let mut files = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|s| s == "sql"))
-        .collect::<Vec<_>>();
-    files.sort();
-    for file in files {
-        let name = file.file_name().unwrap().to_str().unwrap();
-        let version: i64 = name[..4].parse().unwrap();
-        if version > 19 {
-            continue;
-        }
-        conn.execute_batch(&std::fs::read_to_string(&file).unwrap())
-            .unwrap();
-        conn.execute(
-            "INSERT INTO schema_migration VALUES (?1,?2,0)",
-            params![version, name],
-        )
-        .unwrap();
-    }
-    conn.execute_batch("UPDATE profile SET name='Preserved',subscription_url='https://example.test/token',last_updated_unix_ms=17,last_sync_summary='{\"proxies_added\":1,\"proxies_removed\":0,\"proxies_kept\":0,\"rules_orphaned\":0,\"at_unix_ms\":17,\"errors\":[]}',unread_summary=1,skip_auto_update=1,update_interval_hours=24,sub_upload=1,sub_download=2,sub_total=3,sub_expire=4;
-        INSERT INTO profile(id,name) VALUES ('orphan','Orphan');
-        INSERT INTO proxy(profile_id,tag,origin,title,protocol,link,enabled,position) VALUES ('default','sub','subscription','n','socks','socks5://example.test:1080',0,0),('default','manual','manual','m','socks','',1,1),('orphan','sub','subscription','o','socks','',1,0);
-        INSERT INTO policy(profile_id,tag,name,kind,selected_member_tag,position,weights_json) VALUES ('default','user','User','balancer','sub',0,'[7,11]');
-        INSERT INTO policy_member VALUES ('default','user','sub',0),('default','user','manual',1);
-        INSERT INTO route_rule(profile_id,id,kind,value,outbound,enabled,comment,position) VALUES ('default',0,'FINAL','','sub',1,'keep',0);").unwrap();
+    let db = Db::new(path.clone());
+
+    let mut p = db.load_profile("default").unwrap();
+    let source = SubscriptionSource {
+        id: "legacy".into(),
+        settings: SubscriptionSettings {
+            name: "Preserved".into(),
+            url: "https://example.test/token".into(),
+            enabled: true,
+            auto_update: false,
+            update_interval_hours: 24,
+        },
+        generation: 0,
+        position: 0,
+        provider_title: None,
+        suggested_interval_hours: None,
+        userinfo: Some(SubUserinfo {
+            upload: 1,
+            download: 2,
+            total: 3,
+            expire: 4,
+        }),
+        last_attempt_at: Some(17),
+        last_success_at: Some(17),
+        last_error: None,
+        last_sync_summary: Some(SyncSummary {
+            proxies_added: 1,
+            proxies_removed: 0,
+            proxies_kept: 0,
+            rules_orphaned: 0,
+            at_unix_ms: 17,
+            errors: vec![],
+            effective_fallbacks: vec![],
+        }),
+        unread_summary: true,
+    };
+    db.create_subscription("default", &source).unwrap();
+
+    let sub_node = Proxy {
+        tag: "sub".into(),
+        origin: ProxyOrigin::Subscription,
+        source_id: Some("legacy".into()),
+        available: true,
+        title: "n".into(),
+        protocol: "socks".into(),
+        link: "socks5://example.test:1080".into(),
+        enabled: false,
+        transport: None,
+        config: None,
+    };
+    let manual_node = Proxy {
+        tag: "manual".into(),
+        origin: ProxyOrigin::Manual,
+        source_id: None,
+        available: true,
+        title: "m".into(),
+        protocol: "socks".into(),
+        link: String::new(),
+        enabled: true,
+        transport: None,
+        config: None,
+    };
+    p.proxies = vec![sub_node, manual_node];
+
+    let mut policy = p.policies[0].clone();
+    policy.tag = "user".into();
+    policy.name = "User".into();
+    policy.kind = Some(ProxyPolicyType::Balancer);
+    policy.members = Some(vec!["sub".into(), "manual".into()]);
+    policy.weights = Some(vec![7, 11]);
+    policy.selected_member_tag = Some("sub".into());
+    p.policies.push(policy);
+
+    p.rules = vec![Rule {
+        id: 0,
+        kind: RuleType::Final,
+        value: String::new(),
+        outbound: "sub".into(),
+        enabled: true,
+        comment: "keep".into(),
+        rule_set: None,
+        orphaned: false,
+    }];
+    db.save_profile(&p).unwrap();
+
+    let orphan = ProfileMeta {
+        id: "orphan".into(),
+        name: "Orphan".into(),
+        is_active: false,
+        icon: None,
+        subscription_url: None,
+        last_updated_unix_ms: None,
+        last_sync_summary: None,
+        unread_summary: false,
+        skip_auto_update: true,
+        update_interval_hours: 12,
+        sub_upload: None,
+        sub_download: None,
+        sub_total: None,
+        sub_expire: None,
+    };
+    db.create_profile(&orphan).unwrap();
+    let mut orphan_p = db.load_profile("orphan").unwrap();
+    orphan_p.proxies = vec![Proxy {
+        tag: "sub".into(),
+        origin: ProxyOrigin::Manual,
+        source_id: None,
+        available: true,
+        title: "o".into(),
+        protocol: "socks".into(),
+        link: String::new(),
+        enabled: true,
+        transport: None,
+        config: None,
+    }];
+    db.save_profile(&orphan_p).unwrap();
+
     path
 }
 
 #[test]
-fn schema19_migration_preserves_graph_and_backfills_ownership() {
+fn clean_schema_initializes_and_preserves_graph_ownership() {
     let path = fixture();
     let db = Db::new(path.clone());
     let p = db.load_profile("default").unwrap();
@@ -93,20 +182,11 @@ fn schema19_migration_preserves_graph_and_backfills_ownership() {
         .map(Result::unwrap)
         .collect::<Vec<_>>();
     assert!(!columns.iter().any(|c| c.contains("source")));
-    assert_eq!(
-        conn.query_row(
-            "SELECT subscription_url FROM profile WHERE id='default'",
-            [],
-            |r| r.get::<_, Option<String>>(0)
-        )
-        .unwrap(),
-        None
-    );
 }
 
 fn source(id: &str) -> SubscriptionSource {
     serde_json::from_value(json!({"id":id,"settings":{"name":"A","url":"https://example.test/private?token=secret","enabled":true,"auto_update":true,"update_interval_hours":24},"generation":2,"position":3,
-        "provider_title":"Provider","suggested_interval_hours":48,"userinfo":{"upload":1,"download":2,"total":0,"expire":0},"last_attempt_at":51,"last_success_at":50,"last_error":"safe error","last_sync_summary":{"proxies_added":1,"proxies_removed":0,"proxies_kept":1,"rules_orphaned":0,"at_unix_ms":50,"errors":[]},"unread_summary":true})).unwrap()
+        "provider_title":"Provider","suggested_interval_hours":48,"userinfo":{"upload":1,"download":2,"total":0,"expire":0},"last_attempt_at":51,"last_success_at":50,"last_error":"safe error","last_sync_summary":{"proxies_added":1,"proxies_removed":0,"proxies_kept":1,"rules_orphaned":0,"at_unix_ms":50,"errors":[],"effective_fallbacks":[]},"unread_summary":true})).unwrap()
 }
 
 #[test]
@@ -236,54 +316,24 @@ fn legacy_adapters_use_source_storage_not_profile_columns() {
     assert_eq!(source.userinfo.unwrap().download, 10);
     fresh.mark_summary_read("default").unwrap();
     assert!(!fresh.list_subscriptions("default").unwrap()[0].unread_summary);
-    let conn = Connection::open(path).unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT subscription_url FROM profile WHERE id='default'",
-            [],
-            |r| r.get::<_, Option<String>>(0)
-        )
-        .unwrap(),
-        None
-    );
 }
 
 #[test]
-fn failed_schema19_migration_rolls_back_ddl_data_and_marker() {
+fn single_migration_baseline_records_init() {
     let path = fixture();
-    let conn = Connection::open(&path).unwrap();
-    conn.execute("UPDATE policy SET weights_json='[7]' WHERE tag='user'", [])
+    let conn = Connection::open(path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM schema_migration", [], |r| r.get(0))
         .unwrap();
-    assert!(Db::new(path.clone()).list_profiles().is_err());
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='subscription_source'",
+    assert_eq!(count, 1);
+    let name: String = conn
+        .query_row(
+            "SELECT name FROM schema_migration WHERE version=1",
             [],
-            |r| r.get::<_, i64>(0)
+            |r| r.get(0),
         )
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM schema_migration WHERE version=20",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM proxy", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        3
-    );
-    conn.execute(
-        "UPDATE policy SET weights_json='[7,11]' WHERE tag='user'",
-        [],
-    )
-    .unwrap();
-    assert!(Db::new(path).list_profiles().is_ok());
+        .unwrap();
+    assert_eq!(name, "init");
 }
 
 #[test]
