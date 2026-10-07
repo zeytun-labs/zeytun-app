@@ -322,12 +322,12 @@ impl CoreLifecycle {
         let body = match RuntimeProfileCompiler::live_rules_payload(profile, false) {
             Ok(body) => body.to_string(),
             Err(error) => {
-                eprintln!("[live-rules] validation failed: {error}");
+                crate::clog!("[live-rules] validation failed: {error}");
                 return;
             }
         };
         if let Err(e) = clash.put_live_rules(&body) {
-            eprintln!("[live-rules] push failed: {e:?}");
+            crate::clog!("[live-rules] push failed: {e:?}");
         }
     }
 

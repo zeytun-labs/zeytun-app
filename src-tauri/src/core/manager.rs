@@ -904,7 +904,7 @@ impl CoreManager {
             let api_clone = clash_client.clone();
             std::thread::spawn(move || {
                 if let Err(e) = api_clone.close_all_connections() {
-                    eprintln!(
+                    crate::clog!(
                         "Failed to close all connections during mode switch: {:?}",
                         e
                     );
@@ -1157,7 +1157,7 @@ impl CoreManager {
                 let api_clone = clash_api.clone();
                 std::thread::spawn(move || {
                     if let Err(e) = api_clone.close_all_connections() {
-                        eprintln!(
+                        crate::clog!(
                             "Failed to close all connections during proxy switch: {:?}",
                             e
                         );
@@ -1417,7 +1417,7 @@ impl CoreManager {
         };
         std::thread::spawn(move || {
             if let Err(e) = clash.close_all_connections() {
-                eprintln!("Failed to close all connections after live rules: {e:?}");
+                crate::clog!("Failed to close all connections after live rules: {e:?}");
             }
         });
     }
@@ -1487,7 +1487,7 @@ impl CoreManager {
                     // keeps the stale decision and ask never re-fires after
                     // the session rule is deleted — surface it instead of
                     // silently swallowing (stale core binary was the cause).
-                    eprintln!("Failed to forget ask session keys {forget_keys:?}: {e:?}");
+                    crate::clog!("Failed to forget ask session keys {forget_keys:?}: {e:?}");
                 }
             }
         }
@@ -1620,7 +1620,7 @@ impl CoreManager {
         if let Some(key) = ask_key {
             if let Some(clash) = self.lifecycle.clash_api() {
                 if let Err(e) = clash.forget_ask_session_keys(&[key]) {
-                    eprintln!("Failed to forget ask session key after promote: {e:?}");
+                    crate::clog!("Failed to forget ask session key after promote: {e:?}");
                 }
             }
         }
@@ -1748,7 +1748,7 @@ impl CoreManager {
             // a remembered rule re-triggers ask.
             if let Some(clash) = self.lifecycle.clash_api() {
                 if let Err(e) = clash.forget_ask_session_keys(std::slice::from_ref(&path)) {
-                    eprintln!("Failed to forget ask session key after remember: {e:?}");
+                    crate::clog!("Failed to forget ask session key after remember: {e:?}");
                 }
             }
         } else {

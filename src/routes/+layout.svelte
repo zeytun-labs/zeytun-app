@@ -9,7 +9,9 @@
   import { fly } from "svelte/transition";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-  import { coreSetMode, coreStart } from "$lib/core/api";
+  import { coreSetMode, coreStart, crashDumpListUnseen, crashDumpRead, crashDumpDismiss } from "$lib/core/api";
+  import { toast } from "svelte-sonner";
+  import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { profileStore } from "$lib/stores/profile.svelte";
   import { logsStore } from "$lib/stores/logs.svelte";
   import { notificationStore } from "$lib/stores/notifications.svelte";
@@ -72,6 +74,7 @@
       // Both background checks need saved settings before reading their toggles.
       await settingsStore.init();
       isAppInitializing = false;
+      void checkCrashDumps();
       // Updater needs the profile and never blocks startup.
       updaterStore.startAuto();
       // GeoIP refresh is fire-and-forget (a slow CDN must never block startup).
@@ -80,6 +83,42 @@
       }
     } catch (err) {
       startupError = errorMessage(err);
+    }
+  }
+
+  async function checkCrashDumps() {
+    try {
+      const dumps = await crashDumpListUnseen();
+      if (!dumps || dumps.length === 0) return;
+
+      const latest = dumps[0];
+      const content = await crashDumpRead(latest).catch(() => null);
+
+      toast.error("Zeytun crashed in the previous session", {
+        description:
+          dumps.length > 1
+            ? `${dumps.length} crash reports found`
+            : "1 crash report found",
+        duration: 15000,
+        action: content
+          ? {
+              label: "Copy Report",
+              onClick: async () => {
+                try {
+                  await writeText(content);
+                  toast.success("Crash report copied to clipboard");
+                } catch {
+                  toast.error("Failed to copy");
+                }
+              },
+            }
+          : undefined,
+        onDismiss: () => {
+          void crashDumpDismiss();
+        },
+      });
+    } catch (err) {
+      console.error("Failed to check crash dumps:", err);
     }
   }
 

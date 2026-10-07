@@ -43,10 +43,10 @@ pub fn start_temp_rule_gc(
                         }
                         Ok(Ok(false)) => {}
                         Ok(Err(e)) => {
-                            eprintln!("[TempRuleGC] prune failed: {e:?}");
+                            crate::clog!("[TempRuleGC] prune failed: {e:?}");
                         }
                         Err(e) => {
-                            eprintln!("[TempRuleGC] task panicked: {e:?}");
+                            crate::clog!("[TempRuleGC] task panicked: {e:?}");
                         }
                     }
                 }

@@ -182,7 +182,7 @@ where
                 use tauri::Emitter;
                 let _ = app.emit("profile-updated", ());
             }
-            Err(e) => eprintln!("[Tray] core call failed: {e}"),
+            Err(e) => crate::clog!("[Tray] core call failed: {e}"),
         }
     });
 }

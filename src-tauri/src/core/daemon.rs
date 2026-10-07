@@ -336,7 +336,7 @@ async fn handle_core_events(
                     } else {
                         ev.attrs.get("error").map(String::as_str).unwrap_or("")
                     };
-                    eprintln!(
+                    crate::clog!(
                         "[ruleset] {code} tag={tag} detour={detour} url={url} err={err}",
                         code = ev.code,
                     );
@@ -424,7 +424,7 @@ async fn handle_connections(
             let _ = tauri::async_runtime::spawn_blocking(move || {
                 let guard = core.blocking_lock();
                 if let Err(e) = guard.record_traffic_batch(&batch) {
-                    eprintln!("[Daemon] traffic flush failed: {e}");
+                    crate::clog!("[Daemon] traffic flush failed: {e}");
                 }
             })
             .await;
@@ -641,7 +641,7 @@ async fn handle_connections(
                         Ok(snap) => {
                             let _ = app_for_emit.emit("inspector-snapshot", &snap);
                         }
-                        Err(e) => eprintln!("[Daemon] inspector snapshot failed: {e}"),
+                        Err(e) => crate::clog!("[Daemon] inspector snapshot failed: {e}"),
                     }
                 }
             }

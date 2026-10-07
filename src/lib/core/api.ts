@@ -582,3 +582,15 @@ export function coreStunTestCancel() {
 export function coreSetHideOnClose(hide: boolean) {
   return invoke<void>("set_hide_on_close", { hide });
 }
+
+export function crashDumpListUnseen(): Promise<string[]> {
+  return invoke<string[]>("crash_dump_list_unseen");
+}
+
+export function crashDumpRead(path: string): Promise<string> {
+  return invoke<string>("crash_dump_read", { path });
+}
+
+export function crashDumpDismiss(): Promise<void> {
+  return invoke<void>("crash_dump_dismiss");
+}

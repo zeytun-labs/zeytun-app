@@ -204,7 +204,7 @@ impl ClashApiClient {
             // reason on the app console — it is the only place the real cause
             // (DNS failure, dead outbound) is visible — and report no delay.
             let detail = response.into_string().unwrap_or_default();
-            eprintln!("[latency] {proxy_name}: no answer (status {status}) {detail}");
+            crate::clog!("[latency] {proxy_name}: no answer (status {status}) {detail}");
             return Ok(ClashDelayResult { delay: None });
         }
         let response = self.expect_success(&path, response)?;

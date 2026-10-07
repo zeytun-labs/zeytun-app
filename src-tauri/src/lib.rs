@@ -1,3 +1,4 @@
+pub mod crash_dump;
 pub mod error;
 
 pub mod adapters;
@@ -1804,6 +1805,28 @@ async fn core_auto_update_geoip_db(
     .map_err(|e| crate::error::CommandError::Internal(e.to_string()))
 }
 
+/// Returns a list of crash dump file paths created since the user last dismissed them.
+#[tauri::command]
+fn crash_dump_list_unseen() -> Vec<String> {
+    crate::crash_dump::list_unseen_dumps()
+        .into_iter()
+        .filter_map(|p| p.to_str().map(String::from))
+        .collect()
+}
+
+/// Read the content of a crash dump file.
+#[tauri::command]
+fn crash_dump_read(path: String) -> Result<String, crate::error::CommandError> {
+    crate::crash_dump::read_dump(std::path::Path::new(&path))
+        .ok_or_else(|| crate::error::CommandError::NotFound("crash dump not found".into()))
+}
+
+/// Mark all crash dumps as seen.
+#[tauri::command]
+fn crash_dump_dismiss() {
+    crate::crash_dump::mark_dumps_seen();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -1982,7 +2005,10 @@ pub fn run() {
             core_get_external_ip_info,
             core_run_diagnostics,
             flush_dns_cache,
-            test_dns_lookup
+            test_dns_lookup,
+            crash_dump_list_unseen,
+            crash_dump_read,
+            crash_dump_dismiss
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
