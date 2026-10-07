@@ -24,8 +24,6 @@ build-core:
 	@cp ../zeytun-core/sing-box $(CORE_DEST)
 	@chmod +x $(CORE_DEST)
 	@echo "=> Build complete. Binary placed in $(CORE_DEST)"
-	@echo "=> NOTE: For local proxy connections, apply setuid root:"
-	@echo "   sudo chown root $(CORE_DEST) && sudo chmod 4755 $(CORE_DEST)"
 
 # Run the UI locally
 dev:

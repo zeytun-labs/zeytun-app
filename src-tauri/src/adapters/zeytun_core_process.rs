@@ -49,10 +49,54 @@ impl ZeytunCoreProcessManager {
     }
 
     pub fn start(&self, config_path: &str) -> Result<(), String> {
-        self.start_internal(config_path, false)
+        self.ensure_setuid()?;
+        self.start_internal(config_path)
     }
 
-    fn start_internal(&self, config_path: &str, is_retry: bool) -> Result<(), String> {
+    /// Ensure the core binary has setuid-root permissions before spawning.
+    /// Prompts the user via the native macOS password dialog if needed.
+    fn ensure_setuid(&self) -> Result<(), String> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let meta = std::fs::metadata(&self.binary_path)
+                .map_err(|e| format!("Cannot stat zeytun-core binary: {e}"))?;
+
+            let is_root_owned = meta.uid() == 0;
+            let has_setuid = meta.mode() & 0o4000 != 0;
+
+            if is_root_owned && has_setuid {
+                return Ok(());
+            }
+
+            let binary_str = self.binary_path.to_string_lossy();
+            let script = format!(
+                "do shell script \"chown root '{binary_str}' && chmod 4755 '{binary_str}'\" with administrator privileges"
+            );
+
+            let output = Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output()
+                .map_err(|e| format!("Failed to execute osascript: {e}"))?;
+
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(
+                    "TUN mode requires root privileges. Please grant permissions when prompted."
+                        .to_string(),
+                )
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
+    }
+
+    fn start_internal(&self, config_path: &str) -> Result<(), String> {
         // Always stop existing child first — never early-return while still running
         // (that skipped new config after retry_rulesets write).
         {
@@ -95,30 +139,7 @@ impl ZeytunCoreProcessManager {
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            let mut final_message = message.clone();
-            if final_message.contains("configure tun interface: Connect: operation not permitted") {
-                if !is_retry {
-                    // Drop the guard before retrying to prevent deadlocks
-                    drop(guard);
-
-                    let binary_str = self.binary_path.to_string_lossy();
-                    let script = format!(
-                        "do shell script \"chown root '{binary_str}' && chmod 4755 '{binary_str}'\" with administrator privileges"
-                    );
-
-                    let output = Command::new("osascript")
-                        .arg("-e")
-                        .arg(&script)
-                        .output()
-                        .map_err(|e| format!("Failed to execute osascript: {e}"))?;
-
-                    if output.status.success() {
-                        return self.start_internal(config_path, true);
-                    }
-                }
-
-                final_message = "TUN mode requires Administrator/Root privileges on macOS. Please grant permissions when prompted.".to_string();
-            }
+            let final_message = message;
 
             return Err(format!(
                 "zeytun-core exited during startup ({status}): {}",
