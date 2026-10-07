@@ -11,6 +11,9 @@ pub struct Profile {
 
     pub inbound_mode: RuntimeInboundMode,
     pub proxy_servers: Vec<ProxyServer>,
+    /// Unusable authored nodes retain their tags as fail-closed outbounds.
+    pub blocked_proxy_tags: Vec<String>,
+    pub validation_error: Option<String>,
     pub proxy_policies: Vec<ProxyPolicy>,
     pub rules: Vec<RouteRule>,
     /// Prepended ahead of permanent rules / rulesets at compile (still after clash mode).

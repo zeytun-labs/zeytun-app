@@ -10,9 +10,10 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
 use crate::core::dto::{
-    DnsConfig, DnsHostEntry, DnsRule, DnsServer, LocalProxyConfig, ProfileMeta, Proxy, ProxyOrigin,
-    ProxyPolicy, Rule, RuleSet, SubUserinfo, SyncSummary, TempRule, TrafficAnalytics, TrafficDelta,
-    TrafficPoint, TrafficSummary, TrafficTopEntry, ZeytunCore, DEFAULT_PROFILE_ID,
+    DnsConfig, DnsHostEntry, DnsRule, DnsServer, LocalProxyConfig, ProfileMeta, Proxy, ProxyPolicy,
+    Rule, RuleSet, SubUserinfo, SubscriptionDeletePreview, SubscriptionSettings,
+    SubscriptionSource, SyncSummary, TempRule, TrafficAnalytics, TrafficDelta, TrafficPoint,
+    TrafficSummary, TrafficTopEntry, ZeytunCore, DEFAULT_PROFILE_ID,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +26,38 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
     #[error("storage data error: {0}")]
     Data(String),
+    #[error("subscription request is stale or paused")]
+    StaleSubscription,
+}
+
+/// Compare emitted intent, not upstream/display metadata or provenance.
+fn runtime_intent(profile: &ZeytunCore) -> Value {
+    use crate::core::compiler::{
+        profile_converter::ProfileConverter, runtime_profile_compiler::RuntimeProfileCompiler,
+    };
+    let mut profile = profile.clone();
+    profile.session_rules.clear();
+    if let Ok(runtime) = RuntimeProfileCompiler::new().compile(&ProfileConverter::convert(&profile))
+    {
+        if let Ok(config) =
+            crate::core::zeytun_core_config::ZeytunCoreConfigBuilder::new(false, false)
+                .build(&runtime, &profile.outbound_mode)
+        {
+            return config;
+        }
+    }
+    // Preserve invalid authored intent for validation/rollback; it still needs
+    // a revision if edited, rather than treating every invalid graph as equal.
+    for node in &mut profile.proxies {
+        node.title.clear();
+        node.link.clear();
+        node.origin = crate::core::dto::ProxyOrigin::Manual;
+        node.source_id = None;
+        if let Some(config) = node.config.as_mut().and_then(Value::as_object_mut) {
+            config.remove("name");
+        }
+    }
+    serde_json::to_value(profile).expect("routing DTO serialization")
 }
 
 struct Migration {
@@ -131,6 +164,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "policy_strategy_weights",
         sql: include_str!("../../migrations/0019_policy_strategy_weights.sql"),
     },
+    Migration {
+        version: 20,
+        name: "subscription_sources",
+        sql: include_str!("../../migrations/0020_subscription_sources.sql"),
+    },
+    Migration {
+        version: 21,
+        name: "graph_revision",
+        sql: include_str!("../../migrations/0021_graph_revision.sql"),
+    },
 ];
 
 pub trait Storage {
@@ -144,8 +187,10 @@ pub trait Storage {
     /// plus the global local_proxy config and the profile's version/mode.
     fn load_profile(&self, id: &str) -> Result<ZeytunCore, StorageError>;
     /// Persist a profile's routing bundle (keyed on `profile.id`) and its
-    /// version + outbound_mode. Leaves name/subscription_url/summary untouched.
+    /// version + outbound_mode. Leaves global inbounds and profile metadata untouched.
     fn save_profile(&self, profile: &ZeytunCore) -> Result<(), StorageError>;
+    /// Persist the device-owned inbound settings independently of any profile.
+    fn save_local_proxy(&self, config: &LocalProxyConfig) -> Result<(), StorageError>;
     fn create_profile(&self, meta: &ProfileMeta) -> Result<(), StorageError>;
     fn update_profile_meta(&self, meta: &ProfileMeta) -> Result<(), StorageError>;
     fn delete_profile(&self, id: &str) -> Result<(), StorageError>;
@@ -186,13 +231,436 @@ pub struct Db {
     /// subsequent read/write instead of reopening (which re-ran migrations and
     /// pragmas on each `save_profile`).
     conn: Mutex<Option<Connection>>,
+    delete_previews: Mutex<HashMap<String, PendingSourceDelete>>,
+}
+
+struct PendingSourceDelete {
+    profile_id: String,
+    source_id: String,
+    graph_revision: i64,
+    snapshot: String,
+    created: std::time::Instant,
 }
 
 impl Db {
+    pub fn delete_subscription(
+        &self,
+        input: &crate::core::dto::DeleteSubscriptionInput,
+        session_rules: &[TempRule],
+    ) -> Result<ZeytunCore, StorageError> {
+        use crate::core::{
+            dto::{SubscriptionDeleteMode, DEFAULT_SELECTOR_POLICY_TAG},
+            subscription::SubscriptionManager,
+        };
+        if !input.confirmed {
+            return Err(StorageError::Data(
+                "source deletion requires explicit confirmation".into(),
+            ));
+        }
+        self.with_conn(|conn| {
+            let pending=self.delete_previews.lock().map_err(|_|StorageError::Data("preview lock poisoned".into()))?.remove(&input.preview_token).ok_or_else(||StorageError::Data("delete preview expired or unknown; preview again".into()))?;
+            // A persisted authored-graph revision catches all SQLite writers,
+            // including edit/undo, without invalidation by unrelated telemetry.
+            // The exact snapshot also binds volatile sessions/source settings.
+            let tx=conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let graph_revision:i64=tx.query_row("SELECT graph_revision FROM profile WHERE id=?1",[&input.profile_id],|r|r.get(0))?;
+            let (before,snapshot)=self.source_delete_snapshot(&tx,&input.profile_id,&input.source_id,session_rules)?;
+            if pending.profile_id!=input.profile_id || pending.source_id!=input.source_id || pending.graph_revision!=graph_revision || pending.snapshot!=snapshot || pending.created.elapsed()>=std::time::Duration::from_secs(300) {
+                return Err(StorageError::Data("stale delete preview; preview again".into()));
+            }
+            let dependencies=SubscriptionManager::deletion_dependencies(&before,&input.source_id);
+            if input.mode==SubscriptionDeleteMode::DeleteNodes && !dependencies.is_empty() { return Err(StorageError::Data("source nodes have dependencies; keep as manual or cancel".into())); }
+            match input.mode {
+                SubscriptionDeleteMode::KeepAsManual => {
+                    tx.execute("UPDATE proxy SET origin='manual',source_id=NULL,enabled=CASE WHEN available=0 THEN 0 ELSE enabled END WHERE profile_id=?1 AND source_id=?2",params![input.profile_id,input.source_id])?;
+                }
+                SubscriptionDeleteMode::DeleteNodes => {
+                    tx.execute("DELETE FROM policy_member WHERE profile_id=?1 AND policy_tag=?3 AND member_tag IN (SELECT tag FROM proxy WHERE profile_id=?1 AND source_id=?2)",params![input.profile_id,input.source_id,DEFAULT_SELECTOR_POLICY_TAG])?;
+                    tx.execute("DELETE FROM proxy WHERE profile_id=?1 AND source_id=?2",params![input.profile_id,input.source_id])?;
+                }
+            }
+            tx.execute("DELETE FROM subscription_source WHERE profile_id=?1 AND id=?2",params![input.profile_id,input.source_id])?;
+            let mut after=self.read_profile_raw(&tx,&input.profile_id)?.ok_or_else(||StorageError::Data("profile not found".into()))?;
+            after.session_rules=session_rules.to_vec();
+            SubscriptionManager::validate_candidate(&after).map_err(StorageError::Data)?;
+            if SubscriptionManager::runtime_changed(&before,&after) {tx.execute("UPDATE profile SET config_revision=config_revision+1 WHERE id=?1",[&input.profile_id])?;}
+            tx.commit()?;
+            Ok(after)
+        })
+    }
+
+    pub fn subscription_delete_preview(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        session_rules: &[TempRule],
+    ) -> Result<SubscriptionDeletePreview, StorageError> {
+        self.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            let (profile, snapshot) =
+                self.source_delete_snapshot(&tx, profile_id, source_id, session_rules)?;
+            let graph_revision = tx.query_row(
+                "SELECT graph_revision FROM profile WHERE id=?1",
+                [profile_id],
+                |r| r.get(0),
+            )?;
+            let token = uuid::Uuid::new_v4().to_string();
+            let preview = SubscriptionDeletePreview {
+                profile_id: profile_id.into(),
+                source_id: source_id.into(),
+                preview_token: token.clone(),
+                proxy_tags: profile
+                    .proxies
+                    .iter()
+                    .filter(|p| p.source_id.as_deref() == Some(source_id))
+                    .map(|p| p.tag.clone())
+                    .collect(),
+                dependencies: crate::core::subscription::SubscriptionManager::deletion_dependencies(
+                    &profile, source_id,
+                ),
+            };
+            tx.commit()?;
+            let mut previews = self
+                .delete_previews
+                .lock()
+                .map_err(|_| StorageError::Data("preview lock poisoned".into()))?;
+            previews.retain(|_, p| p.created.elapsed() < std::time::Duration::from_secs(300));
+            previews.insert(
+                token,
+                PendingSourceDelete {
+                    profile_id: profile_id.into(),
+                    source_id: source_id.into(),
+                    graph_revision,
+                    snapshot,
+                    created: std::time::Instant::now(),
+                },
+            );
+            Ok(preview)
+        })
+    }
+
+    fn source_delete_snapshot(
+        &self,
+        conn: &Connection,
+        profile_id: &str,
+        source_id: &str,
+        session_rules: &[TempRule],
+    ) -> Result<(ZeytunCore, String), StorageError> {
+        let source = Self::read_subscriptions(conn, profile_id)?
+            .into_iter()
+            .find(|s| s.id == source_id)
+            .ok_or_else(|| StorageError::Data("subscription source not found".into()))?;
+        let mut profile = self
+            .read_profile_raw(conn, profile_id)?
+            .ok_or_else(|| StorageError::Data("profile not found".into()))?;
+        profile.session_rules = session_rules.to_vec();
+        let snapshot =
+            serde_json::to_string(&(&profile, source.id, source.generation, source.settings))?;
+        Ok((profile, snapshot))
+    }
+
+    /// Stage outside the transaction; read/diff/validate/write against the current
+    /// profile inside it. Source cache and metadata can never commit separately.
+    pub fn apply_subscription(
+        &self,
+        profile_id: &str,
+        expected: &SubscriptionSource,
+        staged: crate::core::subscription::StagedSubscription,
+        unread: bool,
+        session_rules: &[TempRule],
+    ) -> Result<(ZeytunCore, crate::core::dto::SyncResult), StorageError> {
+        self.with_conn(|conn| {
+            let tx=conn.transaction()?;
+            let source=Self::current_subscription(&tx,profile_id,expected)?;
+            let mut candidate=self.read_profile_raw(&tx,profile_id)?.ok_or_else(||StorageError::Data("profile not found".into()))?;
+            candidate.session_rules=session_rules.to_vec();
+            let result=crate::core::subscription::SubscriptionManager::reconcile(&mut candidate,&source,staged).map_err(StorageError::Data)?;
+            let sources=Self::read_subscriptions(&tx,profile_id)?;
+            for node in &candidate.proxies {
+                node.validate_provenance(&sources).map_err(StorageError::Data)?;
+            }
+            self.write_profile(&tx,&candidate)?;
+            tx.execute("UPDATE subscription_source SET last_attempt_at=?3,last_success_at=?3,last_error=NULL,
+                last_sync_summary_json=?4,unread_summary=?5,
+                userinfo_json=coalesce(?6,userinfo_json),suggested_interval_hours=coalesce(?7,suggested_interval_hours),
+                provider_title=coalesce(?8,provider_title) WHERE profile_id=?1 AND id=?2",
+                params![profile_id,source.id,result.summary.at_unix_ms,serde_json::to_string(&result.summary)?,unread,
+                    result.userinfo.as_ref().map(serde_json::to_string).transpose()?,result.update_interval_hours,result.profile_title])?;
+            tx.commit()?;
+            Ok((candidate,result))
+        })
+    }
+
+    fn current_subscription(
+        conn: &Connection,
+        profile_id: &str,
+        expected: &SubscriptionSource,
+    ) -> Result<SubscriptionSource, StorageError> {
+        let source = Self::read_subscriptions(conn, profile_id)?
+            .into_iter()
+            .find(|s| s.id == expected.id)
+            .ok_or(StorageError::StaleSubscription)?;
+        if source.generation != expected.generation {
+            return Err(StorageError::StaleSubscription);
+        }
+        if !source.settings.enabled {
+            return Err(StorageError::StaleSubscription);
+        }
+        Ok(source)
+    }
+
+    pub fn record_subscription_failure(
+        &self,
+        profile_id: &str,
+        expected: &SubscriptionSource,
+        summary: &SyncSummary,
+    ) -> Result<(), StorageError> {
+        if summary.errors.is_empty() {
+            return Err(StorageError::Data("failure must contain an error".into()));
+        }
+        self.with_conn(|conn| {
+            let tx=conn.transaction()?;
+            let source=Self::current_subscription(&tx,profile_id,expected)?;
+            tx.execute("UPDATE subscription_source SET last_attempt_at=?3,last_error=?4 WHERE profile_id=?1 AND id=?2",
+                params![profile_id,source.id,summary.at_unix_ms,summary.errors.first()])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Transitional single-source adapter. Never guess a target in a multi-source profile.
+    pub fn legacy_subscription(
+        &self,
+        profile_id: &str,
+    ) -> Result<SubscriptionSource, StorageError> {
+        self.with_conn(|conn| Self::single_subscription(conn, profile_id))
+    }
+
+    fn single_subscription(
+        conn: &Connection,
+        profile_id: &str,
+    ) -> Result<SubscriptionSource, StorageError> {
+        let mut sources = Self::read_subscriptions(conn, profile_id)?;
+        if sources.len() != 1 {
+            return Err(StorageError::Data(
+                "legacy subscription adapter requires exactly one source".into(),
+            ));
+        }
+        Ok(sources.remove(0))
+    }
+
+    fn adapt_subscription_settings(
+        tx: &Transaction<'_>,
+        meta: &ProfileMeta,
+    ) -> Result<(), StorageError> {
+        let sources = Self::read_subscriptions(tx, &meta.id)?;
+        if sources.len() > 1 {
+            return Err(StorageError::Data(
+                "legacy subscription adapter cannot update multiple sources".into(),
+            ));
+        }
+        let Some(url) = meta
+            .subscription_url
+            .as_ref()
+            .filter(|s| !s.trim().is_empty())
+        else {
+            if !sources.is_empty() {
+                return Err(StorageError::Data(
+                    "clear subscription through explicit source deletion".into(),
+                ));
+            }
+            return Ok(());
+        };
+        let auto_update = sources
+            .first()
+            .filter(|s| meta.skip_auto_update == (!s.settings.auto_update || !s.settings.enabled))
+            .map(|s| s.settings.auto_update)
+            .unwrap_or(!meta.skip_auto_update);
+        let settings = SubscriptionSettings {
+            name: sources
+                .first()
+                .map(|s| s.settings.name.clone())
+                .unwrap_or_else(|| meta.name.clone()),
+            url: url.clone(),
+            enabled: sources.first().is_none_or(|s| s.settings.enabled),
+            auto_update,
+            update_interval_hours: meta.update_interval_hours,
+        };
+        settings.validate().map_err(StorageError::Data)?;
+        if let Some(old) = sources.first() {
+            if old.settings != settings {
+                tx.execute("UPDATE subscription_source SET name=?3,url=?4,enabled=?5,auto_update=?6,update_interval_hours=?7,generation=generation+1 WHERE profile_id=?1 AND id=?2",
+                    params![meta.id,old.id,settings.name,settings.url,settings.enabled,settings.auto_update,settings.update_interval_hours])?;
+            }
+        } else {
+            Self::insert_subscription(
+                tx,
+                &meta.id,
+                &SubscriptionSource {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    settings,
+                    generation: 0,
+                    position: 0,
+                    provider_title: None,
+                    suggested_interval_hours: None,
+                    userinfo: None,
+                    last_attempt_at: None,
+                    last_success_at: None,
+                    last_error: None,
+                    last_sync_summary: None,
+                    unread_summary: false,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn list_subscriptions(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<SubscriptionSource>, StorageError> {
+        self.with_conn(|conn| Self::read_subscriptions(conn, profile_id))
+    }
+
+    pub fn config_revision(&self, profile_id: &str) -> Result<u64, StorageError> {
+        self.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT config_revision FROM profile WHERE id=?1",
+                [profile_id],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    pub fn profile_snapshot(&self, profile_id: &str) -> Result<(ZeytunCore, u64), StorageError> {
+        self.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            let mut profile = self
+                .read_profile_raw(&tx, profile_id)?
+                .ok_or_else(|| StorageError::Data("profile not found".into()))?;
+            let revision = tx.query_row(
+                "SELECT config_revision FROM profile WHERE id=?1",
+                [profile_id],
+                |r| r.get(0),
+            )?;
+            profile.normalize_policy_graph();
+            tx.commit()?;
+            Ok((profile, revision))
+        })
+    }
+
+    fn read_subscriptions(
+        conn: &Connection,
+        profile_id: &str,
+    ) -> Result<Vec<SubscriptionSource>, StorageError> {
+        let mut stmt = conn.prepare("SELECT id,name,url,enabled,auto_update,update_interval_hours,generation,position,
+            provider_title,suggested_interval_hours,userinfo_json,last_attempt_at,last_success_at,last_error,last_sync_summary_json,unread_summary
+            FROM subscription_source WHERE profile_id=?1 ORDER BY position,id")?;
+        let rows = stmt.query_map([profile_id], |r| {
+            Ok((
+                SubscriptionSource {
+                    id: r.get(0)?,
+                    settings: SubscriptionSettings {
+                        name: r.get(1)?,
+                        url: r.get(2)?,
+                        enabled: r.get(3)?,
+                        auto_update: r.get(4)?,
+                        update_interval_hours: r.get(5)?,
+                    },
+                    generation: r.get(6)?,
+                    position: r.get(7)?,
+                    provider_title: r.get(8)?,
+                    suggested_interval_hours: r.get(9)?,
+                    userinfo: None,
+                    last_attempt_at: r.get(11)?,
+                    last_success_at: r.get(12)?,
+                    last_error: r.get(13)?,
+                    last_sync_summary: None,
+                    unread_summary: r.get(15)?,
+                },
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<String>>(14)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (mut source, info, summary) = row?;
+            source.userinfo = info.as_deref().map(serde_json::from_str).transpose()?;
+            source.last_sync_summary = summary.as_deref().map(serde_json::from_str).transpose()?;
+            Ok(source)
+        })
+        .collect()
+    }
+
+    pub fn create_subscription(
+        &self,
+        profile_id: &str,
+        source: &SubscriptionSource,
+    ) -> Result<(), StorageError> {
+        source.settings.validate().map_err(StorageError::Data)?;
+        if source.id.trim().is_empty() {
+            return Err(StorageError::Data("source id must not be empty".into()));
+        }
+        self.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            Self::insert_subscription(&tx, profile_id, source)?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    fn insert_subscription(
+        tx: &Transaction<'_>,
+        profile_id: &str,
+        s: &SubscriptionSource,
+    ) -> Result<(), StorageError> {
+        tx.execute("INSERT INTO subscription_source(profile_id,id,name,url,enabled,auto_update,update_interval_hours,generation,position,
+            provider_title,suggested_interval_hours,userinfo_json,last_attempt_at,last_success_at,last_error,last_sync_summary_json,unread_summary)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            params![profile_id,s.id,s.settings.name,s.settings.url,s.settings.enabled,s.settings.auto_update,s.settings.update_interval_hours,
+                s.generation,s.position,s.provider_title,s.suggested_interval_hours,s.userinfo.as_ref().map(serde_json::to_string).transpose()?,
+                s.last_attempt_at,s.last_success_at,s.last_error,s.last_sync_summary.as_ref().map(serde_json::to_string).transpose()?,s.unread_summary])?;
+        Ok(())
+    }
+
+    pub fn update_subscription(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+        settings: &SubscriptionSettings,
+    ) -> Result<(), StorageError> {
+        settings.validate().map_err(StorageError::Data)?;
+        self.with_conn(|conn| {
+            let tx=conn.transaction()?;
+            let old=Self::read_subscriptions(&tx,profile_id)?.into_iter().find(|s|s.id==source_id)
+                .ok_or_else(||StorageError::Data("subscription source not found".into()))?;
+            if old.settings != *settings {
+                tx.execute("UPDATE subscription_source SET name=?3,url=?4,enabled=?5,auto_update=?6,update_interval_hours=?7,generation=generation+1 WHERE profile_id=?1 AND id=?2",
+                    params![profile_id,source_id,settings.name,settings.url,settings.enabled,settings.auto_update,settings.update_interval_hours])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub fn mark_subscription_summary_read(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+    ) -> Result<(), StorageError> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE subscription_source SET unread_summary = 0 WHERE profile_id = ?1 AND id = ?2",
+                rusqlite::params![profile_id, source_id],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             conn: Mutex::new(None),
+            delete_previews: Mutex::new(HashMap::new()),
         }
     }
 
@@ -219,6 +687,18 @@ impl Db {
         conn: &Connection,
         id: &str,
     ) -> Result<Option<ZeytunCore>, StorageError> {
+        let mut profile = self.read_profile_raw(conn, id)?;
+        if let Some(profile) = profile.as_mut() {
+            profile.normalize_policy_graph();
+        }
+        Ok(profile)
+    }
+
+    fn read_profile_raw(
+        &self,
+        conn: &Connection,
+        id: &str,
+    ) -> Result<Option<ZeytunCore>, StorageError> {
         let row = conn
             .query_row(
                 "SELECT version, outbound_mode
@@ -233,7 +713,7 @@ impl Db {
             return Ok(None);
         };
 
-        let mut profile = ZeytunCore {
+        let profile = ZeytunCore {
             id: id.to_string(),
             version,
             outbound_mode: enum_from_string(outbound_mode)?,
@@ -248,8 +728,6 @@ impl Db {
             session_rules: Vec::new(),
         };
 
-        profile.normalize_policy_graph();
-
         Ok(Some(profile))
     }
 
@@ -257,7 +735,7 @@ impl Db {
         let row = conn
             .query_row(
                 "SELECT mode, listen, socks_port, http_port, mixed_port, tun_name, tun_mtu, tun_auto_route, system_proxy,
-                        connection_ask_enabled, connection_ask_timeout_ms, connection_ask_group_by, connection_ask_remember_default
+                        connection_ask_enabled, connection_ask_timeout_ms, connection_ask_group_by, connection_ask_remember_default, log_level
                  FROM local_proxy_config
                  LIMIT 1",
                 params![],
@@ -276,6 +754,7 @@ impl Db {
                         row.get::<_, u32>(10).unwrap_or(60_000),
                         row.get::<_, String>(11).unwrap_or_else(|_| "process".to_string()),
                         row.get::<_, bool>(12).unwrap_or(true),
+                        row.get::<_, Option<String>>(13)?,
                     ))
                 },
             )
@@ -295,6 +774,7 @@ impl Db {
             ask_timeout,
             ask_group,
             ask_remember,
+            log_level,
         )) = row
         else {
             return Ok(ZeytunCore::default().local_proxy);
@@ -322,7 +802,7 @@ impl Db {
             tun_mtu,
             tun_auto_route,
             system_proxy,
-            log_level: None,
+            log_level,
             connection_ask,
         })
     }
@@ -539,7 +1019,7 @@ impl Db {
         profile_id: &str,
     ) -> Result<Vec<Proxy>, StorageError> {
         let mut stmt = conn.prepare(
-            "SELECT tag, origin, title, protocol, link, enabled, transport, config_json
+            "SELECT tag, origin, title, protocol, link, enabled, transport, config_json, source_id, available
                  FROM proxy
                  WHERE profile_id = ?1
                  ORDER BY position ASC",
@@ -555,13 +1035,28 @@ impl Db {
                     row.get::<_, bool>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, bool>(9)?,
                 ))
             })?
             .map(|result| {
-                let (tag, origin, title, protocol, link, enabled, transport, config_json) = result?;
+                let (
+                    tag,
+                    origin,
+                    title,
+                    protocol,
+                    link,
+                    enabled,
+                    transport,
+                    config_json,
+                    source_id,
+                    available,
+                ) = result?;
                 Ok(Proxy {
                     tag,
-                    origin: enum_from_string(origin).unwrap_or(ProxyOrigin::Manual),
+                    origin: enum_from_string(origin)?,
+                    source_id,
+                    available,
                     title,
                     protocol,
                     link,
@@ -668,6 +1163,7 @@ impl Db {
         } else {
             profile.id.as_str()
         };
+        let before = self.read_profile_raw(tx, id)?.map(|p| runtime_intent(&p));
         self.clear_profile(tx, id)?;
 
         // Ensure the registry row exists, then update the routing-owned fields
@@ -683,14 +1179,20 @@ impl Db {
             params![id, enum_to_string(&profile.outbound_mode)?, profile.version],
         )?;
 
-        // local_proxy_config is global (shared inbound settings), not scoped.
-        self.write_local_proxy(tx, &profile.local_proxy)?;
         self.write_dns(tx, id, profile.dns.as_ref())?;
         self.write_rule_sets(tx, id, profile.rule_sets.as_deref().unwrap_or(&[]))?;
         self.write_policies(tx, id, &profile.policies)?;
         self.write_proxies(tx, id, &profile.proxies)?;
         self.write_rules(tx, id, &profile.rules)?;
         self.write_temp_rules(tx, id, &profile.temp_rules)?;
+
+        let after = self.read_profile_raw(tx, id)?.map(|p| runtime_intent(&p));
+        if before != after {
+            tx.execute(
+                "UPDATE profile SET config_revision=config_revision+1 WHERE id=?1",
+                [id],
+            )?;
+        }
 
         Ok(())
     }
@@ -736,8 +1238,8 @@ impl Db {
         tx.execute(
             "INSERT INTO local_proxy_config (
                mode, listen, socks_port, http_port, mixed_port, tun_name, tun_mtu, tun_auto_route, system_proxy,
-               connection_ask_enabled, connection_ask_timeout_ms, connection_ask_group_by, connection_ask_remember_default
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+               connection_ask_enabled, connection_ask_timeout_ms, connection_ask_group_by, connection_ask_remember_default, log_level
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 optional_enum_to_string(local_proxy.mode.as_ref())?,
                 local_proxy.listen,
@@ -752,6 +1254,7 @@ impl Db {
                 ask_timeout,
                 ask_group,
                 ask_remember,
+                local_proxy.log_level,
             ],
         )?;
         Ok(())
@@ -904,8 +1407,8 @@ impl Db {
         for (position, proxy) in proxies.iter().enumerate() {
             tx.execute(
                 "INSERT INTO proxy (
-                   profile_id, tag, origin, title, protocol, link, enabled, transport, config_json, position
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                   profile_id, tag, origin, title, protocol, link, enabled, transport, config_json, position, source_id, available
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     profile_id,
                     proxy.tag,
@@ -917,6 +1420,8 @@ impl Db {
                     proxy.transport,
                     optional_json_to_string(proxy.config.as_ref())?,
                     position as i64,
+                    proxy.source_id,
+                    proxy.available,
                 ],
             )
             ?;
@@ -1186,43 +1691,49 @@ impl Storage for Db {
     fn list_profiles(&self) -> Result<Vec<ProfileMeta>, StorageError> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, subscription_url, last_updated_unix_ms, is_active,
-                        last_sync_summary, unread_summary, skip_auto_update,
-                        update_interval_hours, sub_upload, sub_download, sub_total, sub_expire,
-                        icon
+                "SELECT id, name, is_active, icon
                  FROM profile
                  ORDER BY position ASC, name ASC",
             )?;
             let rows = stmt
                 .query_map(params![], |row| {
-                    Ok((
-                        ProfileMeta {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            subscription_url: row.get(2)?,
-                            last_updated_unix_ms: row.get(3)?,
-                            is_active: row.get(4)?,
-                            last_sync_summary: None, // filled below (needs JSON parse)
-                            unread_summary: row.get(6)?,
-                            skip_auto_update: row.get(7)?,
-                            update_interval_hours: row.get(8)?,
-                            sub_upload: row.get(9)?,
-                            sub_download: row.get(10)?,
-                            sub_total: row.get(11)?,
-                            sub_expire: row.get(12)?,
-                            icon: row.get(13)?,
-                        },
-                        row.get::<_, Option<String>>(5)?,
-                    ))
+                    Ok((ProfileMeta {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        subscription_url: None,
+                        last_updated_unix_ms: None,
+                        is_active: row.get(2)?,
+                        last_sync_summary: None,
+                        unread_summary: false,
+                        skip_auto_update: true,
+                        update_interval_hours: 12,
+                        sub_upload: None,
+                        sub_download: None,
+                        sub_total: None,
+                        sub_expire: None,
+                        icon: row.get(3)?,
+                    },))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
 
             rows.into_iter()
-                .map(|(mut meta, summary_json)| {
-                    meta.last_sync_summary = match summary_json {
-                        Some(s) => Some(serde_json::from_str(&s)?),
-                        None => None,
-                    };
+                .map(|(mut meta,)| {
+                    let sources = Self::read_subscriptions(conn, &meta.id)?;
+                    if sources.len() == 1 {
+                        let s = &sources[0];
+                        meta.subscription_url = Some(s.settings.url.clone());
+                        meta.last_updated_unix_ms = s.last_success_at;
+                        meta.last_sync_summary = s.last_sync_summary.clone();
+                        meta.unread_summary = s.unread_summary;
+                        meta.skip_auto_update = !s.settings.auto_update || !s.settings.enabled;
+                        meta.update_interval_hours = s.settings.update_interval_hours;
+                        if let Some(info) = s.userinfo {
+                            meta.sub_upload = Some(info.upload);
+                            meta.sub_download = Some(info.download);
+                            meta.sub_total = Some(info.total);
+                            meta.sub_expire = Some(info.expire);
+                        }
+                    }
                     Ok(meta)
                 })
                 .collect::<Result<Vec<_>, StorageError>>()
@@ -1251,6 +1762,7 @@ impl Storage for Db {
         // No such profile row yet — seed a default bundle under this id.
         let profile = ZeytunCore {
             id: id.to_string(),
+            local_proxy: self.with_conn(|conn| self.read_local_proxy(conn))?,
             ..ZeytunCore::default()
         };
         self.save_profile(&profile)?;
@@ -1261,6 +1773,35 @@ impl Storage for Db {
         self.with_conn(|conn| {
             let tx = conn.transaction()?;
             self.write_profile(&tx, profile)?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    fn save_local_proxy(&self, config: &LocalProxyConfig) -> Result<(), StorageError> {
+        self.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            let ids = tx
+                .prepare("SELECT id FROM profile")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let before = ids
+                .iter()
+                .map(|id| {
+                    self.read_profile_raw(&tx, id)
+                        .map(|p| p.map(|p| runtime_intent(&p)))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            self.write_local_proxy(&tx, config)?;
+            for (id, before) in ids.iter().zip(before) {
+                let after = self.read_profile_raw(&tx, id)?.map(|p| runtime_intent(&p));
+                if before != after {
+                    tx.execute(
+                        "UPDATE profile SET config_revision=config_revision+1 WHERE id=?1",
+                        [id],
+                    )?;
+                }
+            }
             tx.commit()?;
             Ok(())
         })
@@ -1277,22 +1818,11 @@ impl Storage for Db {
                 )
                 .unwrap_or(0);
             tx.execute(
-                "INSERT INTO profile (id, name, subscription_url, last_updated_unix_ms,
-                                      is_active, outbound_mode, version, unread_summary,
-                                      skip_auto_update, update_interval_hours, position, icon)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'rule', '0.0.1', 0, ?6, ?7, ?8, ?9)",
-                params![
-                    meta.id,
-                    meta.name,
-                    meta.subscription_url,
-                    meta.last_updated_unix_ms,
-                    meta.is_active,
-                    meta.skip_auto_update,
-                    meta.update_interval_hours,
-                    next_pos,
-                    meta.icon,
-                ],
+                "INSERT INTO profile (id, name, is_active, outbound_mode, version, position, icon)
+                 VALUES (?1, ?2, ?3, 'rule', '0.0.1', ?4, ?5)",
+                params![meta.id, meta.name, meta.is_active, next_pos, meta.icon,],
             )?;
+            Self::adapt_subscription_settings(&tx, meta)?;
             tx.commit()?;
             Ok(())
         })
@@ -1300,21 +1830,15 @@ impl Storage for Db {
 
     fn update_profile_meta(&self, meta: &ProfileMeta) -> Result<(), StorageError> {
         self.with_conn(|conn| {
-            conn.execute(
+            let tx = conn.transaction()?;
+            tx.execute(
                 "UPDATE profile
-                 SET name = ?2, subscription_url = ?3, last_updated_unix_ms = ?4,
-                     skip_auto_update = ?5, update_interval_hours = ?6, icon = ?7
+                 SET name = ?2, icon = ?3
                  WHERE id = ?1",
-                params![
-                    meta.id,
-                    meta.name,
-                    meta.subscription_url,
-                    meta.last_updated_unix_ms,
-                    meta.skip_auto_update,
-                    meta.update_interval_hours,
-                    meta.icon,
-                ],
+                params![meta.id, meta.name, meta.icon,],
             )?;
+            Self::adapt_subscription_settings(&tx, meta)?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -1368,13 +1892,17 @@ impl Storage for Db {
         summary: &SyncSummary,
         unread: bool,
     ) -> Result<(), StorageError> {
+        if !summary.errors.is_empty() {
+            return self.record_subscription_failure(id, &self.legacy_subscription(id)?, summary);
+        }
         let json = serde_json::to_string(summary)?;
         self.with_conn(|conn| {
+            let source=Self::single_subscription(conn,id)?;
             conn.execute(
-                "UPDATE profile
-                 SET last_sync_summary = ?2, unread_summary = ?3, last_updated_unix_ms = ?4
-                 WHERE id = ?1",
-                params![id, json, unread, summary.at_unix_ms],
+                "UPDATE subscription_source SET last_sync_summary_json=?3,unread_summary=?4,last_attempt_at=?5,
+                    last_success_at=CASE WHEN ?6 THEN ?5 ELSE last_success_at END,last_error=?7
+                 WHERE profile_id=?1 AND id=?2",
+                params![id,source.id,json,unread,summary.at_unix_ms,summary.errors.is_empty(),summary.errors.first()],
             )?;
             Ok(())
         })
@@ -1382,9 +1910,10 @@ impl Storage for Db {
 
     fn mark_summary_read(&self, id: &str) -> Result<(), StorageError> {
         self.with_conn(|conn| {
+            let source = Self::single_subscription(conn, id)?;
             conn.execute(
-                "UPDATE profile SET unread_summary = 0 WHERE id = ?1",
-                params![id],
+                "UPDATE subscription_source SET unread_summary = 0 WHERE profile_id = ?1 AND id=?2",
+                params![id, source.id],
             )?;
             Ok(())
         })
@@ -1397,20 +1926,21 @@ impl Storage for Db {
         update_interval_hours: Option<u32>,
     ) -> Result<(), StorageError> {
         self.with_conn(|conn| {
+            let tx=conn.transaction()?;
+            let source=Self::single_subscription(&tx,id)?;
             if let Some(u) = userinfo {
-                conn.execute(
-                    "UPDATE profile
-                     SET sub_upload = ?2, sub_download = ?3, sub_total = ?4, sub_expire = ?5
-                     WHERE id = ?1",
-                    params![id, u.upload, u.download, u.total, u.expire],
+                tx.execute(
+                    "UPDATE subscription_source SET userinfo_json=?3 WHERE profile_id=?1 AND id=?2",
+                    params![id,source.id,serde_json::to_string(&u)?],
                 )?;
             }
             if let Some(hours) = update_interval_hours {
-                conn.execute(
-                    "UPDATE profile SET update_interval_hours = ?2 WHERE id = ?1",
-                    params![id, hours],
+                tx.execute(
+                    "UPDATE subscription_source SET suggested_interval_hours=?3 WHERE profile_id=?1 AND id=?2",
+                    params![id,source.id,hours],
                 )?;
             }
+            tx.commit()?;
             Ok(())
         })
     }
@@ -1505,7 +2035,7 @@ fn unix_millis() -> i64 {
 }
 
 #[cfg(test)]
-use crate::core::dto::ProxyPolicyType;
+use crate::core::dto::{ProxyOrigin, ProxyPolicyType};
 
 #[cfg(test)]
 mod tests {
@@ -1646,12 +2176,19 @@ fn proxies_roundtrip_through_fresh_connection() {
     // consumes; losing it means a saved proxy has no server config.
     let test_dir = std::env::temp_dir().join(format!("castle-proxy-rt-{}", uuid::Uuid::new_v4()));
     let db = Db::new(test_dir.join("zeytun.db"));
+    db.load_profile(DEFAULT_PROFILE_ID)
+        .expect("seed owner profile");
+    let source:SubscriptionSource=serde_json::from_value(serde_json::json!({"id":"a","settings":{"name":"A","url":"https://example.test/private","enabled":true,"auto_update":true,"update_interval_hours":12},"generation":0,"position":0})).unwrap();
+    db.create_subscription(DEFAULT_PROFILE_ID, &source)
+        .expect("create subscription owner");
 
     let profile = ZeytunCore {
         proxies: vec![
             Proxy {
                 tag: "p1".into(),
                 origin: ProxyOrigin::Manual,
+                source_id: None,
+                available: true,
                 title: "My VLESS".into(),
                 protocol: "vless".into(),
                 link: "vless://uuid@host:443".into(),
@@ -1666,6 +2203,8 @@ fn proxies_roundtrip_through_fresh_connection() {
             Proxy {
                 tag: "p2".into(),
                 origin: ProxyOrigin::Subscription,
+                source_id: Some("a".into()),
+                available: true,
                 title: "Sub SS".into(),
                 protocol: "shadowsocks".into(),
                 link: "ss://...".into(),
@@ -1712,6 +2251,8 @@ fn policies_roundtrip_members_weights_and_strategy() {
     let mk_proxy = |tag: &str| Proxy {
         tag: tag.to_string(),
         origin: ProxyOrigin::Manual,
+        source_id: None,
+        available: true,
         title: format!("{tag} node"),
         protocol: "socks".to_string(),
         link: format!("socks5://{tag}.example:1080"),
@@ -1770,7 +2311,7 @@ fn sync_summary_roundtrips_and_mark_read_clears_only_the_flag() {
     let meta = ProfileMeta {
         id: "summary-prof".to_string(),
         name: "Summary Test".to_string(),
-        subscription_url: None,
+        subscription_url: Some("https://example.test/private".into()),
         last_updated_unix_ms: None,
         is_active: false,
         last_sync_summary: None,
@@ -1792,7 +2333,8 @@ fn sync_summary_roundtrips_and_mark_read_clears_only_the_flag() {
         proxies_kept: 5,
         rules_orphaned: 2,
         at_unix_ms: 1_700_000_000_000,
-        errors: vec!["bad link".to_string()],
+        errors: vec![],
+        effective_fallbacks: vec![],
     };
     db.save_sync_summary("summary-prof", &summary, true)
         .expect("save summary");
@@ -1811,7 +2353,7 @@ fn sync_summary_roundtrips_and_mark_read_clears_only_the_flag() {
     assert_eq!(s.proxies_kept, 5);
     assert_eq!(s.rules_orphaned, 2);
     assert_eq!(s.at_unix_ms, 1_700_000_000_000);
-    assert_eq!(s.errors, vec!["bad link"]);
+    assert!(s.errors.is_empty());
     assert!(loaded.unread_summary, "the unread flag is its own column");
 
     // mark_summary_read clears the flag but keeps the body, so the user can

@@ -60,16 +60,28 @@ impl Event {
 /// core manager (producer) and the `core_event_list` command (reader). Each
 /// recorded event is pushed onto the ring buffer *and* emitted to the frontend.
 pub struct EventBus {
-    app: AppHandle,
+    app: Option<AppHandle>,
     buffer: Mutex<VecDeque<Event>>,
 }
 
 impl EventBus {
     pub fn new(app: AppHandle) -> Self {
         Self {
-            app,
+            app: Some(app),
             buffer: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
         }
+    }
+
+    /// In-memory sink for isolated backend fixtures, with no desktop side effects.
+    pub fn headless() -> Self {
+        Self {
+            app: None,
+            buffer: Mutex::new(VecDeque::with_capacity(MAX_EVENTS)),
+        }
+    }
+
+    pub fn is_headless(&self) -> bool {
+        self.app.is_none()
     }
 
     /// Record and broadcast an event.
@@ -89,7 +101,9 @@ impl EventBus {
         }
 
         // Best-effort: a missing/closed webview must never break the core path.
-        let _ = self.app.emit(EVENT_CHANNEL, &event);
+        if let Some(app) = &self.app {
+            let _ = app.emit(EVENT_CHANNEL, &event);
+        }
     }
 
     pub fn info(&self, title: impl Into<String>, message: impl Into<String>) {

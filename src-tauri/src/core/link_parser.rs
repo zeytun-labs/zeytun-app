@@ -27,6 +27,8 @@ pub fn proxy_from_link(link: &str, origin: ProxyOrigin, tag: String) -> Result<P
         config: serde_json::to_value(&server).ok(),
         tag,
         origin,
+        source_id: None,
+        available: true,
         title: server.name,
         protocol: server.protocol.name().to_string(),
         link: link.trim().to_string(),
@@ -161,8 +163,80 @@ fn fingerprint_str(fp: &Fingerprint) -> String {
 }
 
 fn parse_proxy_server(link: &str, tag: String) -> Result<ProxyServer, String> {
-    let node = parse_share_proxy(link.trim()).map_err(|e| e.to_string())?;
+    let link = link.trim();
+    validate_raw_link(link)?;
+    let node = parse_share_proxy(link).map_err(|_| "invalid proxy link".to_string())?;
+    if node.address.trim().is_empty() {
+        return Err("proxy address is required".into());
+    }
+    let credentials_present = match &node.protocol {
+        ShareProtocol::Vmess(v) => !v.uuid.trim().is_empty(),
+        ShareProtocol::Vless(v) => !v.uuid.trim().is_empty(),
+        ShareProtocol::Trojan(v) => !v.password.is_empty(),
+        ShareProtocol::Shadowsocks(v) => !v.method.trim().is_empty() && !v.password.is_empty(),
+        ShareProtocol::Hysteria2(v) => !v.password.is_empty(),
+        // TUIC's URL/default-port semantics are inherited from zeytun-config.
+        ShareProtocol::Tuic(_) | ShareProtocol::Socks(_) | ShareProtocol::Http(_) => true,
+    };
+    if !credentials_present {
+        return Err("proxy credentials are required".into());
+    }
     Ok(share_to_proxy_server(node, tag))
+}
+
+/// Inspect raw values before the pinned parser's permissive defaults erase them.
+fn validate_raw_link(link: &str) -> Result<(), String> {
+    use base64::{engine::general_purpose, Engine};
+    let decode = |raw: &str| {
+        general_purpose::STANDARD
+            .decode(raw)
+            .or_else(|_| general_purpose::STANDARD_NO_PAD.decode(raw))
+            .or_else(|_| general_purpose::URL_SAFE.decode(raw))
+            .or_else(|_| general_purpose::URL_SAFE_NO_PAD.decode(raw))
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    };
+    let (scheme, raw) = link.split_once("://").ok_or("invalid proxy link")?;
+    let raw = raw.split(['#', '?']).next().unwrap_or(raw);
+    match scheme.to_ascii_lowercase().as_str() {
+        "vmess" | "svmess" => {
+            let text = decode(raw).ok_or("invalid VMess payload")?;
+            let value: serde_json::Value =
+                serde_json::from_str(&text).map_err(|_| "invalid VMess payload")?;
+            if let Some(port) = value.get("port") {
+                let valid = port.as_u64().is_some_and(|n| n <= u16::MAX as u64)
+                    || port.as_str().is_some_and(|s| s.parse::<u16>().is_ok());
+                if !valid {
+                    return Err("invalid proxy port".into());
+                }
+            }
+        }
+        "ss" | "shadowsocks" => {
+            let decoded;
+            let endpoint = if let Some((_, endpoint)) = raw.rsplit_once('@') {
+                // Match the crate's percent-decoding before host/port splitting.
+                decoded = percent_encoding::percent_decode_str(endpoint)
+                    .decode_utf8()
+                    .map_err(|_| "invalid proxy address")?
+                    .into_owned();
+                decoded.as_str()
+            } else {
+                decoded = decode(raw).ok_or("invalid Shadowsocks payload")?;
+                decoded
+                    .rsplit_once('@')
+                    .map(|(_, endpoint)| endpoint)
+                    .ok_or("invalid proxy address")?
+            };
+            // URL parsing rejects explicit malformed/overflow ports, including IPv6.
+            let parsed = url::Url::parse(&format!("ss://{endpoint}"))
+                .map_err(|_| "invalid proxy address or port")?;
+            if parsed.host_str().is_none() {
+                return Err("proxy address is required".into());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn share_to_proxy_server(node: ShareProxy, tag: String) -> ProxyServer {

@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::{
     compiler::tag_allocator::allocate_named_tag,
     dto::{
-        Proxy, ProxyOrigin, SubUserinfo, SyncResult, SyncSummary, ZeytunCore,
-        DEFAULT_FINAL_OUTBOUND,
+        Proxy, ProxyOrigin, SubUserinfo, SubscriptionSource, SyncResult, SyncSummary, ZeytunCore,
+        DEFAULT_SELECTOR_POLICY_TAG,
     },
     link_parser,
     models::proxy::ProxyServer,
@@ -20,7 +20,208 @@ pub struct SubHeaders {
 
 pub struct SubscriptionManager;
 
+pub const MAX_SUBSCRIPTION_BODY_BYTES: usize = 10 * 1024 * 1024;
+
+/// No raw URLs, titles, tokens or parser errors cross this boundary.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[error("subscription rejected: {kind}; {invalid_count} invalid candidate(s), lines {lines:?}")]
+pub struct SubscriptionParseError {
+    pub kind: &'static str,
+    pub invalid_count: usize,
+    pub lines: Vec<usize>,
+}
+
+pub struct StagedSubscription {
+    nodes: Vec<Proxy>,
+    headers: SubHeaders,
+}
+
 impl SubscriptionManager {
+    pub(crate) fn deletion_dependencies(
+        profile: &ZeytunCore,
+        source_id: &str,
+    ) -> Vec<crate::core::dto::SubscriptionDependency> {
+        use crate::core::dto::{
+            RuleType, SubscriptionDependency, SubscriptionDependencyKind as Kind,
+        };
+        let tags = profile
+            .proxies
+            .iter()
+            .filter(|p| p.source_id.as_deref() == Some(source_id))
+            .map(|p| p.tag.as_str())
+            .collect::<HashSet<_>>();
+        let mut refs = Vec::new();
+        let mut add = |kind, owner: String, target: &str| {
+            if tags.contains(target) {
+                refs.push(SubscriptionDependency {
+                    kind,
+                    owner,
+                    proxy_tag: target.into(),
+                });
+            }
+        };
+        for policy in &profile.policies {
+            // Synthetic root membership is registry-derived, not authored intent.
+            if policy.tag != DEFAULT_SELECTOR_POLICY_TAG {
+                for tag in policy.members.iter().flatten() {
+                    add(Kind::PolicyMember, policy.tag.clone(), tag);
+                }
+            }
+            if let Some(tag) = &policy.selected_member_tag {
+                add(Kind::PolicySelection, policy.tag.clone(), tag);
+            }
+        }
+        for proxy in &profile.proxies {
+            if let Some(config) = &proxy.config {
+                let mut detours = HashSet::new();
+                Self::config_references(config, &mut detours);
+                let chains = config
+                    .get("proxies")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .collect::<HashSet<_>>();
+                let mut sorted = detours.into_iter().collect::<Vec<_>>();
+                sorted.sort();
+                for tag in sorted {
+                    add(
+                        if chains.contains(tag.as_str()) {
+                            Kind::ProxyChain
+                        } else {
+                            Kind::ProxyDetour
+                        },
+                        proxy.tag.clone(),
+                        &tag,
+                    );
+                }
+            }
+        }
+        for rule in &profile.rules {
+            add(
+                if matches!(rule.kind, RuleType::Final) {
+                    Kind::Final
+                } else {
+                    Kind::Route
+                },
+                rule.id.to_string(),
+                &rule.outbound,
+            );
+        }
+        for rule in &profile.temp_rules {
+            add(Kind::TempRule, rule.id.to_string(), &rule.outbound);
+        }
+        for rule in &profile.session_rules {
+            add(Kind::SessionRule, rule.id.to_string(), &rule.outbound);
+        }
+        for server in profile
+            .dns
+            .iter()
+            .flat_map(|dns| dns.servers.iter().flatten())
+        {
+            if let Some(tag) = &server.detour {
+                add(Kind::DnsDetour, server.tag.clone(), tag);
+            }
+        }
+        for rs in profile.rule_sets.iter().flatten() {
+            add(Kind::RulesetAction, rs.tag.clone(), &rs.action);
+            if let Some(tag) = &rs.download_policy {
+                add(Kind::RulesetDownloadPolicy, rs.tag.clone(), tag);
+            }
+        }
+        refs
+    }
+
+    pub(crate) fn runtime_changed(before: &ZeytunCore, after: &ZeytunCore) -> bool {
+        let runtime = |p: &ZeytunCore| {
+            p.proxies
+                .iter()
+                .map(|n| {
+                    (
+                        n.tag.clone(),
+                        (n.enabled, n.available, Self::proxy_stable_key(n)),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        };
+        runtime(before) != runtime(after)
+    }
+    /// Grammar: one supported share link per line, blank lines and lines
+    /// beginning with '#' are comments. Everything else rejects the snapshot.
+    pub fn stage(
+        raw: &str,
+        headers: SubHeaders,
+    ) -> Result<StagedSubscription, SubscriptionParseError> {
+        let error = |kind, invalid_count, lines| SubscriptionParseError {
+            kind,
+            invalid_count,
+            lines,
+        };
+        if raw.len() > MAX_SUBSCRIPTION_BODY_BYTES {
+            return Err(error("body too large", 0, vec![]));
+        }
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(error("empty body", 0, vec![]));
+        }
+        let decoded = Self::try_decode_base64(trimmed).ok();
+        let text = decoded.as_deref().unwrap_or(trimmed);
+        if text.trim_start().starts_with(['<', '{', '['])
+            || text.trim_start().starts_with("proxies:")
+        {
+            return Err(error(
+                "unsupported format (plain/base64 share links required)",
+                0,
+                vec![],
+            ));
+        }
+        let mut nodes = Vec::new();
+        let mut invalid_count = 0;
+        let mut lines = Vec::new();
+        for (index, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match link_parser::proxy_from_link(line, ProxyOrigin::Subscription, "staged".into()) {
+                Ok(node) => nodes.push(node),
+                Err(_) => {
+                    invalid_count += 1;
+                    if lines.len() < 3 {
+                        lines.push(index + 1);
+                    }
+                }
+            }
+        }
+        if invalid_count > 0 {
+            return Err(error(
+                "invalid or unsupported share link",
+                invalid_count,
+                lines,
+            ));
+        }
+        if nodes.is_empty() {
+            return Err(error("zero valid nodes", 0, vec![]));
+        }
+        Ok(StagedSubscription { nodes, headers })
+    }
+
+    pub(crate) fn failed_result(error: String) -> SyncResult {
+        SyncResult {
+            summary: SyncSummary {
+                proxies_added: 0,
+                proxies_removed: 0,
+                proxies_kept: 0,
+                rules_orphaned: 0,
+                at_unix_ms: crate::core::constants::unix_millis(),
+                errors: vec![error],
+                effective_fallbacks: Vec::new(),
+            },
+            userinfo: None,
+            update_interval_hours: None,
+            profile_title: None,
+        }
+    }
     /// Fetch a subscription URL and reconcile it into the profile's proxy list.
     /// Only `Subscription`-origin proxies are pruned/replaced; manual proxies
     /// survive. Rules pointing at a pruned proxy are silently repointed to the
@@ -42,6 +243,7 @@ impl SubscriptionManager {
                         rules_orphaned: 0,
                         at_unix_ms: crate::core::constants::unix_millis(),
                         errors: vec![format!("fetch failed: {e}")],
+                        effective_fallbacks: Vec::new(),
                     },
                     userinfo: None,
                     update_interval_hours: None,
@@ -54,137 +256,326 @@ impl SubscriptionManager {
     }
 
     pub fn apply_update(profile: &mut ZeytunCore, raw: &str, headers: SubHeaders) -> SyncResult {
-        let parsed = Self::parse_proxy_links(raw);
-        if parsed.is_empty() {
-            return SyncResult {
-                summary: SyncSummary {
-                    proxies_added: 0,
-                    proxies_removed: 0,
-                    proxies_kept: 0,
-                    rules_orphaned: 0,
-                    at_unix_ms: crate::core::constants::unix_millis(),
-                    errors: vec!["no proxy links found in subscription response".to_string()],
-                },
-                // Headers are still useful even when the body has no links.
-                userinfo: headers.userinfo,
-                update_interval_hours: headers.update_interval_hours,
-                profile_title: headers.profile_title,
-            };
-        }
-
-        let link_normalized: Vec<String> =
-            parsed.iter().map(|link| link.trim().to_string()).collect();
-
-        // Diff on a STABLE key derived from the parsed connection params (tag and
-        // display name stripped), not the raw link. Subscription servers often
-        // reorder query params or change the `#remark` between fetches while the
-        // proxy is functionally identical — keying on the raw link then falsely
-        // reports "1 added / 1 removed" for an unchanged proxy.
-        let existing_keys: HashSet<String> = profile
+        let staged = match Self::stage(raw, headers) {
+            Ok(staged) => staged,
+            Err(error) => return Self::failed_result(error.to_string()),
+        };
+        // Transitional pure adapter: an empty or multi-source registry cannot
+        // identify its owner. Production callers pass the source explicitly.
+        let ids = profile
             .proxies
             .iter()
-            .filter(|proxy| proxy.origin == ProxyOrigin::Subscription)
-            .map(Self::proxy_stable_key)
-            .collect();
+            .filter_map(|p| p.source_id.clone())
+            .collect::<HashSet<_>>();
+        if ids.len() != 1 {
+            return Self::failed_result("single-source adapter requires an explicit source".into());
+        }
+        Self::reconcile_nodes(profile, ids.iter().next().expect("one source"), staged)
+            .unwrap_or_else(Self::failed_result)
+    }
 
-        let incoming_keys: HashSet<String> = link_normalized
-            .iter()
-            .filter_map(|link| Self::link_stable_key(link))
-            .collect();
+    pub fn reconcile(
+        profile: &mut ZeytunCore,
+        source: &SubscriptionSource,
+        staged: StagedSubscription,
+    ) -> Result<SyncResult, String> {
+        if !source.settings.enabled {
+            return Err("subscription updates are paused".into());
+        }
+        Self::reconcile_nodes(profile, &source.id, staged)
+    }
 
-        let mut errors = Vec::new();
+    fn reconcile_nodes(
+        profile: &mut ZeytunCore,
+        source_id: &str,
+        staged: StagedSubscription,
+    ) -> Result<SyncResult, String> {
+        let mut existing: HashMap<String, Proxy> = HashMap::new();
+        for proxy in profile.proxies.iter().filter(|p| {
+            p.origin == ProxyOrigin::Subscription && p.source_id.as_deref() == Some(source_id)
+        }) {
+            existing
+                .entry(Self::proxy_stable_key(proxy))
+                .or_insert_with(|| proxy.clone());
+        }
+        let mut used_tags = HashSet::from(["direct".into(), "block".into(), "dns-out".into()]);
+        used_tags.extend(profile.policies.iter().map(|p| p.tag.clone()));
+        used_tags.extend(profile.proxies.iter().map(|p| p.tag.clone()));
+        let mut seen = HashSet::new();
+        let mut incoming = Vec::new();
         let mut proxies_added = 0;
         let mut proxies_kept = 0;
-        let mut used_tags = HashSet::from([
-            "direct".to_string(),
-            "block".to_string(),
-            "dns-out".to_string(),
-        ]);
-        used_tags.extend(profile.policies.iter().map(|policy| policy.tag.clone()));
-        used_tags.extend(profile.proxies.iter().map(|proxy| proxy.tag.clone()));
-
-        for link in &link_normalized {
-            let incoming_key = Self::link_stable_key(link);
-            if let Some(key) = &incoming_key {
-                if existing_keys.contains(key) {
-                    proxies_kept += 1;
-                    continue;
-                }
+        for mut node in staged.nodes {
+            let key = Self::proxy_stable_key(&node);
+            if !seen.insert(key.clone()) {
+                continue;
             }
-
-            let preview = match link_parser::proxy_from_link(
-                link,
-                ProxyOrigin::Subscription,
-                "proxy-preview".to_string(),
-            ) {
-                Ok(proxy) => proxy,
-                Err(e) => {
-                    errors.push(format!("failed to parse proxy from subscription: {e}"));
-                    continue;
-                }
-            };
-            let tag = allocate_named_tag("proxy", &preview.title, &mut used_tags);
-
-            match link_parser::proxy_from_link(link, ProxyOrigin::Subscription, tag) {
-                Ok(proxy) => {
-                    profile.proxies.push(proxy);
-                    proxies_added += 1;
-                }
-                Err(e) => {
-                    errors.push(format!("failed to parse proxy from subscription: {e}"));
-                }
+            if let Some(old) = existing.get(&key) {
+                node.tag = old.tag.clone();
+                node.enabled = old.enabled;
+                proxies_kept += 1;
+            } else {
+                node.tag = allocate_named_tag("proxy", &node.title, &mut used_tags);
+                proxies_added += 1;
             }
+            node.source_id = Some(source_id.into());
+            node.available = true;
+            if let Some(config) = node.config.as_mut() {
+                config["tag"] = node.tag.clone().into();
+            }
+            incoming.push(node);
         }
-
-        // Prune stale subscription proxies (present locally, gone upstream) —
-        // compared on the same stable key.
-        let stale: Vec<String> = profile
+        let referenced = Self::referenced_proxy_tags(profile);
+        let retained_tags = incoming
+            .iter()
+            .map(|n| n.tag.clone())
+            .collect::<HashSet<_>>();
+        let mut proxies_removed = 0;
+        let mut candidate = profile.clone();
+        candidate.proxies.retain_mut(|node| {
+            if node.origin != ProxyOrigin::Subscription
+                || node.source_id.as_deref() != Some(source_id)
+            {
+                return true;
+            }
+            // Existing duplicate identities may have distinct authored tags.
+            // Only the deterministic retained tag is replaced by incoming data.
+            if retained_tags.contains(&node.tag) {
+                return false;
+            }
+            if node.available {
+                proxies_removed += 1;
+            }
+            if referenced.contains(&node.tag) {
+                node.available = false;
+                true
+            } else {
+                false
+            }
+        });
+        candidate.proxies.extend(incoming);
+        // The synthetic root follows the unified registry, never a source.
+        // Do not normalize authored policies: their selection/order/weights
+        // must survive unavailability untouched.
+        let root_members = candidate
             .proxies
             .iter()
-            .filter(|proxy| {
-                proxy.origin == ProxyOrigin::Subscription
-                    && !incoming_keys.contains(&Self::proxy_stable_key(proxy))
-            })
-            .map(|proxy| proxy.tag.clone())
-            .collect();
-
-        let proxies_removed = stale.len();
-        let stale_set: HashSet<&String> = stale.iter().collect();
-
-        profile
-            .proxies
-            .retain(|proxy| !stale_set.contains(&proxy.tag));
-
-        // Clean policy member references to pruned proxies.
-        for policy in &mut profile.policies {
-            if let Some(members) = policy.members.as_mut() {
-                members.retain(|m| !stale_set.contains(m));
+            .map(|p| p.tag.clone())
+            .chain(
+                candidate
+                    .policies
+                    .iter()
+                    .filter(|p| p.tag != DEFAULT_SELECTOR_POLICY_TAG)
+                    .map(|p| p.tag.clone()),
+            )
+            .collect::<Vec<_>>();
+        if let Some(root) = candidate
+            .policies
+            .iter_mut()
+            .find(|p| p.tag == DEFAULT_SELECTOR_POLICY_TAG)
+        {
+            root.members = (!root_members.is_empty()).then_some(root_members);
+            if root.selected_member_tag.is_none() {
+                root.selected_member_tag = root
+                    .members
+                    .as_ref()
+                    .and_then(|members| members.first().cloned());
             }
         }
-
-        // Option A (silent): repoint any rule targeting a pruned proxy to the
-        // default final outbound and flag it orphaned.
-        let mut rules_orphaned = 0;
-        for rule in &mut profile.rules {
-            if stale_set.contains(&rule.outbound) {
-                rule.outbound = DEFAULT_FINAL_OUTBOUND.to_string();
-                rule.orphaned = true;
-                rules_orphaned += 1;
+        let mut effective_fallbacks = Vec::new();
+        for policy in &candidate.policies {
+            if let Some(selected) = &policy.selected_member_tag {
+                let members = policy.members.as_deref().unwrap_or(&[]);
+                let valid_members: Vec<&String> = members
+                    .iter()
+                    .filter(|m| {
+                        candidate
+                            .proxies
+                            .iter()
+                            .any(|p| &p.tag == *m && p.available)
+                            || candidate.policies.iter().any(|other| &other.tag == *m)
+                            || *m == "direct"
+                            || *m == "block"
+                    })
+                    .collect();
+                if !valid_members.contains(&selected) {
+                    if let Some(fallback) = valid_members.first() {
+                        effective_fallbacks
+                            .push(format!("{}: {} -> {}", policy.name, selected, fallback));
+                    }
+                }
             }
         }
-
-        SyncResult {
+        Self::validate_candidate(&candidate)?;
+        *profile = candidate;
+        Ok(SyncResult {
             summary: SyncSummary {
                 proxies_added,
                 proxies_removed,
                 proxies_kept,
-                rules_orphaned,
+                rules_orphaned: 0,
                 at_unix_ms: crate::core::constants::unix_millis(),
-                errors,
+                errors: Vec::new(),
+                effective_fallbacks,
             },
-            userinfo: headers.userinfo,
-            update_interval_hours: headers.update_interval_hours,
-            profile_title: headers.profile_title,
+            userinfo: staged.headers.userinfo,
+            update_interval_hours: staged.headers.update_interval_hours,
+            profile_title: staged.headers.profile_title,
+        })
+    }
+
+    pub(crate) fn validate_candidate(profile: &ZeytunCore) -> Result<(), String> {
+        let builtins = HashSet::from([
+            "direct".to_string(),
+            "block".to_string(),
+            "dns-out".to_string(),
+        ]);
+        let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
+        for policy in &profile.policies {
+            let members = policy.members.as_deref().unwrap_or(&[]);
+            if policy
+                .weights
+                .as_ref()
+                .is_some_and(|weights| weights.len() != members.len())
+            {
+                return Err("policy weights must match authored member count".into());
+            }
+            if policy
+                .selected_member_tag
+                .as_ref()
+                .is_some_and(|tag| !members.contains(tag))
+            {
+                return Err("policy selection must reference an authored member".into());
+            }
+            if builtins.contains(&policy.tag)
+                || graph
+                    .insert(policy.tag.clone(), members.iter().cloned().collect())
+                    .is_some()
+            {
+                return Err("duplicate or reserved graph tag".into());
+            }
+        }
+        for proxy in &profile.proxies {
+            let mut refs = HashSet::new();
+            if let Some(config) = &proxy.config {
+                Self::config_references(config, &mut refs);
+            }
+            if builtins.contains(&proxy.tag)
+                || proxy.tag == DEFAULT_SELECTOR_POLICY_TAG
+                || graph.insert(proxy.tag.clone(), refs).is_some()
+            {
+                return Err("duplicate or reserved graph tag".into());
+            }
+        }
+        let known = graph
+            .keys()
+            .cloned()
+            .chain(builtins)
+            .chain(["reject".into(), "hijack-dns".into(), "bypass".into()])
+            .collect::<HashSet<_>>();
+        if Self::referenced_proxy_tags(profile)
+            .iter()
+            .any(|tag| !known.contains(tag))
+            || graph.values().flatten().any(|tag| !known.contains(tag))
+        {
+            return Err("candidate graph contains an unknown target".into());
+        }
+        // Kahn's algorithm avoids recursive stack growth on large subscriptions.
+        let mut remaining = graph
+            .iter()
+            .map(|(tag, refs)| {
+                (
+                    tag.clone(),
+                    refs.iter().filter(|r| graph.contains_key(*r)).count(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (tag, refs) in &graph {
+            for reference in refs {
+                dependents.entry(reference).or_default().push(tag);
+            }
+        }
+        let mut ready = remaining
+            .iter()
+            .filter(|(_, count)| **count == 0)
+            .map(|(tag, _)| tag.clone())
+            .collect::<Vec<_>>();
+        let mut visited = 0;
+        while let Some(tag) = ready.pop() {
+            visited += 1;
+            for dependent in dependents.get(tag.as_str()).into_iter().flatten() {
+                let count = remaining.get_mut(*dependent).expect("known graph node");
+                *count -= 1;
+                if *count == 0 {
+                    ready.push((*dependent).to_string());
+                }
+            }
+        }
+        if visited != graph.len() {
+            return Err("candidate graph contains a policy/proxy dependency cycle".into());
+        }
+        Ok(())
+    }
+
+    fn referenced_proxy_tags(profile: &ZeytunCore) -> HashSet<String> {
+        let mut tags = HashSet::new();
+        for policy in &profile.policies {
+            if policy.tag != DEFAULT_SELECTOR_POLICY_TAG {
+                tags.extend(policy.members.iter().flatten().cloned());
+            }
+            tags.extend(policy.selected_member_tag.iter().cloned());
+        }
+        tags.extend(profile.rules.iter().map(|r| r.outbound.clone()));
+        tags.extend(
+            profile
+                .temp_rules
+                .iter()
+                .chain(&profile.session_rules)
+                .map(|r| r.outbound.clone()),
+        );
+        if let Some(dns) = &profile.dns {
+            tags.extend(
+                dns.servers
+                    .iter()
+                    .flatten()
+                    .filter_map(|s| s.detour.clone()),
+            );
+        }
+        for ruleset in profile.rule_sets.iter().flatten() {
+            tags.insert(ruleset.action.clone());
+            tags.extend(ruleset.download_policy.iter().cloned());
+        }
+        for proxy in &profile.proxies {
+            if let Some(config) = &proxy.config {
+                Self::config_references(config, &mut tags);
+            }
+        }
+        tags
+    }
+
+    pub(crate) fn config_references(value: &serde_json::Value, tags: &mut HashSet<String>) {
+        if let Ok(server) = serde_json::from_value::<ProxyServer>(value.clone()) {
+            Self::server_references(&server, tags);
+        }
+    }
+
+    pub(crate) fn server_references(server: &ProxyServer, tags: &mut HashSet<String>) {
+        use crate::core::models::proxy::Protocol;
+        tags.extend(server.detour.iter().cloned());
+        let transport = match &server.protocol {
+            Protocol::Chain(chain) => {
+                tags.extend(chain.proxies.iter().cloned());
+                None
+            }
+            Protocol::Vless(v) => v.transport.as_ref(),
+            Protocol::Vmess(v) => v.transport.as_ref(),
+            Protocol::Trojan(v) => v.transport.as_ref(),
+            _ => None,
+        };
+        // The shared crate owns transport/downloadSettings; header maps are opaque.
+        if let Some(download) = transport.and_then(|t| t.download.as_ref()) {
+            tags.extend(download.detour.iter().cloned());
         }
     }
 
@@ -201,26 +592,40 @@ impl SubscriptionManager {
         }
     }
 
-    /// Stable identity key for an incoming subscription link. `None` when the
-    /// link can't be parsed (handled by the caller, which treats it as new).
-    fn link_stable_key(link: &str) -> Option<String> {
-        link_parser::proxy_from_link(link, ProxyOrigin::Subscription, "k".to_string())
-            .ok()
-            .and_then(|proxy| link_parser::proxy_to_proxy_server(&proxy).ok())
-            .map(|server| Self::server_stable_key(&server))
-    }
-
     /// Canonicalize a `ProxyServer` into a diff key: clear the display-only
     /// `tag`/`name` fields, then serialize. `serde_json::Value` object keys
     /// serialize in a stable (sorted) order via BTreeMap, so param reordering in
     /// the source link does not change the key.
+    ///
+    /// For Reality TLS, servers often rotate ephemeral shortIds (`reality_sid`)
+    /// and decoy server names (`sni`) on every subscription download. We normalize
+    /// these volatile fields so upstream rotation does not churn node identity.
     fn server_stable_key(server: &ProxyServer) -> String {
         let mut normalized = server.clone();
         normalized.tag = String::new();
         normalized.name = String::new();
+        Self::normalize_tls_for_key(&mut normalized.protocol);
         match serde_json::to_value(&normalized) {
             Ok(value) => value.to_string(),
             Err(_) => format!("{}:{}", normalized.address, normalized.port),
+        }
+    }
+
+    pub(crate) fn normalize_tls_for_key(protocol: &mut crate::core::models::proxy::Protocol) {
+        use crate::core::models::proxy::Protocol;
+        let tls_opt = match protocol {
+            Protocol::Vless(p) => p.tls.as_mut(),
+            Protocol::Vmess(p) => p.tls.as_mut(),
+            Protocol::Trojan(p) => p.tls.as_mut(),
+            Protocol::Tuic(p) => Some(&mut p.tls),
+            Protocol::Hysteria2(p) => Some(&mut p.tls),
+            _ => None,
+        };
+        if let Some(tls) = tls_opt {
+            if tls.reality_pbk.is_some() {
+                tls.reality_sid = None;
+                tls.sni = None;
+            }
         }
     }
 
@@ -229,14 +634,15 @@ impl SubscriptionManager {
     /// silent fall back to direct: the user asked for a specific route and
     /// quietly ignoring it would leak the request onto the wrong path.
     pub fn fetch_url(url: &str, proxy: Option<&str>) -> Result<(String, SubHeaders), String> {
+        crate::core::dto::validate_subscription_url(url)?;
         let mut builder = ureq::AgentBuilder::new()
             // Subscription servers are often behind overloaded VPS frontends; a
             // hung fetch must not wedge the refresh path forever.
-            .timeout(std::time::Duration::from_secs(30))
-            .timeout_connect(std::time::Duration::from_secs(15));
+            .timeout(std::time::Duration::from_secs(15))
+            .timeout_connect(std::time::Duration::from_secs(8));
         if let Some(raw) = proxy {
             let parsed =
-                ureq::Proxy::new(raw).map_err(|e| format!("invalid proxy URL `{raw}`: {e}"))?;
+                ureq::Proxy::new(raw).map_err(|_| "invalid download proxy URL".to_string())?;
             builder = builder.proxy(parsed);
         }
 
@@ -245,7 +651,10 @@ impl SubscriptionManager {
             .get(url)
             .set("User-Agent", "Zeytun/0.1")
             .call()
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
+            .map_err(|e| match e {
+                ureq::Error::Status(status, _) => format!("HTTP {status}"),
+                ureq::Error::Transport(_) => "subscription HTTP transport failed".to_string(),
+            })?;
 
         let status = response.status();
         if status != 200 {
@@ -270,14 +679,14 @@ impl SubscriptionManager {
         // Cap the body while streaming: a hostile subscription URL must not be
         // able to pin memory, and ureq's `into_string()` silently truncates at
         // 10 MB (which would corrupt a subscription) — so read bounded ourselves.
-        const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+        const MAX_BODY_BYTES: usize = MAX_SUBSCRIPTION_BODY_BYTES;
         use std::io::Read;
         let mut raw = Vec::new();
         response
             .into_reader()
             .take((MAX_BODY_BYTES + 1) as u64)
             .read_to_end(&mut raw)
-            .map_err(|e| format!("failed to read response body: {e}"))?;
+            .map_err(|_| "failed to read subscription body".to_string())?;
         if raw.len() > MAX_BODY_BYTES {
             return Err(format!("subscription too large: >{MAX_BODY_BYTES} bytes"));
         }
@@ -316,40 +725,19 @@ impl SubscriptionManager {
         saw_any.then_some(info)
     }
 
-    fn parse_proxy_links(raw: &str) -> Vec<String> {
-        let trimmed = raw.trim();
-        if let Ok(decoded) = Self::try_decode_base64(trimmed) {
-            let lines: Vec<String> = decoded
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && l.contains("://"))
-                .collect();
-
-            if !lines.is_empty() {
-                return lines;
-            }
-        }
-
-        raw.lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty() && l.contains("://"))
-            .collect()
-    }
-
     fn try_decode_base64(input: &str) -> Result<String, String> {
         use base64::{engine::general_purpose, Engine as _};
 
-        let normalized = input.trim().trim_end_matches('=');
-        let padded = match normalized.len() % 4 {
-            0 => normalized.to_string(),
-            2 => format!("{normalized}=="),
-            3 => format!("{normalized}="),
-            _ => normalized.to_string(),
-        };
+        let normalized = input
+            .chars()
+            .filter(|c| !c.is_ascii_whitespace())
+            .collect::<String>();
 
         let bytes = general_purpose::STANDARD
-            .decode(&padded)
-            .or_else(|_| general_purpose::URL_SAFE.decode(&padded))
+            .decode(&normalized)
+            .or_else(|_| general_purpose::STANDARD_NO_PAD.decode(&normalized))
+            .or_else(|_| general_purpose::URL_SAFE.decode(&normalized))
+            .or_else(|_| general_purpose::URL_SAFE_NO_PAD.decode(&normalized))
             .map_err(|_| "invalid base64".to_string())?;
 
         String::from_utf8(bytes).map_err(|_| "invalid utf-8 after base64 decode".to_string())

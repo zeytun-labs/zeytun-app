@@ -44,7 +44,11 @@ class ProfileStore {
   /// True when a core restart is required for changes to take effect.
   /// Set by control-center/settings when user toggles something needing restart.
   /// Cleared when user clicks "Restart Core" in topbar.
-  pendingRestart = $state(false);
+  get pendingRestart() { return this.runtime?.pending_apply ?? false; }
+  set pendingRestart(_requested: boolean) {
+    // Existing setters request a read-back, never invent applied/saved state.
+    void this.refresh();
+  }
   networkToggle = $state<"systemProxy" | "tun" | null>(null);
 
   async toggleNetwork(
@@ -75,10 +79,9 @@ class ProfileStore {
     this.profiles.find((p) => p.is_active) ?? null,
   );
 
-  /// Does the active profile carry a subscription URL?
-  hasSubscription = $derived(
-    Boolean(this.activeProfile?.subscription_url?.trim()),
-  );
+  get activeProfileId(): string | null {
+    return this.activeProfile?.id ?? null;
+  }
 
   visiblePolicies = $derived.by(() => {
     if (!this.profile) return [];
@@ -147,14 +150,6 @@ class ProfileStore {
     await this.refresh();
   }
 
-  /// Re-fetch the profile's subscription. Foreground (background=false) returns
-  /// the summary for immediate display.
-  async refreshSubscription(id: string): Promise<SyncSummary> {
-    const summary = await coreProfileRefresh(id, false);
-    await this.refresh();
-    return summary;
-  }
-
   async markSummaryRead(id: string) {
     await coreProfileMarkSummaryRead(id);
     await this.refresh();
@@ -162,7 +157,6 @@ class ProfileStore {
 
   /// Clear the pending restart flag (called after user clicks Restart Core).
   async clearPendingRestart() {
-    this.pendingRestart = false;
     // Also refresh to get the latest core status
     await this.refresh();
   }

@@ -32,22 +32,30 @@ impl TagAllocator {
     }
 
     pub fn allocate_proxy_server_tag(&mut self, server: &ProxyServer) -> String {
-        if let Some(tag) = self.proxy_server_tags.get(&server.tag) {
+        self.allocate_proxy_tag(&server.tag, &server.name)
+    }
+
+    pub fn allocate_proxy_tag(&mut self, id: &str, name: &str) -> String {
+        if let Some(tag) = self.proxy_server_tags.get(id) {
             return tag.clone();
         }
 
-        let preferred = server.tag.trim();
+        let preferred = id.trim();
         let base = if preferred.is_empty() {
-            format!("proxy-{}", sanitize_tag(&server.name))
+            format!("proxy-{}", sanitize_tag(name))
         } else {
             preferred.to_string()
         };
         let tag = allocate_unique_tag(base, &mut self.used);
 
-        self.proxy_server_tags
-            .insert(server.tag.clone(), tag.clone());
+        self.proxy_server_tags.insert(id.to_string(), tag.clone());
 
         tag
+    }
+
+    pub fn allocate_chain_hop_tag(&mut self, chain_tag: &str, hop_tag: &str) -> String {
+        let base = format!("{}-{}", chain_tag.trim(), sanitize_tag(hop_tag));
+        allocate_unique_tag(base, &mut self.used)
     }
 
     pub fn allocate_policy_tag(&mut self, policy: &ProxyPolicy) -> String {

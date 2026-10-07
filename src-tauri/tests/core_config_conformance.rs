@@ -279,3 +279,91 @@ fn share_links_round_trip_through_the_parser() {
     }
     assert_eq!(checked, 8, "expected one round-trip per protocol");
 }
+
+#[test]
+fn core_accepts_fail_closed_references_from_real_compiler() {
+    use zeytun_lib::core::{
+        compiler::{
+            profile_converter::ProfileConverter, runtime_profile_compiler::RuntimeProfileCompiler,
+        },
+        dto::*,
+        zeytun_core_config::ZeytunCoreConfigBuilder,
+    };
+    let core = core_binary().expect("bundled core required for fail-closed conformance");
+    let mut p = ZeytunCore::default();
+    let mut proxy = proxy_from_link(
+        "socks5://user:secret@example.test:1080",
+        ProxyOrigin::Manual,
+        "missing".into(),
+    )
+    .unwrap();
+    proxy.available = false;
+    p.proxies.push(proxy);
+    let mut chain = p.proxies[0].clone();
+    chain.tag = "chain".into();
+    chain.available = true;
+    chain.protocol = "chain".into();
+    chain.config = Some(
+        serde_json::json!({"type":"chain","tag":"chain","name":"Chain","proxies":["missing"]}),
+    );
+    p.proxies.push(chain);
+    let mut detour = proxy_from_link(
+        "socks5://other.test:1080",
+        ProxyOrigin::Manual,
+        "detour".into(),
+    )
+    .unwrap();
+    detour.config.as_mut().unwrap()["detour"] = serde_json::json!("missing");
+    p.proxies.push(detour);
+    for (tag, kind) in [
+        ("selector", ProxyPolicyType::Selector),
+        ("auto", ProxyPolicyType::Urltest),
+        ("balancer", ProxyPolicyType::Balancer),
+    ] {
+        let mut policy = p.policies[0].clone();
+        policy.tag = tag.into();
+        policy.kind = Some(kind);
+        policy.members = Some(vec!["missing".into()]);
+        policy.selected_member_tag = Some("missing".into());
+        p.policies.push(policy);
+    }
+    p.normalize_policy_graph();
+    p.rules[0].outbound = "missing".into();
+    p.rules.push(serde_json::from_value(serde_json::json!({"id":2,"kind":"DOMAIN","value":"example.test","outbound":"missing","enabled":true,"comment":""})).unwrap());
+    p.temp_rules.push(serde_json::from_value(serde_json::json!({"id":3,"kind":"DOMAIN","value":"temp.test","outbound":"chain","enabled":true,"comment":"","expires_at":i64::MAX})).unwrap());
+    p.rule_sets=Some(vec![serde_json::from_value(serde_json::json!({"id":"rs","tag":"rs","type":"remote","source":"https://example.test/rules.srs","action":"missing","download_policy":"missing","enabled":true})).unwrap()]);
+    p.dns = Some(DnsConfig {
+        servers: Some(vec![DnsServer {
+            tag: "dns".into(),
+            name: "DNS".into(),
+            address: "1.1.1.1".into(),
+            detour: Some("missing".into()),
+        }]),
+        ..Default::default()
+    });
+    let runtime = RuntimeProfileCompiler::new()
+        .compile(&ProfileConverter::convert(&p))
+        .unwrap();
+    let cfg = ZeytunCoreConfigBuilder::new(false, false)
+        .build(&runtime, &p.outbound_mode)
+        .unwrap();
+    let dir = temp_dir("failclosed");
+    let path = dir.join("config.json");
+    std::fs::write(&path, serde_json::to_vec(&cfg).unwrap()).unwrap();
+    let output = std::process::Command::new(core)
+        .args(["check", "-c"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    println!(
+        "failclosed core check exit={:?}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}

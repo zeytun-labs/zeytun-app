@@ -15,16 +15,19 @@ use tokio::sync::Mutex;
 
 use crate::core::dto::{
     CorePreflightReport, CoreRuntimeStatus, CreatePolicyInput, CreateProfileInput,
-    CreateProxyInput, DnsHostEntry, OutboundMode, ProfileMeta, Proxy, ProxyPolicy, Rule,
-    SelectPolicyMemberInput, SyncSummary, UpdatePolicyInput, UpdateProfileInput, UpdateProxyInput,
+    CreateProxyInput, DeleteSubscriptionInput, DnsHostEntry, OutboundMode, ProfileMeta, Proxy,
+    ProxyPolicy, Rule, SelectPolicyMemberInput, SubscriptionDeletePreview, SubscriptionSettings,
+    SubscriptionSource, SyncSummary, UpdatePolicyInput, UpdateProfileInput, UpdateProxyInput,
     ZeytunCore,
 };
 use crate::core::events::EventBus;
 use crate::core::manager::CoreManager;
+use crate::core::subscription_refresh::RefreshResult;
 
 pub struct AppState {
     pub hide_on_close: std::sync::atomic::AtomicBool,
     core: Arc<Mutex<CoreManager>>,
+    refresh_workers: Arc<crate::core::subscription_refresh::RefreshWorkers>,
 }
 
 impl AppState {
@@ -456,7 +459,30 @@ async fn core_profile_create(
     input: CreateProfileInput,
     state: tauri::State<'_, AppState>,
 ) -> Result<ProfileMeta, crate::error::CommandError> {
-    with_core_blocking(&state, move |core| core.profile_create(input)).await
+    let meta = with_core_blocking(&state, move |core| core.profile_create(input)).await?;
+    if meta.subscription_url.is_some() {
+        let id = meta.id.clone();
+        let source_id =
+            with_core_blocking(&state, move |core| core.legacy_subscription_id(&id)).await?;
+        state
+            .refresh_workers
+            .refresh(
+                meta.id.clone(),
+                source_id,
+                false,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .await;
+        let id = meta.id.clone();
+        return with_core_blocking(&state, move |core| {
+            core.profile_list()?
+                .into_iter()
+                .find(|p| p.id == id)
+                .ok_or_else(|| crate::error::CommandError::NotFound("profile not found".into()))
+        })
+        .await;
+    }
+    Ok(meta)
 }
 
 #[tauri::command]
@@ -496,10 +522,21 @@ async fn core_profile_refresh(
     background: bool,
     state: tauri::State<'_, AppState>,
 ) -> Result<SyncSummary, crate::error::CommandError> {
-    with_core_blocking(&state, move |core| {
-        core.profile_refresh(&profile_id, background)
+    let id = profile_id.clone();
+    let source_id =
+        with_core_blocking(&state, move |core| core.legacy_subscription_id(&id)).await?;
+    let result = state
+        .refresh_workers
+        .refresh(
+            profile_id,
+            source_id,
+            background,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await;
+    result.summary.ok_or_else(|| {
+        crate::error::CommandError::State("subscription refresh cancelled, stale or paused".into())
     })
-    .await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -511,6 +548,159 @@ async fn core_profile_mark_summary_read(
         core.profile_mark_summary_read(&profile_id)
     })
     .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_profile_export(
+    profile_id: String,
+    mode: crate::core::profile_document::ExportMode,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| core.profile_export(&profile_id, mode)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_profile_import_preview(
+    raw_document: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::core::profile_document::ImportPreview, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| {
+        core.profile_import_preview(&raw_document)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_profile_import_confirm(
+    raw_document: String,
+    preview_token: String,
+    custom_name: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<ProfileMeta, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| {
+        core.profile_import_confirm(&raw_document, &preview_token, custom_name)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_list(
+    profile_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<SubscriptionSource>, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| core.subscription_list(&profile_id)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_create(
+    profile_id: String,
+    settings: SubscriptionSettings,
+    state: tauri::State<'_, AppState>,
+) -> Result<SubscriptionSource, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| {
+        core.subscription_create(&profile_id, settings)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_update(
+    profile_id: String,
+    source_id: String,
+    settings: SubscriptionSettings,
+    state: tauri::State<'_, AppState>,
+) -> Result<SubscriptionSource, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| {
+        core.subscription_update(&profile_id, &source_id, settings)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_refresh(
+    profile_id: String,
+    source_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<RefreshResult, crate::error::CommandError> {
+    let result = state
+        .refresh_workers
+        .refresh(
+            profile_id,
+            source_id,
+            false,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await;
+    Ok(result)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_refresh_all(
+    profile_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RefreshResult>, crate::error::CommandError> {
+    let id = profile_id.clone();
+    let sources = with_core_blocking(&state, move |core| core.subscription_list(&id)).await?;
+    let source_ids = sources.into_iter().map(|s| s.id).collect();
+    let results = state
+        .refresh_workers
+        .refresh_all(
+            profile_id,
+            source_ids,
+            false,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await;
+    Ok(results)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_delete_preview(
+    profile_id: String,
+    source_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<SubscriptionDeletePreview, crate::error::CommandError> {
+    with_core_blocking(&state, move |core| {
+        core.subscription_delete_preview(&profile_id, &source_id)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_delete(
+    input: DeleteSubscriptionInput,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), crate::error::CommandError> {
+    with_core_blocking(&state, move |core| core.subscription_delete(input)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_mark_summary_read(
+    profile_id: String,
+    source_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), crate::error::CommandError> {
+    with_core_blocking(&state, move |core| {
+        core.subscription_mark_summary_read(&profile_id, &source_id)
+    })
+    .await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_job_status(
+    job_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, crate::error::CommandError> {
+    Ok(state.refresh_workers.is_job_cancelled(&job_id))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+async fn core_subscription_job_cancel(
+    job_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), crate::error::CommandError> {
+    state.refresh_workers.cancel_job(&job_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1565,7 +1755,7 @@ async fn core_update_geoip_db(
 ) -> Result<crate::adapters::geoip_update::GeoipUpdate, crate::error::CommandError> {
     let proxy = {
         let core = state.core.lock().await;
-        core.proxy_for_traffic(crate::core::network_policy::TRAFFIC_GEOIP)
+        core.proxy_for_traffic(crate::core::network_policy::TRAFFIC_GEOIP)?
     };
     let dest = app
         .path()
@@ -1594,7 +1784,7 @@ async fn core_auto_update_geoip_db(
 ) -> Result<crate::adapters::geoip_update::GeoipAutoUpdate, crate::error::CommandError> {
     let proxy = {
         let core = state.core.lock().await;
-        core.proxy_for_traffic(crate::core::network_policy::TRAFFIC_GEOIP)
+        core.proxy_for_traffic(crate::core::network_policy::TRAFFIC_GEOIP)?
     };
     let app_data_dir = app
         .path()
@@ -1644,8 +1834,12 @@ pub fn run() {
                 .map_err(|err| io_error(format!("failed to initialize core manager: {}", err)))?;
 
             let core_arc = Arc::new(Mutex::new(core_manager));
+            let refresh_workers = Arc::new(crate::core::subscription_refresh::RefreshWorkers::new(
+                core_arc.clone(),
+            ));
             app.manage(AppState {
                 core: core_arc.clone(),
+                refresh_workers: refresh_workers.clone(),
                 hide_on_close: std::sync::atomic::AtomicBool::new(true),
             });
 
@@ -1660,6 +1854,7 @@ pub fn run() {
             let (au_handle, au_shutdown) = crate::core::auto_update::start_auto_updater(
                 app.handle().clone(),
                 core_arc.clone(),
+                refresh_workers,
             );
             app.manage(AutoUpdateState {
                 shutdown_tx: std::sync::Mutex::new(Some(au_shutdown)),
@@ -1721,6 +1916,19 @@ pub fn run() {
             core_profile_switch,
             core_profile_refresh,
             core_profile_mark_summary_read,
+            core_profile_export,
+            core_profile_import_preview,
+            core_profile_import_confirm,
+            core_subscription_list,
+            core_subscription_create,
+            core_subscription_update,
+            core_subscription_refresh,
+            core_subscription_refresh_all,
+            core_subscription_delete_preview,
+            core_subscription_delete,
+            core_subscription_mark_summary_read,
+            core_subscription_job_status,
+            core_subscription_job_cancel,
             core_clash_proxies,
             core_clash_select_proxy,
             core_clash_set_mode,
@@ -1839,6 +2047,7 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 if let Some(app_state) = app_handle.try_state::<AppState>() {
                     tauri::async_runtime::block_on(async {
+                        app_state.refresh_workers.shutdown().await;
                         let mut core = app_state.core.lock().await;
                         core.stop();
                     });
@@ -1870,7 +2079,7 @@ pub fn run() {
                         let _ = tx.send(());
                     }
                     if let Some(handle) = state.task_handle.lock().unwrap().take() {
-                        handle.abort();
+                        let _ = tauri::async_runtime::block_on(handle);
                     }
                 }
 

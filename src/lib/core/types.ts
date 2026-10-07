@@ -102,6 +102,8 @@ export type ProxyOrigin = "subscription" | "manual";
 export type Proxy = {
   tag: string;
   origin: ProxyOrigin;
+  source_id: string | null;
+  available: boolean;
   title: string;
   protocol: string;
   link: string;
@@ -230,6 +232,97 @@ export type SyncSummary = {
   rules_orphaned: number;
   at_unix_ms: number;
   errors: string[];
+  effective_fallbacks?: string[];
+};
+
+export type SubscriptionSettings = {
+  name: string;
+  url: string;
+  enabled: boolean;
+  auto_update: boolean;
+  update_interval_hours: number;
+};
+
+export type SubscriptionSource = {
+  id: string;
+  settings: SubscriptionSettings;
+  generation: number;
+  position: number;
+  provider_title: string | null;
+  suggested_interval_hours: number | null;
+  userinfo: { upload: number; download: number; total: number; expire: number } | null;
+  last_attempt_at: number | null;
+  last_success_at: number | null;
+  last_error: string | null;
+  last_sync_summary: SyncSummary | null;
+  unread_summary: boolean;
+};
+
+export type UpdateSubscriptionInput = {
+  profile_id: string;
+  source_id: string;
+  settings: SubscriptionSettings;
+};
+
+export type SubscriptionDeleteMode = "delete_nodes" | "keep_as_manual";
+
+export type SubscriptionDependencyKind =
+  | "policy_member"
+  | "policy_selection"
+  | "proxy_chain"
+  | "proxy_detour"
+  | "route"
+  | "final"
+  | "temp_rule"
+  | "session_rule"
+  | "dns_detour"
+  | "ruleset_action"
+  | "ruleset_download_policy";
+
+export type SubscriptionDependency = {
+  kind: SubscriptionDependencyKind;
+  owner: string;
+  proxy_tag: string;
+};
+
+export type SubscriptionDeletePreview = {
+  profile_id: string;
+  source_id: string;
+  preview_token: string;
+  proxy_tags: string[];
+  dependencies: SubscriptionDependency[];
+};
+
+export type DeleteSubscriptionInput = {
+  profile_id: string;
+  source_id: string;
+  preview_token: string;
+  confirmed: boolean;
+  mode: SubscriptionDeleteMode;
+};
+
+export type RefreshStatus = "accepted" | "failed" | "stale" | "cancelled" | "paused";
+
+export type RefreshResult = {
+  profile_id: string;
+  source_id: string;
+  status: RefreshStatus;
+  summary: SyncSummary | null;
+  config_revision: number;
+};
+
+export type ExportMode = "full" | "snapshot";
+
+export type ImportPreview = {
+  preview_token: string;
+  name: string;
+  mode: ExportMode;
+  source_count: number;
+  proxy_count: number;
+  policy_count: number;
+  rule_count: number;
+  asset_count: number;
+  warnings: string[];
 };
 
 /// Registry entry describing a profile (the routing bundle is loaded on demand).
@@ -400,6 +493,12 @@ export type CoreRuntimeStatus = {
   phase: RuntimePhase;
   message: string | null;
   zeytun_core_pid: number | null;
+  saved_profile_id: string;
+  saved_revision: number;
+  applied_profile_id: string | null;
+  applied_revision: number | null;
+  applied_mixed_port: number | null;
+  pending_apply: boolean;
 };
 
 /// Live core lifecycle as reported by the daemon's gRPC link (source of truth).

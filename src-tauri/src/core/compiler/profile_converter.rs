@@ -21,16 +21,67 @@ pub struct ProfileConverter;
 
 impl ProfileConverter {
     pub fn convert(profile: &ZeytunCore) -> Profile {
-        let proxy_servers = profile
+        let mut proxy_servers = profile
             .proxies
             .iter()
-            .filter(|proxy| proxy.enabled)
+            .filter(|proxy| proxy.enabled && proxy.available)
             .filter_map(|proxy| link_parser::proxy_to_proxy_server(proxy).ok())
+            .filter(|server| {
+                if matches!(
+                    server.protocol,
+                    crate::core::models::proxy::Protocol::Chain(_)
+                ) {
+                    return true;
+                }
+                let (normalized, _) =
+                    crate::core::compiler::support_resolver::SupportResolver.normalize(server);
+                crate::core::compiler::outbound_factory::OutboundFactory
+                    .build_proxy_outbound(&normalized, server.tag.clone())
+                    .is_ok()
+            })
             .collect::<Vec<_>>();
-        let enabled_proxy_tags = profile
+        // Remove unusable dependency closures, never shorten a chain or ignore
+        // a detour. Source provenance is deliberately absent from resolution.
+        let mut usable = HashSet::from([
+            "direct".to_string(),
+            "block".to_string(),
+            "dns-out".to_string(),
+        ]);
+        loop {
+            let before = usable.len();
+            for server in &proxy_servers {
+                let mut refs = HashSet::new();
+                crate::core::subscription::SubscriptionManager::server_references(
+                    server, &mut refs,
+                );
+                let empty_chain = matches!(&server.protocol,crate::core::models::proxy::Protocol::Chain(c) if c.proxies.is_empty());
+                if !empty_chain && refs.iter().all(|tag| usable.contains(tag)) {
+                    usable.insert(server.tag.clone());
+                }
+            }
+            for policy in &profile.policies {
+                if policy
+                    .members
+                    .iter()
+                    .flatten()
+                    .any(|tag| usable.contains(tag))
+                {
+                    usable.insert(policy.tag.clone());
+                }
+            }
+            if before == usable.len() {
+                break;
+            }
+        }
+        proxy_servers.retain(|p| usable.contains(&p.tag));
+        let blocked_proxy_tags = profile
             .proxies
             .iter()
-            .filter(|proxy| proxy.enabled)
+            .filter(|proxy| !proxy_servers.iter().any(|s| s.tag == proxy.tag))
+            .map(|proxy| proxy.tag.clone())
+            .collect();
+        let enabled_proxy_tags = proxy_servers
+            .iter()
             .map(|proxy| proxy.tag.clone())
             .collect::<HashSet<_>>();
         let policy_tags = profile
@@ -44,12 +95,21 @@ impl ProfileConverter {
             .iter()
             .map(|policy| {
                 let raw_outbounds = policy.members.clone().unwrap_or_default();
-                let outbounds = raw_outbounds
-                    .into_iter()
-                    .filter(|tag| {
-                        tag != &policy.tag
-                            && (enabled_proxy_tags.contains(tag) || policy_tags.contains(tag))
+                let valid_indices = raw_outbounds
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, tag)| {
+                        (tag != &policy.tag
+                            && (enabled_proxy_tags.contains(tag)
+                                || policy_tags.contains(tag)
+                                || tag == "direct"
+                                || tag == "block"))
+                            .then_some(i)
                     })
+                    .collect::<Vec<_>>();
+                let outbounds = valid_indices
+                    .iter()
+                    .map(|&i| raw_outbounds[i].clone())
                     .collect::<Vec<_>>();
 
                 let default = policy
@@ -91,7 +151,12 @@ impl ProfileConverter {
                             delay_acceptable_ratio: None,
                             ttl: None,
                             max_retry: None,
-                            weights: policy.weights.clone(),
+                            weights: policy.weights.as_ref().map(|weights| {
+                                valid_indices
+                                    .iter()
+                                    .filter_map(|&i| weights.get(i).copied())
+                                    .collect()
+                            }),
                             interrupt_exist_connections: Some(true),
                         },
                     ),
@@ -164,6 +229,11 @@ impl ProfileConverter {
             name: "Default".to_string(),
             inbound_mode,
             proxy_servers,
+            blocked_proxy_tags,
+            validation_error: crate::core::subscription::SubscriptionManager::validate_candidate(
+                profile,
+            )
+            .err(),
             proxy_policies,
             rules,
             temp_rules,

@@ -28,6 +28,7 @@ pub struct CoreLifecycle {
     system_proxy_manager: SystemProxyManager,
     config_store: ConfigStore,
     clash_api: Option<ClashApiClient>,
+    applied: Option<(ZeytunCore, u64)>,
 }
 
 impl CoreLifecycle {
@@ -58,6 +59,12 @@ impl CoreLifecycle {
                 phase: RuntimePhase::Idle,
                 message: None,
                 zeytun_core_pid: None,
+                saved_profile_id: String::new(),
+                saved_revision: 0,
+                applied_profile_id: None,
+                applied_revision: None,
+                applied_mixed_port: None,
+                pending_apply: true,
             },
             events,
             compiler: RuntimeProfileCompiler::new(),
@@ -66,6 +73,7 @@ impl CoreLifecycle {
             system_proxy_manager: SystemProxyManager,
             config_store: ConfigStore::new(config_dir.into()),
             clash_api: None,
+            applied: None,
         }
     }
 
@@ -124,7 +132,11 @@ impl CoreLifecycle {
         }
     }
 
-    pub fn start(&mut self, profile: &ZeytunCore) -> Result<CoreRuntimeStatus, String> {
+    pub fn start(
+        &mut self,
+        profile: &ZeytunCore,
+        revision: u64,
+    ) -> Result<CoreRuntimeStatus, String> {
         self.runtime_status.phase = RuntimePhase::Starting;
         self.runtime_status.message = Some("starting core".to_string());
         self.runtime_status.zeytun_core_pid = None;
@@ -147,10 +159,6 @@ impl CoreLifecycle {
         self.process_manager
             .start(config_path.to_string_lossy().as_ref())?;
 
-        self.runtime_status.phase = RuntimePhase::Running;
-        self.runtime_status.message = Some("core running".to_string());
-        self.runtime_status.zeytun_core_pid = self.process_manager.current_pid()?;
-
         // Emit lifecycle events for the inbound listeners
         let listen = &runtime_profile.inbound_mode.mixed.listen;
         let listen_port = runtime_profile.inbound_mode.mixed.listen_port;
@@ -164,15 +172,6 @@ impl CoreLifecycle {
             .info("SOCKS5 proxy listening", format!("{host}:{listen_port}"));
         self.events
             .info("HTTP proxy listening", format!("{host}:{listen_port}"));
-
-        let system_proxy_enabled = profile.local_proxy.system_proxy.unwrap_or(false);
-        if system_proxy_enabled {
-            if let Err(err) = self.system_proxy_manager.enable(host, listen_port) {
-                self.events.warning("System proxy failed", err.to_string());
-            }
-        } else {
-            let _ = self.system_proxy_manager.disable();
-        }
 
         if runtime_profile.inbound_mode.tun.is_some() {
             self.events.info("TUN interface active", "");
@@ -188,8 +187,15 @@ impl CoreLifecycle {
             self.clash_api = None;
         }
 
-        self.events
-            .info("Core started", "zeytun-core process running");
+        // File write/spawn is not readiness: verify the authenticated controller
+        // and the owned child before publishing the captured applied snapshot.
+        if let Err(error) = self.wait_for_readiness() {
+            let _ = self.process_manager.stop();
+            self.clash_api = None;
+            self.runtime_status.phase = RuntimePhase::Error;
+            self.runtime_status.message = Some(error.clone());
+            return Err(error);
+        }
 
         // Force the clash runtime mode to match the profile's outbound_mode.
         // The core's cache_file may hold a stale mode from a previous session
@@ -201,14 +207,61 @@ impl CoreLifecycle {
                 .ok()
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "rule".to_string());
-            let _ = clash.patch_config(&mode_str);
+            clash
+                .patch_config(&mode_str)
+                .map_err(|_| "failed to apply startup mode".to_string())?;
         }
 
         // Live temp overlay (survives only in-core memory; re-push after start).
         // Config also bakes live_rules for cold start; push covers race before seed.
         Self::push_live_rules_to_clash(self.clash_api.as_ref(), profile);
 
+        self.applied = Some((profile.clone(), revision));
+        self.runtime_status.applied_profile_id = Some(profile.id.clone());
+        self.runtime_status.applied_revision = Some(revision);
+        self.runtime_status.applied_mixed_port = Some(listen_port);
+        self.runtime_status.phase = RuntimePhase::Running;
+        self.runtime_status.message = Some("core ready".into());
+        self.runtime_status.zeytun_core_pid = self.process_manager.current_pid()?;
+        if profile.local_proxy.system_proxy.unwrap_or(false) {
+            if let Err(error) = self.system_proxy_manager.enable(host, listen_port) {
+                self.events.warning("System proxy failed", error);
+            }
+        } else {
+            let _ = self.system_proxy_manager.disable();
+        }
+        self.events.info("Core started", "zeytun-core ready");
+
         Ok(self.runtime_status.clone())
+    }
+
+    fn wait_for_readiness(&self) -> Result<(), String> {
+        let clash = self
+            .clash_api
+            .as_ref()
+            .ok_or("core readiness requires Clash API support")?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if !self.process_manager.is_running()? {
+                return Err("core exited before readiness".into());
+            }
+            let mut request = ureq::get(&format!("http://{}/proxies", clash.controller()))
+                .timeout(std::time::Duration::from_secs(1));
+            if let Some(secret) = clash.secret() {
+                request = request.set("Authorization", &format!("Bearer {secret}"));
+            }
+            if request.call().is_ok() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("core readiness timed out".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    pub fn applied_profile(&self) -> Option<&ZeytunCore> {
+        self.applied.as_ref().map(|(p, _)| p)
     }
 
     pub fn clash_api(&self) -> Option<&ClashApiClient> {
@@ -266,58 +319,13 @@ impl CoreLifecycle {
         let Some(clash) = clash else {
             return;
         };
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        // Temp rules only apply in rule mode (see build_route gate): in
-        // Direct/Global push an empty temp overlay so nothing leaks past the
-        // clash-mode catch-all (runtime-proven leak). Permanent stays — it
-        // matches after system rules and can't leak.
-        let temp: Vec<serde_json::Value> =
-            if profile.outbound_mode == crate::core::dto::OutboundMode::Rule {
-                profile
-                    .temp_rules
-                    .iter()
-                    .filter(|r| {
-                        r.enabled
-                            && !r.is_expired(now_ms)
-                            && !matches!(r.kind, crate::core::dto::RuleType::Final)
-                    })
-                    .map(|r| {
-                        let model = ProfileConverter::core_rule_to_model_pub(&r.to_rule());
-                        let rule_json =
-                        crate::core::zeytun_core_config::ZeytunCoreConfigBuilder::temp_rule_json(
-                            &model,
-                        );
-                        serde_json::json!({
-                            "id": r.id,
-                            "expires_at": r.expires_at,
-                            "rule": rule_json,
-                        })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-        let permanent: Vec<serde_json::Value> = profile
-            .rules
-            .iter()
-            .filter(|r| r.enabled && !matches!(r.kind, crate::core::dto::RuleType::Final))
-            .map(|r| {
-                let model = ProfileConverter::core_rule_to_model_pub(r);
-                let rule_json =
-                    crate::core::zeytun_core_config::ZeytunCoreConfigBuilder::temp_rule_json(
-                        &model,
-                    );
-                serde_json::json!({
-                    "id": r.id,
-                    "expires_at": 0,
-                    "rule": rule_json,
-                })
-            })
-            .collect();
-        let body = serde_json::json!({ "temp": temp, "permanent": permanent }).to_string();
+        let body = match RuntimeProfileCompiler::live_rules_payload(profile, false) {
+            Ok(body) => body.to_string(),
+            Err(error) => {
+                eprintln!("[live-rules] validation failed: {error}");
+                return;
+            }
+        };
         if let Err(e) = clash.put_live_rules(&body) {
             eprintln!("[live-rules] push failed: {e:?}");
         }

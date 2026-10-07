@@ -23,9 +23,11 @@
 
   import { profileStore } from "$lib/stores/profile.svelte";
   import { latencyStore } from "$lib/stores/latency.svelte";
+  import { subscriptionsStore } from "$lib/stores/subscriptions.svelte";
   import { useAsyncAction } from "$lib/composables/use-async-action.svelte";
   import { toast } from "svelte-sonner";
 
+  import * as Tabs from "$lib/components/ui/tabs";
   import PolicyHeader from "$lib/components/policy/policy-header.svelte";
   import OutboundModeTabs from "$lib/components/policy/outbound-mode.svelte";
   import PolicyGrid from "$lib/components/policy/policy-grid.svelte";
@@ -33,6 +35,9 @@
   import ProxySheet from "$lib/components/policy/proxy-sheet.svelte";
   import PolicySheet from "$lib/components/policy/policy-sheet.svelte";
   import ProxyChainSheet from "$lib/components/policy/proxy-chain-sheet.svelte";
+  import SubscriptionList from "$lib/components/policy/subscription-list.svelte";
+  import SubscriptionSheet from "$lib/components/policy/subscription-sheet.svelte";
+  import type { SubscriptionSource, SubscriptionSettings } from "$lib/core/types";
   import { Skeleton } from "$lib/components/ui/skeleton/index.js";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import Spinner from "$lib/components/ui/spinner/spinner.svelte";
@@ -49,6 +54,14 @@
   let dialogKind = $state<DialogKind>("proxy");
   let activeProxy = $state<Proxy | null>(null);
   let activePolicy = $state<ProxyPolicy | null>(null);
+
+  // Main page tab: "proxies" (default) or "subscriptions"
+  let currentTab = $state<"proxies" | "subscriptions">("proxies");
+
+  // Subscription sheet state
+  let subscriptionSheetOpen = $state(false);
+  let subscriptionSheetMode = $state<"create" | "edit">("create");
+  let activeSubscriptionSource = $state<SubscriptionSource | null>(null);
 
   // Proxy-delete confirmation. The backend does the real rule check and repoints
   // any dependent rules to Direct (Option A); the dialog message is generic.
@@ -69,7 +82,15 @@
     await action.run(async () => {
       await profileStore.load();
       await latencyStore.fetchLatenciesOnLoad();
+      await subscriptionsStore.load();
     });
+  });
+
+  $effect(() => {
+    const id = profileStore.activeProfileId;
+    if (id && id !== subscriptionsStore.activeProfileId) {
+      void subscriptionsStore.load(id);
+    }
   });
 
   // --- Actions ---
@@ -117,7 +138,65 @@
     }
   }
 
+  function deriveSubscriptionName(urlStr: string): string {
+    try {
+      const parsed = new URL(urlStr);
+      if (parsed.hash && parsed.hash.length > 1) {
+        const decoded = decodeURIComponent(parsed.hash.slice(1)).trim();
+        if (decoded) return decoded;
+      }
+      if (parsed.hostname) {
+        return parsed.hostname;
+      }
+    } catch {}
+    return "Subscription";
+  }
+
+  async function importSubscriptionFromClipboard(providedText?: string) {
+    await action.run(async () => {
+      const text =
+        typeof providedText === "string" ? providedText : await readText();
+      const urls = text
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("http://") || l.startsWith("https://"));
+
+      if (urls.length === 0) {
+        throw new Error(
+          "No subscription URLs found in clipboard. (Must start with http:// or https://)",
+        );
+      }
+
+      let addedCount = 0;
+      for (const url of urls) {
+        try {
+          const name = deriveSubscriptionName(url);
+          const created = await subscriptionsStore.create({
+            name,
+            url,
+            enabled: true,
+            auto_update: true,
+            update_interval_hours: 24,
+          });
+          addedCount++;
+          void subscriptionsStore.refresh(created.id).catch(() => {});
+        } catch (e: any) {
+          console.error("Failed to import subscription:", e);
+        }
+      }
+
+      if (addedCount === 0) {
+        throw new Error("Failed to add subscription source.");
+      }
+    }, "Subscription imported from clipboard.");
+  }
+
   async function importFromClipboard(providedText?: string) {
+    if (currentTab === "subscriptions") {
+      await importSubscriptionFromClipboard(providedText);
+      return;
+    }
+
     await action.run(async () => {
       const text =
         typeof providedText === "string" ? providedText : await readText();
@@ -315,6 +394,37 @@
     activePolicy = policy;
     dialogOpen = true;
   }
+
+  function openSubscriptionDialog(
+    mode: "create" | "edit",
+    source: SubscriptionSource | null = null,
+  ) {
+    subscriptionSheetMode = mode;
+    activeSubscriptionSource = source;
+    subscriptionSheetOpen = true;
+  }
+
+  async function handleSaveSubscription(settings: SubscriptionSettings) {
+    await action.run(async () => {
+      if (subscriptionSheetMode === "create") {
+        const created = await subscriptionsStore.create(settings);
+        toast.success("Subscription source added");
+        void subscriptionsStore.refresh(created.id).catch(() => {});
+      } else if (activeSubscriptionSource) {
+        await subscriptionsStore.update(activeSubscriptionSource.id, settings);
+        toast.success("Subscription source updated");
+      }
+    });
+  }
+
+  async function handleRefreshAllSubscriptions() {
+    try {
+      await subscriptionsStore.refreshAll();
+      toast.success("All subscriptions refreshed");
+    } catch (e: any) {
+      toast.error(`Refresh all failed: ${e?.message ?? e}`);
+    }
+  }
 </script>
 
 <svelte:window onpaste={handlePaste} />
@@ -327,7 +437,11 @@
     onAddProxy={() => openProxyDialog("proxy")}
     onAddPolicy={() => openPolicyDialog("policy")}
     onAddProxyChain={() => openProxyDialog("chain")}
+    onAddSubscription={() => openSubscriptionDialog("create")}
     onImportClipboard={importFromClipboard}
+    onRefreshAllSubscriptions={handleRefreshAllSubscriptions}
+    refreshingSubscriptions={subscriptionsStore.refreshingAll}
+    bind:currentTab
   >
     <OutboundModeTabs
       mode={profileStore.outboundMode}
@@ -335,7 +449,11 @@
     />
   </PolicyHeader>
 
-  {#if profileStore.loading}
+  {#if currentTab === "subscriptions"}
+    <SubscriptionList
+      onEdit={(source) => openSubscriptionDialog("edit", source)}
+    />
+  {:else if profileStore.loading}
     <div class="flex flex-col gap-6 w-full animate-in fade-in duration-500">
       <div class="flex flex-col gap-3">
         <Skeleton class="h-6 w-32" />
@@ -420,6 +538,14 @@
     onSave={savePolicy}
   />
 {/if}
+
+<SubscriptionSheet
+  bind:open={subscriptionSheetOpen}
+  mode={subscriptionSheetMode}
+  source={activeSubscriptionSource}
+  saving={action.saving}
+  onSave={handleSaveSubscription}
+/>
 
 <AlertDialog.Root bind:open={deleteProxyOpen}>
   <AlertDialog.Content>

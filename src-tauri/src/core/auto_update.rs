@@ -14,16 +14,17 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 use crate::core::manager::CoreManager;
-use crate::core::subscription::SubscriptionManager;
+use crate::core::subscription_refresh::RefreshWorkers;
 
 /// How often the updater wakes up to re-evaluate due profiles.
-const TICK_INTERVAL: Duration = Duration::from_secs(60 * 60); // 1 hour
+const TICK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Spawn the auto-updater. Returns a join handle plus a shutdown sender; drop
 /// the sender (or send on it) to stop the loop.
 pub fn start_auto_updater(
     app: AppHandle,
     core: Arc<Mutex<CoreManager>>,
+    workers: Arc<RefreshWorkers>,
 ) -> (
     tauri::async_runtime::JoinHandle<()>,
     tokio::sync::oneshot::Sender<()>,
@@ -43,7 +44,18 @@ pub fn start_auto_updater(
                     break;
                 }
                 _ = interval.tick() => {
-                    run_due_updates(&app, &core).await;
+                    let cancel=Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let run=run_due_updates(&app, &core, &workers, cancel.clone());
+                    tokio::pin!(run);
+                    tokio::select! {
+                        _ = &mut run => {},
+                        _ = &mut rx => {
+                            cancel.store(true,std::sync::atomic::Ordering::SeqCst);
+                            workers.shutdown().await;
+                            run.await;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -53,107 +65,44 @@ pub fn start_auto_updater(
 }
 
 /// Evaluate all profiles and silently refresh the ones that are due.
-async fn run_due_updates(app: &AppHandle, core: &Arc<Mutex<CoreManager>>) {
-    // Snapshot the due profile ids under a short lock, then release it before
-    // doing the (blocking) network refreshes.
-    // We also need their URLs so we can fetch concurrently without loading from DB every time.
-    let mut due_profiles = Vec::new();
-    // Read the subscription route once, under the same lock: it is a DB read and
-    // every profile in this batch uses the same policy.
-    let sub_proxy;
-    {
-        let guard = core.lock().await;
-        sub_proxy = guard.proxy_for_traffic(crate::core::network_policy::TRAFFIC_SUBSCRIPTION);
-        match guard.profile_list() {
-            Ok(profiles) => {
-                for p in profiles.into_iter().filter(is_due) {
-                    if let Some(url) = p.subscription_url {
-                        due_profiles.push((p.id, url));
-                    }
-                }
-            }
-            Err(e) => {
-                println!("[AutoUpdate] failed to list profiles: {e:?}");
-                return;
-            }
-        }
-    }
-
-    if due_profiles.is_empty() {
+async fn run_due_updates(
+    app: &AppHandle,
+    core: &Arc<Mutex<CoreManager>>,
+    workers: &Arc<RefreshWorkers>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let core = core.clone();
+    let sources = tokio::task::spawn_blocking(move || {
+        let manager = core.blocking_lock();
+        manager
+            .profile_list()?
+            .into_iter()
+            .map(|p| Ok((p.id.clone(), manager.subscription_list(&p.id)?)))
+            .collect::<Result<Vec<_>, crate::error::CommandError>>()
+    })
+    .await;
+    let Ok(Ok(sources)) = sources else {
         return;
-    }
-    println!(
-        "[AutoUpdate] {} profile(s) due for update",
-        due_profiles.len()
-    );
-
-    // Map over `due_profiles` to spawn blocking HTTP requests in parallel
-    let mut tasks = tokio::task::JoinSet::new();
-    for (id, url) in due_profiles {
-        let core_arc = core.clone();
-        let proxy = sub_proxy.clone();
-        tasks.spawn_blocking(move || {
-            println!("[AutoUpdate] fetching {id}...");
-            let fetch_res = SubscriptionManager::fetch_url(&url, proxy.as_deref());
-
-            // Take the short lock just to apply & save to the database
-            let mut guard = core_arc.blocking_lock();
-
-            match fetch_res {
-                Ok((raw, headers)) => match guard.profile_apply_refresh(&id, &raw, headers, true) {
-                    Ok(summary) => Ok((id, summary)),
-                    Err(e) => Err(e),
-                },
-                Err(e) => Err(crate::error::CommandError::Network(format!(
-                    "fetch failed: {e}"
-                ))),
-            }
-        });
-    }
-
-    let mut any_updated = false;
-    while let Some(res) = tasks.join_next().await {
-        match res {
-            Ok(Ok((id, summary))) => {
-                any_updated = true;
-                println!(
-                    "[AutoUpdate] refreshed `{id}`: +{} -{} orphaned={}",
-                    summary.proxies_added, summary.proxies_removed, summary.rules_orphaned
-                );
-            }
-            Ok(Err(e)) => println!("[AutoUpdate] refresh failed: {e:?}"),
-            Err(e) => println!("[AutoUpdate] refresh task panicked: {e:?}"),
+    };
+    let now = crate::core::constants::unix_millis();
+    let mut jobs = tokio::task::JoinSet::new();
+    for (profile_id, sources) in sources {
+        let ids = sources
+            .iter()
+            .filter(|s| workers.is_due_at(&profile_id, s, now))
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>();
+        if ids.is_empty() {
+            continue;
         }
+        let w = workers.clone();
+        let c = cancel.clone();
+        jobs.spawn(async move { w.refresh_all(profile_id, ids, true, c).await });
     }
-
-    if any_updated {
+    while let Some(Ok(results)) = jobs.join_next().await {
+        for result in results {
+            let _ = app.emit("subscription-updated", &result);
+        }
         let _ = app.emit("profile-updated", ());
     }
-}
-
-/// A profile is due when it has a non-empty subscription URL, is not opted out,
-/// and enough time has elapsed since its last update (or it never updated).
-fn is_due(p: &crate::core::dto::ProfileMeta) -> bool {
-    let has_url = p
-        .subscription_url
-        .as_deref()
-        .map(|u| !u.trim().is_empty())
-        .unwrap_or(false);
-    if !has_url || p.skip_auto_update {
-        return false;
-    }
-
-    let interval_ms = i64::from(p.update_interval_hours.max(1)) * 60 * 60 * 1000;
-    match p.last_updated_unix_ms {
-        // Never updated → due now.
-        None => true,
-        Some(last) => now_unix_ms().saturating_sub(last) >= interval_ms,
-    }
-}
-
-fn now_unix_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_default()
 }

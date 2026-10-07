@@ -63,7 +63,7 @@ Once a public build is available:
 
 1. Download the Apple Silicon `.dmg` from Releases and move **Zeytun.app** to **Applications**.
 2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. If you trust the source, follow [Apple's instructions](https://support.apple.com/en-us/102445#openanyway) to approve this app in **System Settings → Privacy & Security → Open Anyway**. Do not disable Gatekeeper globally.
-3. Add a subscription from the profile menu, or import a proxy link in **Policy**. Select a proxy in the group you want to use.
+3. Add subscriptions under **Policy → Subscriptions**, or import proxy links in **Policy → Proxies & Policies**. Export or import native `.zeytun.json` profile documents from the profile menu. Select a proxy in the group you want to use.
 4. Choose **Global Proxy** to use your selected proxy, or **Rule-based Proxy** to follow routing rules. Zeytun starts in **Direct Outbound** mode on each launch.
 5. Enable **System Proxy** for applications that respect macOS proxy settings, or **TUN** for tunnel-based capture. TUN requires administrator permission.
 6. Open **Traffic Monitor** to inspect the connections handled by Zeytun and create rules from them.

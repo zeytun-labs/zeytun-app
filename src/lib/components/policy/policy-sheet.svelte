@@ -12,6 +12,7 @@
   } from "$lib/core/types";
   import { cn, formatLatency, getLatencyColor } from "$lib/utils";
   import { latencyStore } from "$lib/stores/latency.svelte";
+  import { subscriptionsStore } from "$lib/stores/subscriptions.svelte";
   import { Checkbox } from "../ui/checkbox";
   import { ScrollArea } from "../ui/scroll-area";
   import { superForm, defaults } from "sveltekit-superforms";
@@ -68,6 +69,14 @@
     weighted: "Distributes traffic proportionally based on assigned member weights.",
     "least-connections": "Routes new requests to the member with the fewest active connections.",
   };
+
+  function sourceLabel(proxy: Proxy): string | null {
+    if (proxy.origin === "subscription" && proxy.source_id) {
+      const s = subscriptionsStore.sources.find((src) => src.id === proxy.source_id);
+      return s?.settings.name ?? "Subscription";
+    }
+    return null;
+  }
 
   const form = superForm<PolicyFormSchema>(
     { name: "", type: "selector", members: [], strategy: "round-robin" },
@@ -356,7 +365,14 @@
                             }}
                           />
                           <div class="flex-1 min-w-0 text-left flex flex-col">
-                            <div class="truncate text-sm">{proxy.title}</div>
+                            <div class="truncate text-sm flex items-center gap-1.5">
+                              <span class="truncate">{proxy.title}</span>
+                              {#if sourceLabel(proxy)}
+                                <span class="rounded bg-muted/60 px-1 py-0.2 text-[10px] text-muted-foreground font-mono shrink-0">
+                                  {sourceLabel(proxy)}
+                                </span>
+                              {/if}
+                            </div>
                             <div class="text-muted-foreground text-xs">
                               {proxy.protocol}
                             </div>

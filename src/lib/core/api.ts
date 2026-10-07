@@ -21,6 +21,13 @@ import type {
   UpdateProxyInput,
   UpdatePolicyInput,
   ClashConnectionsResponse,
+  DeleteSubscriptionInput,
+  RefreshResult,
+  SubscriptionDeletePreview,
+  SubscriptionSettings,
+  SubscriptionSource,
+  ExportMode,
+  ImportPreview,
 } from "./types";
 
 export function corePreflight() {
@@ -126,6 +133,106 @@ export function coreProfileMarkSummaryRead(profileId: string) {
   return invoke<void>("core_profile_mark_summary_read", {
     profile_id: profileId,
   });
+}
+
+export function coreProfileExport(profileId: string, mode: ExportMode) {
+  return invoke<string>("core_profile_export", {
+    profile_id: profileId,
+    mode,
+  });
+}
+
+export function coreProfileImportPreview(rawDocument: string) {
+  return invoke<ImportPreview>("core_profile_import_preview", {
+    raw_document: rawDocument,
+  });
+}
+
+export function coreProfileImportConfirm(
+  rawDocument: string,
+  previewToken: string,
+  customName?: string | null,
+) {
+  return invoke<ProfileMeta>("core_profile_import_confirm", {
+    raw_document: rawDocument,
+    preview_token: previewToken,
+    custom_name: customName ?? null,
+  });
+}
+
+// --- Subscription management commands ---
+
+export function coreSubscriptionList(profileId: string) {
+  return invoke<SubscriptionSource[]>("core_subscription_list", {
+    profile_id: profileId,
+  });
+}
+
+export function coreSubscriptionCreate(
+  profileId: string,
+  settings: SubscriptionSettings,
+) {
+  return invoke<SubscriptionSource>("core_subscription_create", {
+    profile_id: profileId,
+    settings,
+  });
+}
+
+export function coreSubscriptionUpdate(
+  profileId: string,
+  sourceId: string,
+  settings: SubscriptionSettings,
+) {
+  return invoke<SubscriptionSource>("core_subscription_update", {
+    profile_id: profileId,
+    source_id: sourceId,
+    settings,
+  });
+}
+
+export function coreSubscriptionRefresh(profileId: string, sourceId: string) {
+  return invoke<RefreshResult>("core_subscription_refresh", {
+    profile_id: profileId,
+    source_id: sourceId,
+  });
+}
+
+export function coreSubscriptionRefreshAll(profileId: string) {
+  return invoke<RefreshResult[]>("core_subscription_refresh_all", {
+    profile_id: profileId,
+  });
+}
+
+export function coreSubscriptionDeletePreview(
+  profileId: string,
+  sourceId: string,
+) {
+  return invoke<SubscriptionDeletePreview>("core_subscription_delete_preview", {
+    profile_id: profileId,
+    source_id: sourceId,
+  });
+}
+
+export function coreSubscriptionDelete(input: DeleteSubscriptionInput) {
+  return invoke<void>("core_subscription_delete", { input });
+}
+
+export function coreSubscriptionMarkSummaryRead(
+  profileId: string,
+  sourceId: string,
+) {
+  return invoke<void>("core_subscription_mark_summary_read", {
+    profile_id: profileId,
+    source_id: sourceId,
+  });
+}
+
+export function coreSubscriptionJobStatus(jobId: string) {
+  return invoke<boolean>("core_subscription_job_status", { job_id: jobId });
+}
+
+export function coreSubscriptionJobCancel(jobId: string) {
+  return invoke<void>("core_subscription_job_cancel", { job_id: jobId });
 }
 
 // --- Dedicated CRUD commands ---

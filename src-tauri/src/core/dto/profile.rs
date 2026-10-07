@@ -157,6 +157,10 @@ pub struct Proxy {
     pub tag: String,
     #[serde(default)]
     pub origin: ProxyOrigin,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub available: bool,
     pub title: String,
     pub protocol: String,
     pub link: String,
@@ -165,6 +169,16 @@ pub struct Proxy {
     pub transport: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
+}
+
+impl Proxy {
+    pub fn validate_provenance(&self, sources: &[super::SubscriptionSource]) -> Result<(), String> {
+        match (self.origin, self.source_id.as_deref()) {
+            (ProxyOrigin::Manual, None) => Ok(()),
+            (ProxyOrigin::Subscription, Some(id)) if sources.iter().any(|s| s.id == id) => Ok(()),
+            _ => Err("proxy provenance must reference a source in the same profile".into()),
+        }
+    }
 }
 
 /// Result of a subscription sync: what changed and any parse/fetch errors.
@@ -179,6 +193,8 @@ pub struct SyncSummary {
     pub at_unix_ms: i64,
     #[serde(default)]
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub effective_fallbacks: Vec<String>,
 }
 
 fn default_update_interval_hours() -> u32 {
@@ -474,6 +490,7 @@ impl ZeytunCore {
         let known_target_tags = known_policy_tags
             .union(&known_proxy_tags)
             .cloned()
+            .chain(["direct".to_string(), "block".to_string()])
             .collect::<HashSet<_>>();
 
         for policy in &mut self.policies {

@@ -20,7 +20,7 @@ fn every_tauri_command_is_registered() {
     let mut saw_command_attr = false;
     for line in src.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("#[tauri::command]") {
+        if trimmed.starts_with("#[tauri::command") {
             saw_command_attr = true;
             continue;
         }
@@ -44,6 +44,27 @@ fn every_tauri_command_is_registered() {
         !defined.is_empty(),
         "parser found no #[tauri::command] fns — if the file layout changed, update this test"
     );
+
+    for command in [
+        "core_subscription_list",
+        "core_subscription_create",
+        "core_subscription_update",
+        "core_subscription_refresh",
+        "core_subscription_refresh_all",
+        "core_subscription_delete_preview",
+        "core_subscription_delete",
+        "core_subscription_mark_summary_read",
+        "core_subscription_job_status",
+        "core_subscription_job_cancel",
+        "core_profile_export",
+        "core_profile_import_preview",
+        "core_profile_import_confirm",
+    ] {
+        assert!(
+            defined.iter().any(|name| name == command),
+            "missing source IPC {command}"
+        );
+    }
 
     // 2. Registered names inside generate_handler![...].
     let marker = "generate_handler![";

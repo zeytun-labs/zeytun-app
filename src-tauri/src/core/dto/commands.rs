@@ -2,6 +2,66 @@ use serde::{Deserialize, Serialize};
 
 use super::profile::ProxyPolicyType;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionDependencyKind {
+    PolicyMember,
+    PolicySelection,
+    ProxyChain,
+    ProxyDetour,
+    Route,
+    Final,
+    TempRule,
+    SessionRule,
+    DnsDetour,
+    RulesetAction,
+    RulesetDownloadPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionDependency {
+    pub kind: SubscriptionDependencyKind,
+    pub owner: String,
+    pub proxy_tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubscriptionDeletePreview {
+    pub profile_id: String,
+    pub source_id: String,
+    /// Opaque, short-lived token bound to the observed DB and session revision.
+    pub preview_token: String,
+    pub proxy_tags: Vec<String>,
+    pub dependencies: Vec<SubscriptionDependency>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionDeleteMode {
+    DeleteNodes,
+    KeepAsManual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteSubscriptionInput {
+    pub profile_id: String,
+    pub source_id: String,
+    pub preview_token: String,
+    pub confirmed: bool,
+    pub mode: SubscriptionDeleteMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSubscriptionInput {
+    pub profile_id: String,
+    pub source_id: String,
+    pub settings: super::SubscriptionSettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProfileInput {
     /// Optional: user-set name wins; else the `profile-title` header; else a

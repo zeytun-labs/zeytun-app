@@ -1,3 +1,4 @@
+use crate::core::models::zeytun_core::outbound::{Outbound, OutboundType};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::core::{
@@ -25,6 +26,28 @@ impl Default for RuntimeProfileCompiler {
 }
 
 impl RuntimeProfileCompiler {
+    /// All hot overlays use the same validated/resolved graph as cold config.
+    pub fn live_rules_payload(
+        profile: &crate::core::dto::ZeytunCore,
+        include_session: bool,
+    ) -> Result<serde_json::Value, String> {
+        let mut snapshot = profile.clone();
+        if include_session {
+            snapshot.temp_rules.extend(snapshot.session_rules.clone());
+        }
+        let runtime = Self::new()
+            .compile(
+                &crate::core::compiler::profile_converter::ProfileConverter::convert(&snapshot),
+            )
+            .map_err(|e| e.to_string())?;
+        let config = crate::core::zeytun_core_config::ZeytunCoreConfigBuilder::new(false, false)
+            .build(&runtime, &snapshot.outbound_mode)?;
+        Ok(config["route"]
+            .get("live_rules")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"temp":[],"permanent":[]})))
+    }
+
     pub fn new() -> Self {
         Self {
             support_resolver: SupportResolver,
@@ -33,6 +56,9 @@ impl RuntimeProfileCompiler {
     }
 
     pub fn compile(&self, profile: &Profile) -> Result<RuntimeProfile, CompileError> {
+        if let Some(error) = &profile.validation_error {
+            return Err(CompileError::InvalidProfile(error.clone()));
+        }
         let mut tag_allocator = TagAllocator::new();
 
         let mut warnings = Vec::new();
@@ -94,7 +120,17 @@ impl RuntimeProfileCompiler {
                 .build_proxy_outbound(&normalized_server, tag.clone())
             {
                 Ok(outbound) => outbound,
-                Err(_) => continue,
+                Err(_) => {
+                    warnings.push(CompileWarning::ProxyServerIgnored {
+                        proxy_server_tag: server.tag.clone(),
+                        name: server.name.clone(),
+                        reason: "Invalid proxy configuration; traffic blocked.".into(),
+                    });
+                    Outbound {
+                        tag: tag.clone(),
+                        outbound_type: OutboundType::Block,
+                    }
+                }
             };
 
             outbounds.push(RuntimeOutbound {
@@ -110,11 +146,27 @@ impl RuntimeProfileCompiler {
                 unreachable!()
             };
 
-            if chain_proto.proxies.is_empty() {
+            if chain_proto.proxies.is_empty()
+                || chain_proto.proxies.iter().any(|id| {
+                    !outbounds.iter().any(|o| {
+                        o.source_proxy_server_id == *id
+                            && !matches!(o.outbound.outbound_type, OutboundType::Block)
+                    })
+                })
+            {
                 warnings.push(CompileWarning::ProxyServerIgnored {
                     proxy_server_tag: chain_server.tag.clone(),
                     name: chain_server.name.clone(),
                     reason: "Chain contains no proxies.".to_string(),
+                });
+                let tag = tag_allocator.allocate_proxy_server_tag(chain_server);
+                outbounds.push(RuntimeOutbound {
+                    tag: tag.clone(),
+                    source_proxy_server_id: chain_server.tag.clone(),
+                    outbound: Outbound {
+                        tag,
+                        outbound_type: OutboundType::Block,
+                    },
                 });
                 continue;
             }
@@ -139,7 +191,7 @@ impl RuntimeProfileCompiler {
 
                 let (mut cloned_server, _) = self.support_resolver.normalize(original_server);
 
-                if i == 0 {
+                if i == 0 && chain_proto.proxies.len() > 1 {
                     prev_allocated_tag =
                         Some(tag_allocator.allocate_proxy_server_tag(original_server));
                     continue;
@@ -157,7 +209,11 @@ impl RuntimeProfileCompiler {
 
                 cloned_server.detour = prev_allocated_tag.clone();
 
-                let allocated_tag = tag_allocator.allocate_proxy_server_tag(&cloned_server);
+                let allocated_tag = if is_last {
+                    tag_allocator.allocate_proxy_server_tag(&cloned_server)
+                } else {
+                    tag_allocator.allocate_chain_hop_tag(&chain_server.tag, node_tag)
+                };
 
                 match self
                     .outbound_factory
@@ -166,7 +222,11 @@ impl RuntimeProfileCompiler {
                     Ok(outbound) => {
                         outbounds.push(RuntimeOutbound {
                             tag: allocated_tag.clone(),
-                            source_proxy_server_id: cloned_server.tag.clone(),
+                            source_proxy_server_id: if is_last {
+                                chain_server.tag.clone()
+                            } else {
+                                format!("{}-{}", chain_server.tag, node_tag)
+                            },
                             outbound,
                         });
                         prev_allocated_tag = Some(allocated_tag);
@@ -189,12 +249,24 @@ impl RuntimeProfileCompiler {
                     name: chain_server.name.clone(),
                     reason: "Failed to compile proxy chain".to_string(),
                 });
+                let tag = tag_allocator.allocate_proxy_server_tag(chain_server);
+                outbounds.retain(|o| o.tag != tag);
+                outbounds.push(RuntimeOutbound {
+                    tag: tag.clone(),
+                    source_proxy_server_id: chain_server.tag.clone(),
+                    outbound: Outbound {
+                        tag,
+                        outbound_type: OutboundType::Block,
+                    },
+                });
             }
         }
 
         let mut valid_targets = Self::collect_builtin_tags();
         for outbound in &outbounds {
-            valid_targets.insert(outbound.tag.clone());
+            if !matches!(outbound.outbound.outbound_type, OutboundType::Block) {
+                valid_targets.insert(outbound.tag.clone());
+            }
         }
 
         let policies = self.compile_policy(
@@ -203,6 +275,21 @@ impl RuntimeProfileCompiler {
             &mut valid_targets,
             &mut warnings,
         )?;
+
+        for id in &profile.blocked_proxy_tags {
+            let tag = tag_allocator.allocate_proxy_tag(id, id);
+            warnings.push(CompileWarning::ProxyServerIgnored {proxy_server_tag:id.clone(),name:id.clone(),reason:"Node is unavailable, disabled, invalid, or depends on an unusable node; traffic blocked.".into()});
+            outbounds.push(RuntimeOutbound {
+                tag: tag.clone(),
+                source_proxy_server_id: id.clone(),
+                outbound: Outbound {
+                    tag,
+                    outbound_type: OutboundType::Block,
+                },
+            });
+        }
+        valid_targets.extend(outbounds.iter().map(|o| o.tag.clone()));
+        valid_targets.extend(policies.iter().map(|p| p.tag.clone()));
 
         let rules = self.compile_rules(
             &profile.rules,
@@ -222,6 +309,58 @@ impl RuntimeProfileCompiler {
             &valid_targets,
             &mut warnings,
         );
+
+        let blocked_targets = outbounds
+            .iter()
+            .filter(|o| matches!(o.outbound.outbound_type, OutboundType::Block))
+            .map(|o| o.tag.clone())
+            .chain(
+                policies
+                    .iter()
+                    .filter(|p| matches!(p.policy.outbound_type, OutboundType::Block))
+                    .map(|p| p.tag.clone()),
+            )
+            .collect::<HashSet<_>>();
+        let resolve = |target: &str| {
+            self.resolve_target(target, &tag_allocator)
+                .filter(|tag| valid_targets.contains(tag))
+                // Hot live updates may reach a core still holding the previous
+                // usable outbound at this tag. Use the built-in Block target,
+                // not a placeholder that becomes Block only after restart.
+                .map(|tag| {
+                    if blocked_targets.contains(&tag) {
+                        "block".into()
+                    } else {
+                        tag
+                    }
+                })
+                .unwrap_or_else(|| "block".into())
+        };
+        let mut live_temp = profile.live_temp.clone();
+        let mut live_permanent = profile.live_permanent.clone();
+        for rule in &mut live_temp {
+            if !["reject", "hijack-dns", "bypass"].contains(&rule.outbound.as_str()) {
+                rule.outbound = resolve(&rule.outbound);
+            }
+        }
+        for rule in &mut live_permanent {
+            if !["reject", "hijack-dns", "bypass"].contains(&rule.outbound.as_str()) {
+                rule.outbound = resolve(&rule.outbound);
+            }
+        }
+        let mut dns = profile.dns.clone();
+        for server in dns.iter_mut().flat_map(|d| d.servers.iter_mut().flatten()) {
+            if let Some(target) = &mut server.detour {
+                *target = resolve(target);
+            }
+        }
+        let mut rule_sets = profile.rule_sets.clone();
+        for rs in rule_sets.iter_mut().flatten() {
+            rs.action = resolve(&rs.action);
+            if let Some(target) = &mut rs.download_policy {
+                *target = resolve(target);
+            }
+        }
 
         let mut tags: Vec<String> = valid_targets.iter().cloned().collect();
         tags.sort_unstable();
@@ -244,11 +383,11 @@ impl RuntimeProfileCompiler {
             outbounds,
             policies,
             rules,
-            live_temp: profile.live_temp.clone(),
-            live_permanent: profile.live_permanent.clone(),
-            rule_sets: profile.rule_sets.clone(),
+            live_temp,
+            live_permanent,
+            rule_sets,
             final_outbound,
-            dns: profile.dns.clone(),
+            dns,
             connection_ask: profile.connection_ask.clone(),
             ignored_proxy_servers,
             warnings,
@@ -288,9 +427,9 @@ impl RuntimeProfileCompiler {
         }
 
         let mut queue = VecDeque::new();
-        for (tag, &deg) in &in_degree {
-            if deg == 0 {
-                queue.push_back(tag.clone());
+        for policy in policies {
+            if in_degree[&policy.tag] == 0 {
+                queue.push_back(policy.tag.clone());
             }
         }
 
@@ -325,10 +464,14 @@ impl RuntimeProfileCompiler {
 
             let mut runtime_members = Vec::new();
 
-            for member in &policy.outbounds {
+            let mut member_indices = Vec::new();
+            for (i, member) in policy.outbounds.iter().enumerate() {
                 match self.resolve_target(member, tag_allocator) {
                     Some(tag) if valid_outbounds.contains(&tag) => {
-                        runtime_members.push(tag);
+                        if !runtime_members.contains(&tag) {
+                            runtime_members.push(tag);
+                            member_indices.push(i);
+                        }
                     }
                     Some(tag) => {
                         warnings.push(CompileWarning::PolicyMemberIgnored {
@@ -355,11 +498,28 @@ impl RuntimeProfileCompiler {
                     name: policy.name.clone(),
                     reason: "Policy has no valid runtime members.".into(),
                 });
+                runtime_groups.push(RuntimePolicy {
+                    tag: tag.clone(),
+                    source_proxy_policy_id: policy.tag.clone(),
+                    outbounds: Vec::new(),
+                    policy: Outbound {
+                        tag: tag.clone(),
+                        outbound_type: OutboundType::Block,
+                    },
+                });
                 continue;
             }
 
             let mut runtime_policy = policy.clone();
             runtime_policy.outbounds = runtime_members.clone();
+            if let ProxyPolicyType::Balancer(balancer) = &mut runtime_policy.policy_type {
+                balancer.weights = balancer.weights.as_ref().map(|weights| {
+                    member_indices
+                        .iter()
+                        .filter_map(|&i| weights.get(i).copied())
+                        .collect()
+                });
+            }
 
             if let ProxyPolicyType::Manual(manual) = &mut runtime_policy.policy_type {
                 manual.default = manual
@@ -460,18 +620,18 @@ impl RuntimeProfileCompiler {
             Some(resolved) => {
                 warnings.push(CompileWarning::FinalPolicyChanged {
                     from: outbound.to_string(),
-                    to: "direct".to_string(),
+                    to: "block".to_string(),
                     reason: format!("Resolved target `{resolved}` is not a valid outbound."),
                 });
-                "direct".to_string()
+                "block".to_string()
             }
             None => {
                 warnings.push(CompileWarning::FinalPolicyChanged {
                     from: outbound.to_string(),
-                    to: "direct".to_string(),
+                    to: "block".to_string(),
                     reason: "Target could not be resolved.".into(),
                 });
-                "direct".to_string()
+                "block".to_string()
             }
         }
     }

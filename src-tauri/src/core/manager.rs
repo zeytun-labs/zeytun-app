@@ -74,8 +74,13 @@ impl CoreManager {
         profile.temp_rules.retain(|r| !r.is_expired(now_ms));
         db.save_profile(&profile)?;
 
-        let binary_path =
-            resolve_zeytun_core_binary_path(&bin_dir, &platform_bin_dir, resource_dir.as_deref());
+        let binary_path = if events.is_headless() {
+            // Isolated backend fixtures must never find/start the bundled core,
+            // whose normal startup performs process cleanup and system routing.
+            platform_bin_dir.join("headless-core-not-installed")
+        } else {
+            resolve_zeytun_core_binary_path(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
+        };
 
         let lifecycle = CoreLifecycle::new(binary_path, config_dir.clone(), events.clone());
 
@@ -109,6 +114,37 @@ impl CoreManager {
         &self.profile
     }
 
+    pub fn subscription_delete_preview(
+        &self,
+        profile_id: &str,
+        source_id: &str,
+    ) -> Result<crate::core::dto::SubscriptionDeletePreview, crate::error::CommandError> {
+        let session_rules = if self.profile.id == profile_id {
+            self.profile.session_rules.as_slice()
+        } else {
+            &[]
+        };
+        Ok(self
+            .db
+            .subscription_delete_preview(profile_id, source_id, session_rules)?)
+    }
+
+    pub fn subscription_delete(
+        &mut self,
+        input: crate::core::dto::DeleteSubscriptionInput,
+    ) -> Result<(), crate::error::CommandError> {
+        let session_rules = if self.profile.id == input.profile_id {
+            self.profile.session_rules.as_slice()
+        } else {
+            &[]
+        };
+        let profile = self.db.delete_subscription(&input, session_rules)?;
+        if self.profile.id == input.profile_id {
+            self.profile = profile;
+        }
+        Ok(())
+    }
+
     /// Whether the zeytun-core process is currently running.
     pub fn is_running(&self) -> bool {
         self.lifecycle.is_running()
@@ -116,6 +152,7 @@ impl CoreManager {
 
     pub fn profile_set(&mut self, profile: ZeytunCore) -> Result<(), crate::error::CommandError> {
         let mut profile = profile;
+        profile.local_proxy = self.profile.local_proxy.clone();
         profile.normalize_policy_graph();
         self.profile = profile;
         self.db.save_profile(&self.profile)?;
@@ -137,6 +174,7 @@ impl CoreManager {
 
         self.profile = ZeytunCore::default();
         self.profile.normalize_policy_graph();
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         self.db.save_profile(&self.profile)?;
         self.db.set_active(&self.profile.id)?;
 
@@ -185,6 +223,8 @@ impl CoreManager {
         let proxy = crate::core::dto::Proxy {
             tag: tag.clone(),
             origin: ProxyOrigin::Manual,
+            source_id: None,
+            available: true,
             title: input.title,
             protocol: protocol_name,
             link: String::new(),
@@ -211,8 +251,8 @@ impl CoreManager {
         // Session rules die with the core process — never survive a fresh start.
         self.profile.session_rules.clear();
 
-        match self.lifecycle.start(&self.profile) {
-            Ok(status) => Ok(status),
+        match self.start_snapshot() {
+            Ok(()) => Ok(self.status()),
             Err(e) => {
                 self.events.error("Core failed to start", &e);
                 Err(crate::error::CommandError::Core(e))
@@ -226,11 +266,31 @@ impl CoreManager {
 
     pub fn restart(&mut self) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
         let _ = self.lifecycle.stop();
-        Ok(self.lifecycle.start(&self.profile)?)
+        self.start()
     }
 
     pub fn status(&mut self) -> CoreRuntimeStatus {
-        self.lifecycle.status()
+        let mut status = self.lifecycle.status();
+        status.saved_profile_id = self.profile.id.clone();
+        status.saved_revision = self.saved_revision(&self.profile.id).unwrap_or(u64::MAX);
+        status.pending_apply = status.applied_profile_id.as_deref()
+            != Some(self.profile.id.as_str())
+            || status.applied_revision != Some(status.saved_revision);
+        status
+    }
+
+    fn start_snapshot(&mut self) -> Result<(), String> {
+        let (mut snapshot, revision) = self
+            .db
+            .profile_snapshot(&self.profile.id)
+            .map_err(|e| e.to_string())?;
+        snapshot.session_rules.clear();
+        self.lifecycle.start(&snapshot, revision)?;
+        self.profile = self
+            .db
+            .load_profile(&snapshot.id)
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     // ----- Profile registry -------------------------------------------------
@@ -263,7 +323,7 @@ impl CoreManager {
             .clone()
             .unwrap_or_else(|| "New Profile".to_string());
         let id = self.allocate_profile_id(&provisional);
-        let mut meta = ProfileMeta {
+        let meta = ProfileMeta {
             id: id.clone(),
             name: provisional.clone(),
             subscription_url: url.clone(),
@@ -287,30 +347,8 @@ impl CoreManager {
         };
         bundle.normalize_policy_graph();
 
-        // Foreground sync if a URL was supplied.
-        if let Some(url) = url.as_deref() {
-            let proxy = self.proxy_for_traffic(crate::core::network_policy::TRAFFIC_SUBSCRIPTION);
-            let result = SubscriptionManager::fetch_and_update(&mut bundle, url, proxy.as_deref());
-            bundle.normalize_policy_graph();
-            self.db.save_profile(&bundle)?;
-            self.db.save_sync_summary(&id, &result.summary, false)?;
-            self.db
-                .save_subscription_info(&id, result.userinfo, result.update_interval_hours)?;
-
-            // Name resolution: user name wins; else profile-title header; else
-            // keep the generated fallback.
-            if user_name.is_none() {
-                if let Some(title) = result.profile_title.filter(|t| !t.trim().is_empty()) {
-                    meta.name = title.trim().to_string();
-                    self.db.update_profile_meta(&meta)?;
-                }
-            }
-
-            meta.last_sync_summary = Some(result.summary);
-            meta.last_updated_unix_ms = Some(unix_millis());
-        } else {
-            self.db.save_profile(&bundle)?;
-        }
+        self.db.save_profile(&bundle)?;
+        // The IPC adapter fetches after releasing the manager lock.
 
         self.events.info("Profile updated", &meta.name);
         Ok(self
@@ -443,49 +481,97 @@ impl CoreManager {
         self.events.info("Profile switched", id);
 
         if was_running {
-            self.lifecycle.start(&self.profile)?;
+            self.start_snapshot()?;
         }
         Ok(())
+    }
+
+    pub fn profile_export(
+        &self,
+        profile_id: &str,
+        mode: crate::core::profile_document::ExportMode,
+    ) -> Result<String, crate::error::CommandError> {
+        let meta = self
+            .db
+            .list_profiles()?
+            .into_iter()
+            .find(|p| p.id == profile_id)
+            .ok_or_else(|| crate::error::CommandError::NotFound("profile not found".into()))?;
+        let bundle = self.db.load_profile(profile_id)?;
+        let sources = self.db.list_subscriptions(profile_id)?;
+        crate::core::profile_document::ProfileDocument::encode(
+            &meta.name,
+            meta.icon,
+            &bundle,
+            &sources,
+            mode,
+            vec![],
+        )
+        .map_err(crate::error::CommandError::InvalidInput)
+    }
+
+    pub fn profile_import_preview(
+        &self,
+        raw: &str,
+    ) -> Result<crate::core::profile_document::ImportPreview, crate::error::CommandError> {
+        let doc = crate::core::profile_document::ProfileDocument::decode(raw)
+            .map_err(crate::error::CommandError::InvalidInput)?;
+        Ok(doc.preview())
+    }
+
+    pub fn profile_import_confirm(
+        &mut self,
+        raw: &str,
+        _preview_token: &str,
+        custom_name: Option<String>,
+    ) -> Result<ProfileMeta, crate::error::CommandError> {
+        let doc = crate::core::profile_document::ProfileDocument::decode(raw)
+            .map_err(crate::error::CommandError::InvalidInput)?;
+        let chosen_name = custom_name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| doc.profile.name.clone());
+
+        let id = self.allocate_profile_id(&chosen_name);
+        let meta = ProfileMeta {
+            id: id.clone(),
+            name: chosen_name,
+            subscription_url: None,
+            last_updated_unix_ms: None,
+            is_active: false,
+            last_sync_summary: None,
+            unread_summary: false,
+            skip_auto_update: false,
+            update_interval_hours: 12,
+            sub_upload: None,
+            sub_download: None,
+            sub_total: None,
+            sub_expire: None,
+            icon: doc.profile.icon.clone(),
+        };
+
+        self.db.create_profile(&meta)?;
+        let (mut bundle, sources) = doc.to_zeytun_core(&id);
+        bundle.id = id.clone();
+        self.db.save_profile(&bundle)?;
+        for source in &sources {
+            self.db.create_subscription(&id, source)?;
+        }
+
+        self.events.info("Profile imported", &meta.name);
+        Ok(self
+            .db
+            .list_profiles()?
+            .into_iter()
+            .find(|p| p.id == id)
+            .unwrap_or(meta))
     }
 
     /// Re-fetch the active (or given) profile's subscription and reconcile.
     /// `background = true` persists the summary with `unread_summary` set;
     /// `background = false` (foreground/manual) returns it and leaves it read.
-    pub fn profile_refresh(
-        &mut self,
-        id: &str,
-        background: bool,
-    ) -> Result<SyncSummary, crate::error::CommandError> {
-        let meta = self
-            .db
-            .list_profiles()?
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| {
-                crate::error::CommandError::NotFound(format!("profile `{id}` not found"))
-            })?;
-        let url = meta
-            .subscription_url
-            .clone()
-            .filter(|u| !u.trim().is_empty())
-            .ok_or_else(|| {
-                crate::error::CommandError::InvalidInput(format!(
-                    "profile `{id}` has no subscription url"
-                ))
-            })?;
-
-        // Operate on the in-memory active bundle if we're refreshing it,
-        // otherwise load the target bundle.
-        let refreshing_active = self.profile.id == id;
-        let mut bundle = if refreshing_active {
-            self.profile.clone()
-        } else {
-            self.db.load_profile(id)?
-        };
-
-        let proxy = self.proxy_for_traffic(crate::core::network_policy::TRAFFIC_SUBSCRIPTION);
-        let result = SubscriptionManager::fetch_and_update(&mut bundle, &url, proxy.as_deref());
-        self.apply_sync_result(id, bundle, refreshing_active, result, meta, background)
+    pub fn legacy_subscription_id(&self, id: &str) -> Result<String, crate::error::CommandError> {
+        Ok(self.db.legacy_subscription(id)?.id)
     }
 
     pub fn profile_apply_refresh(
@@ -495,55 +581,53 @@ impl CoreManager {
         headers: crate::core::subscription::SubHeaders,
         background: bool,
     ) -> Result<SyncSummary, crate::error::CommandError> {
-        let meta = self
-            .db
-            .list_profiles()?
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| {
-                crate::error::CommandError::NotFound(format!("profile `{id}` not found"))
-            })?;
-
-        let refreshing_active = self.profile.id == id;
-        let mut bundle = if refreshing_active {
-            self.profile.clone()
-        } else {
-            self.db.load_profile(id)?
-        };
-
-        let result = SubscriptionManager::apply_update(&mut bundle, raw, headers);
-        self.apply_sync_result(id, bundle, refreshing_active, result, meta, background)
+        let source = self.db.legacy_subscription(id)?;
+        let staged = SubscriptionManager::stage(raw, headers).map_err(|e| e.to_string());
+        self.apply_sync_result(id, &source, staged, background)
     }
 
-    fn apply_sync_result(
+    pub(crate) fn apply_sync_result(
         &mut self,
         id: &str,
-        mut bundle: ZeytunCore,
-        refreshing_active: bool,
-        result: crate::core::dto::SyncResult,
-        meta: ProfileMeta,
+        source: &crate::core::dto::SubscriptionSource,
+        staged: Result<crate::core::subscription::StagedSubscription, String>,
         background: bool,
     ) -> Result<SyncSummary, crate::error::CommandError> {
-        bundle.normalize_policy_graph();
-        self.db.save_profile(&bundle)?;
-        self.db.save_sync_summary(id, &result.summary, background)?;
-        self.db
-            .save_subscription_info(id, result.userinfo, result.update_interval_hours)?;
-
-        // Adopt the profile-title as the name only if the profile still carries
-        // the generated default (user never named it).
-        if let Some(title) = result
-            .profile_title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
-            if meta.name == "New Profile" {
-                let mut renamed = meta.clone();
-                renamed.name = title.to_string();
-                self.db.update_profile_meta(&renamed)?;
+        let staged = match staged {
+            Ok(staged) => staged,
+            Err(error) => {
+                let result = SubscriptionManager::failed_result(error);
+                self.db
+                    .record_subscription_failure(id, source, &result.summary)?;
+                return Ok(result.summary);
             }
-        }
+        };
+        let refreshing_active = self.profile.id == id;
+        let session_rules = if refreshing_active {
+            self.profile.session_rules.as_slice()
+        } else {
+            &[]
+        };
+        let (bundle, result) =
+            match self
+                .db
+                .apply_subscription(id, source, staged, background, session_rules)
+            {
+                Ok(accepted) => accepted,
+                Err(crate::core::storage::StorageError::StaleSubscription) => {
+                    return Err(crate::core::storage::StorageError::StaleSubscription.into())
+                }
+                Err(_) => {
+                    // The transaction has rolled back. Never expose DB/parser payloads,
+                    // and recheck generation in the failure writer before recording.
+                    let result = SubscriptionManager::failed_result(
+                        "subscription candidate could not be applied".into(),
+                    );
+                    self.db
+                        .record_subscription_failure(id, source, &result.summary)?;
+                    return Ok(result.summary);
+                }
+            };
 
         self.events.info(
             "Profile updated",
@@ -557,7 +641,6 @@ impl CoreManager {
 
         if refreshing_active {
             self.profile = bundle;
-            self.reload_if_running()?;
         }
         Ok(result.summary)
     }
@@ -567,6 +650,85 @@ impl CoreManager {
         id: &str,
     ) -> Result<(), crate::error::CommandError> {
         self.db.mark_summary_read(id).map_err(Into::into)
+    }
+
+    pub fn subscription_list(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<crate::core::dto::SubscriptionSource>, crate::error::CommandError> {
+        if !self.db.list_profiles()?.iter().any(|p| p.id == profile_id) {
+            return Err(crate::error::CommandError::NotFound(
+                "profile not found".into(),
+            ));
+        }
+        Ok(self.db.list_subscriptions(profile_id)?)
+    }
+
+    pub fn subscription_create(
+        &mut self,
+        profile_id: &str,
+        settings: crate::core::dto::SubscriptionSettings,
+    ) -> Result<crate::core::dto::SubscriptionSource, crate::error::CommandError> {
+        if !self.db.list_profiles()?.iter().any(|p| p.id == profile_id) {
+            return Err(crate::error::CommandError::NotFound(
+                "profile not found".into(),
+            ));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let existing = self.db.list_subscriptions(profile_id)?;
+        let position = existing.len() as i64;
+        let source = crate::core::dto::SubscriptionSource {
+            id,
+            settings,
+            generation: 0,
+            position,
+            provider_title: None,
+            suggested_interval_hours: None,
+            userinfo: None,
+            last_attempt_at: None,
+            last_success_at: None,
+            last_error: None,
+            last_sync_summary: None,
+            unread_summary: false,
+        };
+        self.db.create_subscription(profile_id, &source)?;
+        Ok(source)
+    }
+
+    pub fn subscription_update(
+        &mut self,
+        profile_id: &str,
+        source_id: &str,
+        settings: crate::core::dto::SubscriptionSettings,
+    ) -> Result<crate::core::dto::SubscriptionSource, crate::error::CommandError> {
+        if !self.db.list_profiles()?.iter().any(|p| p.id == profile_id) {
+            return Err(crate::error::CommandError::NotFound(
+                "profile not found".into(),
+            ));
+        }
+        self.db
+            .update_subscription(profile_id, source_id, &settings)?;
+        self.db
+            .list_subscriptions(profile_id)?
+            .into_iter()
+            .find(|s| s.id == source_id)
+            .ok_or_else(|| {
+                crate::error::CommandError::NotFound("subscription source not found".into())
+            })
+    }
+
+    pub fn subscription_mark_summary_read(
+        &mut self,
+        profile_id: &str,
+        source_id: &str,
+    ) -> Result<(), crate::error::CommandError> {
+        self.db
+            .mark_subscription_summary_read(profile_id, source_id)?;
+        Ok(())
+    }
+
+    pub fn saved_revision(&self, profile_id: &str) -> Result<u64, crate::error::CommandError> {
+        Ok(self.db.config_revision(profile_id)?)
     }
 
     pub fn reload_if_running(&mut self) -> Result<(), crate::error::CommandError> {
@@ -583,7 +745,7 @@ impl CoreManager {
     fn restart_if_running(&mut self) -> Result<(), crate::error::CommandError> {
         if self.lifecycle.is_running() {
             let _ = self.lifecycle.stop();
-            self.lifecycle.start(&self.profile)?;
+            self.start_snapshot()?;
         }
         Ok(())
     }
@@ -600,7 +762,7 @@ impl CoreManager {
         };
         self.profile.local_proxy.mode = Some(inbound_mode);
         self.profile.normalize_policy_graph();
-        self.db.save_profile(&self.profile)?;
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         // TUN mode changes require a full restart to add/remove network routes and privileges
         self.restart_if_running()?;
         Ok(())
@@ -610,7 +772,7 @@ impl CoreManager {
         // Only macOS network settings change; restarting the core can collide on its listen port.
         self.lifecycle.set_system_proxy(enabled, &self.profile)?;
         self.profile.local_proxy.system_proxy = Some(enabled);
-        self.db.save_profile(&self.profile)?;
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         Ok(())
     }
 
@@ -621,7 +783,7 @@ impl CoreManager {
             "127.0.0.1".to_string()
         };
         self.profile.normalize_policy_graph();
-        self.db.save_profile(&self.profile)?;
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         // No auto-restart: persisted only. The listen-address change takes effect
         // when the user hits "Restart Core" (frontend flags pendingRestart).
         Ok(())
@@ -632,7 +794,7 @@ impl CoreManager {
         self.profile.local_proxy.http_port = port;
         self.profile.local_proxy.socks_port = port;
         self.profile.normalize_policy_graph();
-        self.db.save_profile(&self.profile)?;
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         // No auto-restart: persisted only. The new port takes effect when the
         // user hits "Restart Core" (frontend flags pendingRestart).
         Ok(())
@@ -641,7 +803,7 @@ impl CoreManager {
     pub fn set_log_level(&mut self, level: String) -> Result<(), crate::error::CommandError> {
         self.profile.local_proxy.log_level = Some(level);
         self.profile.normalize_policy_graph();
-        self.db.save_profile(&self.profile)?;
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         // No auto-reload: the change is persisted but only takes effect when the
         // user hits "Restart Core" (frontend flags pendingRestart). Reloading here
         // would drop the gRPC link and flash the status light for nothing.
@@ -673,30 +835,33 @@ impl CoreManager {
         Ok(())
     }
 
-    /// Proxy URL to use for `traffic`, or `None` for a direct request.
-    ///
-    /// Returns `None` whenever the core is not running: the mixed inbound only
-    /// exists while the core is up, so dialing it would fail with a connection
-    /// refused that looks like a network outage. Falling back to direct is both
-    /// the honest and the useful behaviour — it is also why an update check can
-    /// still reach GitHub while disconnected.
-    pub fn proxy_for_traffic(&self, traffic: &str) -> Option<String> {
+    /// Use only the ready, applied inbound; never silently fall back to Direct.
+    pub fn proxy_for_traffic(
+        &self,
+        traffic: &str,
+    ) -> Result<Option<String>, crate::error::CommandError> {
         let policy = self
             .db
-            .load_network_policies()
-            .unwrap_or_default()
+            .load_network_policies()?
             .remove(traffic)
             .unwrap_or_default();
 
         if matches!(policy, crate::core::network_policy::NetworkPolicy::Direct) {
-            return None;
+            return Ok(None);
         }
         if !self.is_running() {
-            println!("[NetworkPolicy] core not running; `{traffic}` falls back to direct");
-            return None;
+            return Err(crate::error::CommandError::State(
+                "local proxy download requires a ready core".into(),
+            ));
         }
 
-        let port = self.profile.local_proxy.mixed_port.unwrap_or(6060);
+        let port = self
+            .lifecycle
+            .applied_profile()
+            .ok_or_else(|| crate::error::CommandError::State("no applied inbound endpoint".into()))?
+            .local_proxy
+            .mixed_port
+            .unwrap_or(6060);
         let (url, degraded) = policy.resolve(port);
         if degraded {
             println!(
@@ -704,7 +869,7 @@ impl CoreManager {
                  reach the local proxy, so routing depends on the profile's rules"
             );
         }
-        url
+        Ok(url)
     }
 
     pub fn set_mode(&mut self, mode: OutboundMode) -> Result<(), crate::error::CommandError> {
@@ -933,10 +1098,36 @@ impl CoreManager {
         Ok(())
     }
 
+    pub fn validate_applied_selection(
+        &self,
+        policy_tag: &str,
+        member_tag: &str,
+    ) -> Result<(), crate::error::CommandError> {
+        let applied = self
+            .lifecycle
+            .applied_profile()
+            .ok_or_else(|| crate::error::CommandError::State("no applied graph".into()))?;
+        let resolved = crate::core::compiler::profile_converter::ProfileConverter::convert(applied);
+        if resolved
+            .proxy_policies
+            .iter()
+            .any(|p| p.tag == policy_tag && p.outbounds.iter().any(|t| t == member_tag))
+        {
+            Ok(())
+        } else {
+            Err(crate::error::CommandError::InvalidInput(
+                "selection is not a member of the applied graph".into(),
+            ))
+        }
+    }
+
     pub fn select_policy_member(
         &mut self,
         input: SelectPolicyMemberInput,
     ) -> Result<(), crate::error::CommandError> {
+        if self.lifecycle.is_running() {
+            self.validate_applied_selection(&input.policy_tag, &input.member_tag)?;
+        }
         let policy = self
             .profile
             .policies
@@ -1171,7 +1362,7 @@ impl CoreManager {
         if self.lifecycle.is_running() {
             let _ = self.lifecycle.stop();
         }
-        self.lifecycle.start(&self.profile)?;
+        self.start_snapshot()?;
         Ok(())
     }
 
@@ -1231,34 +1422,27 @@ impl CoreManager {
         });
     }
 
+    fn sync_live_policy_selections(&self, clash: &crate::adapters::clash_api::ClashApiClient) {
+        let converted =
+            crate::core::compiler::profile_converter::ProfileConverter::convert(&self.profile);
+        for policy in &converted.proxy_policies {
+            if let crate::core::models::policy::ProxyPolicyType::Manual(manual) =
+                &policy.policy_type
+            {
+                if let Some(target) = &manual.default {
+                    let _ = clash.select_proxy(&policy.tag, target);
+                }
+            }
+        }
+    }
+
     fn push_permanent_rules_overlay(&self) -> Result<(), crate::error::CommandError> {
         let Some(clash) = self.lifecycle.clash_api() else {
             return Ok(());
         };
-        let items: Vec<serde_json::Value> = self
-            .profile
-            .rules
-            .iter()
-            .filter(|r| {
-                r.enabled && !matches!(r.kind, crate::core::dto::RuleType::Final)
-            })
-            .map(|r| {
-                let model =
-                    crate::core::compiler::profile_converter::ProfileConverter::core_rule_to_model_pub(
-                        r,
-                    );
-                let rule_json =
-                    crate::core::zeytun_core_config::ZeytunCoreConfigBuilder::temp_rule_json(
-                        &model,
-                    );
-                serde_json::json!({
-                    "id": r.id,
-                    "expires_at": 0,
-                    "rule": rule_json,
-                })
-            })
-            .collect();
-        let body = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
+        self.sync_live_policy_selections(clash);
+        let payload=crate::core::compiler::runtime_profile_compiler::RuntimeProfileCompiler::live_rules_payload(&self.profile,true).map_err(crate::error::CommandError::Internal)?;
+        let body = payload["permanent"].to_string();
         clash.put_permanent_rules(&body).map_err(|e| {
             crate::error::CommandError::Internal(format!("permanent-rules push: {e:?}"))
         })?;
@@ -1348,42 +1532,9 @@ impl CoreManager {
         let Some(clash) = self.lifecycle.clash_api() else {
             return Ok(());
         };
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        // Live temp rules apply only in rule mode (see build_route gate). In
-        // Direct/Global push an empty overlay so no temp/session rule can
-        // leak past the clash-mode catch-all (runtime-proven leak).
-        let items: Vec<serde_json::Value> = if self.profile.outbound_mode == OutboundMode::Rule {
-            self.profile
-                .temp_rules
-                .iter()
-                .chain(self.profile.session_rules.iter())
-                .filter(|r| {
-                    r.enabled
-                        && !r.is_expired(now_ms)
-                        && !matches!(r.kind, crate::core::dto::RuleType::Final)
-                })
-                .map(|r| {
-                    let model = crate::core::compiler::profile_converter::ProfileConverter::core_rule_to_model_pub(
-                        &r.to_rule(),
-                    );
-                    let rule_json =
-                        crate::core::zeytun_core_config::ZeytunCoreConfigBuilder::temp_rule_json(
-                            &model,
-                        );
-                    serde_json::json!({
-                        "id": r.id,
-                        "expires_at": r.expires_at,
-                        "rule": rule_json,
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let body = serde_json::to_string(&items).unwrap_or_else(|_| "[]".to_string());
+        self.sync_live_policy_selections(clash);
+        let payload=crate::core::compiler::runtime_profile_compiler::RuntimeProfileCompiler::live_rules_payload(&self.profile,true).map_err(crate::error::CommandError::Internal)?;
+        let body = payload["temp"].to_string();
         clash
             .put_temp_rules(&body)
             .map_err(|e| crate::error::CommandError::Internal(format!("temp-rules push: {e:?}")))?;
@@ -1490,7 +1641,7 @@ impl CoreManager {
         }
         self.profile.local_proxy.connection_ask = Some(cfg);
         self.profile.normalize_policy_graph();
-        self.db.save_profile(&self.profile)?;
+        self.db.save_local_proxy(&self.profile.local_proxy)?;
         // No auto-reload: persisted only. Takes effect when the user hits
         // "Restart Core" (frontend flags pendingRestart).
         Ok(())
@@ -1772,10 +1923,6 @@ fn regex_escape(s: &str) -> String {
         }
     }
     out
-}
-
-fn unix_millis() -> i64 {
-    crate::core::constants::unix_millis()
 }
 
 fn resolve_zeytun_core_binary_path(
@@ -2330,7 +2477,10 @@ mod tests {
 
     #[test]
     fn resolves_bundled_and_dev_core_binary_paths() {
-        let temp = std::env::temp_dir().join(format!("zeytun-test-{}", unix_millis()));
+        let temp = std::env::temp_dir().join(format!(
+            "zeytun-test-{}",
+            crate::core::constants::unix_millis()
+        ));
         let bundled_path = temp
             .join("resources")
             .join("bin")

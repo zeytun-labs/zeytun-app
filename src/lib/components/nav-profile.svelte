@@ -4,11 +4,12 @@
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
     Add01Icon,
-    CloudDownloadIcon,
     Delete01Icon,
+    Download01Icon,
     Edit03Icon,
     Notification03Icon,
     UnfoldMoreIcon,
+    Upload01Icon,
   } from "@hugeicons/core-free-icons";
 
   import { profileStore } from "$lib/stores/profile.svelte";
@@ -20,6 +21,8 @@
     type ProfileDialogValues,
   } from "./profile/profile-dialog.svelte";
   import SyncSummaryDialog from "./profile/sync-summary-dialog.svelte";
+  import ProfileImportDialog from "./profile/profile-import-dialog.svelte";
+  import ProfileExportDialog from "./profile/profile-export-dialog.svelte";
 
   let { compact = false }: { compact?: boolean } = $props();
 
@@ -30,6 +33,11 @@
   let dialogOpen = $state(false);
   let dialogKind = $state<DialogKind>("create");
   let editTarget = $state<ProfileMeta | null>(null);
+
+  // Import / Export state
+  let importOpen = $state(false);
+  let exportOpen = $state(false);
+  let exportTarget = $state<ProfileMeta | null>(null);
 
   // Sync-summary modal
   let summaryOpen = $state(false);
@@ -68,9 +76,6 @@
       await action.run(async () => {
         await profileStore.createProfile({
           name: values.name ?? null,
-          subscription_url: values.url ?? null,
-          skip_auto_update: values.skipAutoUpdate,
-          update_interval_hours: values.updateIntervalHours,
           icon: values.icon ?? null,
         });
         dialogOpen = false;
@@ -81,50 +86,11 @@
         await profileStore.updateProfile({
           id,
           name: values.name ?? null,
-          subscription_url: values.url ?? null,
-          skip_auto_update: values.skipAutoUpdate,
-          update_interval_hours: values.updateIntervalHours,
           icon: values.icon ?? null,
         });
         dialogOpen = false;
       }, "Profile updated.");
     }
-  }
-
-  // --- Subscription usage / expiry formatting ---
-  function usageLabel(p: ProfileMeta): string | null {
-    if (p.sub_download == null && p.sub_upload == null) return null;
-    const used = (p.sub_upload ?? 0) + (p.sub_download ?? 0);
-    const total = p.sub_total ?? 0;
-    // total === 0 means unlimited.
-    if (total === 0) return `${formatBytes(used)} / ∞`;
-    return `${formatBytes(used)} / ${formatBytes(total)}`;
-  }
-
-  /** Usage percentage (0-100) for the progress bar, or null when unlimited/unknown. */
-  function usagePercent(p: ProfileMeta): number | null {
-    const total = p.sub_total ?? 0;
-    if (total <= 0) return null;
-    const used = (p.sub_upload ?? 0) + (p.sub_download ?? 0);
-    return Math.min(100, Math.max(1, (used / total) * 100));
-  }
-
-  function expiryLabel(p: ProfileMeta): string | null {
-    const expire = p.sub_expire ?? 0;
-    if (!expire) return null; // 0 = never expires
-    const days = Math.ceil((expire * 1000 - Date.now()) / 86_400_000);
-    if (days < 0) return "Expired";
-    if (days === 0) return "Expires today";
-    return `${days} day${days === 1 ? "" : "s"} left`;
-  }
-
-  async function updateSubscription(p: ProfileMeta) {
-    await action.run(async () => {
-      const summary = await profileStore.refreshSubscription(p.id);
-      summaryData = summary;
-      summaryName = p.name;
-      summaryOpen = true;
-    }, `Updated ${p.name}.`);
   }
 
   async function viewSummary(p: ProfileMeta) {
@@ -212,30 +178,10 @@
                   {active?.name ?? "No profile"}
                 </span>
               </div>
-              {#if active}
-                {@const percent = usagePercent(active)}
-
-                {#if percent !== null}
-                  <div class="flex items-center gap-1 h-1.25 w-full">
-                    <span
-                      class="bg-primary h-full rounded-sm"
-                      style="width: {percent}%"
-                    ></span>
-                    <div class="bg-olive-300 dark:bg-olive-700 flex-1 h-full rounded-sm"></div>
-                  </div>
-                {/if}
-              {/if}
-
               <div
                 class="text-muted-foreground flex items-center justify-between text-xs truncate mt-px"
               >
-                {active
-                  ? (usageLabel(active) ??
-                    (active.subscription_url ? "Subscription" : "Basic"))
-                  : ""}
-                {#if active && expiryLabel(active)}
-                  <span class="shrink-0">{expiryLabel(active)}</span>
-                {/if}
+                {active ? "Active Profile" : ""}
               </div>
             </div>
           </DropdownMenu.Item>
@@ -259,17 +205,15 @@
             <HugeiconsIcon icon={Add01Icon} />
             Create new Profile
           </DropdownMenu.Item>
+          <DropdownMenu.Item onclick={() => (importOpen = true)}>
+            <HugeiconsIcon icon={Upload01Icon} />
+            Import Profile
+          </DropdownMenu.Item>
         </DropdownMenu.Group>
 
         {#if active}
           <DropdownMenu.Separator />
           <DropdownMenu.Group>
-            {#if active.subscription_url}
-              <DropdownMenu.Item onclick={() => updateSubscription(active)}>
-                <HugeiconsIcon icon={CloudDownloadIcon} />
-                Update
-              </DropdownMenu.Item>
-            {/if}
             {#if active.unread_summary}
               <DropdownMenu.Item onclick={() => viewSummary(active)}>
                 <HugeiconsIcon icon={Notification03Icon} />
@@ -277,6 +221,15 @@
                 <span class="ml-auto">{@render notifyDot()}</span>
               </DropdownMenu.Item>
             {/if}
+            <DropdownMenu.Item
+              onclick={() => {
+                exportTarget = active;
+                exportOpen = true;
+              }}
+            >
+              <HugeiconsIcon icon={Download01Icon} />
+              Export Profile
+            </DropdownMenu.Item>
             <DropdownMenu.Item onclick={() => openEdit(active)}>
               <HugeiconsIcon icon={Edit03Icon} />
               Edit
@@ -302,17 +255,14 @@
   bind:open={dialogOpen}
   mode={dialogKind}
   initialName={dialogKind === "edit" ? (editTarget?.name ?? "") : ""}
-  initialUrl={dialogKind === "edit" ? (editTarget?.subscription_url ?? "") : ""}
-  initialSkipAutoUpdate={dialogKind === "edit"
-    ? (editTarget?.skip_auto_update ?? false)
-    : false}
-  initialUpdateIntervalHours={dialogKind === "edit"
-    ? (editTarget?.update_interval_hours ?? 12)
-    : 12}
   initialIcon={dialogKind === "edit" ? (editTarget?.icon ?? null) : null}
   saving={action.saving}
   onSave={saveProfile}
 />
+
+<ProfileImportDialog bind:open={importOpen} />
+
+<ProfileExportDialog bind:open={exportOpen} profile={exportTarget} />
 
 <SyncSummaryDialog
   bind:open={summaryOpen}

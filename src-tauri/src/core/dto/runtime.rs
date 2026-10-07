@@ -15,6 +15,12 @@ pub struct CoreRuntimeStatus {
     pub phase: RuntimePhase,
     pub message: Option<String>,
     pub zeytun_core_pid: Option<u32>,
+    pub saved_profile_id: String,
+    pub saved_revision: u64,
+    pub applied_profile_id: Option<String>,
+    pub applied_revision: Option<u64>,
+    pub applied_mixed_port: Option<u16>,
+    pub pending_apply: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
