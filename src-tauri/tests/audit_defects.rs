@@ -189,7 +189,7 @@ fn defect_c_sync_summary_reports_effective_selection_fallback() {
 #[test]
 fn defect_d_reality_ephemeral_fields_rotation_preserves_node_identity() {
     let s = source("src");
-    let link_v1 = "vless://24c8bbb2-9906-4322-905c-8944ec67321f@31.56.117.67:50966?encryption=none&fp=chrome&pbk=j4G7f_zg6Aqdv1W0FKoZXLvMq89GFiY50bj07KYhTxU&security=reality&sid=1233192ecbd61539&sni=www.cloudflare.com&spx=%2F8971bc40bb4c251&type=tcp#Riga%20Reality";
+    let link_v1 = "vless://00000000-0000-0000-0000-000000000001@198.51.100.1:443?encryption=none&fp=chrome&pbk=synthetic_reality_public_key_for_testing_01&security=reality&sid=11223344&sni=www.example.com&spx=%2Ftest&type=tcp#Node%20Reality";
     let staged_v1 = SubscriptionManager::stage(link_v1, SubHeaders::default()).unwrap();
 
     let mut p = ZeytunCore::default();
@@ -199,8 +199,8 @@ fn defect_d_reality_ephemeral_fields_rotation_preserves_node_identity() {
     assert_eq!(res1.summary.proxies_removed, 0);
     let original_tag = p.proxies[0].tag.clone();
 
-    // Upstream server rotated sid to "90d80422" and sni to "timeline.www.cloudflare.com"
-    let link_v2 = "vless://24c8bbb2-9906-4322-905c-8944ec67321f@31.56.117.67:50966?encryption=none&fp=chrome&pbk=j4G7f_zg6Aqdv1W0FKoZXLvMq89GFiY50bj07KYhTxU&security=reality&sid=90d80422&sni=timeline.www.cloudflare.com&spx=%2F8971bc40bb4c251&type=tcp#Riga%20Reality";
+    // Upstream server rotated sid to "99887766" and sni to "alternate.example.com"
+    let link_v2 = "vless://00000000-0000-0000-0000-000000000001@198.51.100.1:443?encryption=none&fp=chrome&pbk=synthetic_reality_public_key_for_testing_01&security=reality&sid=99887766&sni=alternate.example.com&spx=%2Ftest&type=tcp#Node%20Reality";
     let staged_v2 = SubscriptionManager::stage(link_v2, SubHeaders::default()).unwrap();
 
     let res2 = SubscriptionManager::reconcile(&mut p, &s, staged_v2).unwrap();
@@ -218,5 +218,5 @@ fn defect_d_reality_ephemeral_fields_rotation_preserves_node_identity() {
         "proxy tag must be preserved"
     );
     // Ensure the updated parameters landed in the kept node
-    assert!(p.proxies[0].link.contains("sid=90d80422"));
+    assert!(p.proxies[0].link.contains("sid=99887766"));
 }
