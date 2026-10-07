@@ -3,7 +3,8 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { Button } from "$lib/components/ui/button/index.js";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { SystemUpdate01Icon } from "@hugeicons/core-free-icons";
+  import { SystemUpdate01Icon, Link04Icon } from "@hugeicons/core-free-icons";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import { Spinner } from "$lib/components/ui/spinner/index.js";
   import { updaterStore } from "$lib/stores/updater.svelte";
   import { settingsStore } from "$lib/stores/settings.svelte";
@@ -98,5 +99,33 @@
       }}
       aria-label="Receive pre-release updates"
     />
+  </SettingRow>
+  <SettingRow
+    label="Source Code & Releases"
+    description="View the repository and download releases on GitHub."
+  >
+    <Button
+      variant="secondary"
+      size="sm"
+      class="gap-1.5"
+      onclick={() => void openUrl("https://github.com/zeytun-labs/zeytun-app")}
+    >
+      <HugeiconsIcon icon={Link04Icon} class="size-3.5" />
+      GitHub
+    </Button>
+  </SettingRow>
+  <SettingRow
+    label="Report an Issue"
+    description="Found a problem or have feedback? Submit a report."
+  >
+    <Button
+      variant="secondary"
+      size="sm"
+      class="gap-1.5"
+      onclick={() => void openUrl("https://github.com/zeytun-labs/zeytun-app/issues")}
+    >
+      <HugeiconsIcon icon={Link04Icon} class="size-3.5" />
+      Issues
+    </Button>
   </SettingRow>
 </SettingsSection>

@@ -66,7 +66,10 @@ Prompts have a timeout. If you do not respond, the configured final route applie
 Once a public build is available:
 
 1. Download the Apple Silicon `.dmg` from Releases and move **Zeytun.app** to **Applications**.
-2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. If you trust the source, follow [Apple's instructions](https://support.apple.com/en-us/102445#openanyway) to approve this app in **System Settings → Privacy & Security → Open Anyway**. Do not disable Gatekeeper globally.
+2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. If you trust the source, approve the app in **System Settings → Privacy & Security → Open Anyway**, or clear quarantine in Terminal:
+   ```bash
+   xattr -cr /Applications/Zeytun.app
+   ```
 3. Add subscriptions under **Policy → Subscriptions**, or import proxy links in **Policy → Proxies & Policies**. Export or import native `.zeytun.json` profile documents from the profile menu. Select a proxy in the group you want to use.
 4. Choose **Global Proxy** to use your selected proxy, or **Rule-based Proxy** to follow routing rules. Zeytun starts in **Direct Outbound** mode on each launch.
 5. Enable **System Proxy** for applications that respect macOS proxy settings, or **TUN** for tunnel-based capture. TUN requires administrator permission.

@@ -37,7 +37,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo=' 'sha256-Stk2C1rDpKv5KfpVG6HpOldwkFxHkCBiw7AajpE578I='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 ws://localhost:1420; font-src 'self' data:",
+      "csp": "default-src 'self'; script-src 'self' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo=' 'sha256-esO5YklhZU5/OQPHONQ7+lHkzj3fbyPwWNlml/lRrYc='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 ws://localhost:1420; font-src 'self' data:",
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -51,7 +51,21 @@
     "targets": "all",
     "createUpdaterArtifacts": true,
     "macOS": {
-      "signingIdentity": "-"
+      "signingIdentity": "-",
+      "dmg": {
+        "windowSize": {
+          "width": 600,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 180
+        },
+        "applicationFolderPosition": {
+          "x": 420,
+          "y": 180
+        }
+      }
     },
     "resources": [
       "resources/bin/**/*",

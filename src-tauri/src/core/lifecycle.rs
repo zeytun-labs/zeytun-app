@@ -191,6 +191,7 @@ impl CoreLifecycle {
         // and the owned child before publishing the captured applied snapshot.
         if let Err(error) = self.wait_for_readiness() {
             let _ = self.process_manager.stop();
+            let _ = self.system_proxy_manager.disable();
             self.clash_api = None;
             self.runtime_status.phase = RuntimePhase::Error;
             self.runtime_status.message = Some(error.clone());

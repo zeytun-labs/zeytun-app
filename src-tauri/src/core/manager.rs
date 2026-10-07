@@ -79,6 +79,8 @@ impl CoreManager {
             // whose normal startup performs process cleanup and system routing.
             platform_bin_dir.join("headless-core-not-installed")
         } else {
+            // Clear any dangling system proxy settings left by an earlier killed/crashed session
+            let _ = crate::adapters::system_proxy::SystemProxyManager.disable();
             resolve_zeytun_core_binary_path(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
         };
 

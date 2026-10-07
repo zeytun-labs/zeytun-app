@@ -73,6 +73,8 @@ pub fn install() {
     std::panic::set_hook(Box::new(move |info| {
         let backtrace = Backtrace::force_capture();
         write_crash_dump(info, &backtrace);
+        // Best-effort cleanup of system proxy on panic so network isn't stranded
+        let _ = crate::adapters::system_proxy::SystemProxyManager.disable();
         default_hook(info);
     }));
 }
@@ -108,9 +110,9 @@ pub fn write_crash_dump(
     }
     let payload = info.payload();
     if let Some(s) = payload.downcast_ref::<&str>() {
-        let _ = writeln!(buf, "Message: {s}");
+        let _ = writeln!(buf, "Message: {}", redact_sensitive(s));
     } else if let Some(s) = payload.downcast_ref::<String>() {
-        let _ = writeln!(buf, "Message: {s}");
+        let _ = writeln!(buf, "Message: {}", redact_sensitive(s));
     } else {
         let _ = writeln!(buf, "Message: (non-string payload)");
     }
@@ -123,7 +125,7 @@ pub fn write_crash_dump(
     let _ = writeln!(buf, "--- RECENT LOG ({LOG_RING_CAP} max) ---");
     if let Ok(ring) = LOG_RING.lock() {
         for line in ring.iter() {
-            let _ = writeln!(buf, "  {line}");
+            let _ = writeln!(buf, "  {}", redact_sensitive(line));
         }
     } else {
         let _ = writeln!(buf, "  (log ring lock poisoned)");
@@ -226,6 +228,27 @@ pub fn prune_old_dumps() {
     for (_, path) in dumps.drain(MAX_DUMP_FILES..) {
         let _ = fs::remove_file(path);
     }
+}
+
+/// Redact tokens, basic auth credentials, and query params in crash dump text.
+pub fn redact_sensitive(text: &str) -> String {
+    let mut out = text.to_string();
+    // Redact Bearer tokens
+    if let Some(idx) = out.find("Bearer ") {
+        let after = &out[idx + 7..];
+        let token_end = after
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            .unwrap_or(after.len());
+        out.replace_range(idx + 7..idx + 7 + token_end, "[REDACTED]");
+    }
+    // Redact user:pass in URLs (scheme://user:pass@host)
+    if let Some(idx) = out.find("://") {
+        if let Some(at_idx) = out[idx + 3..].find('@') {
+            let real_at = idx + 3 + at_idx;
+            out.replace_range(idx + 3..real_at, "[REDACTED]");
+        }
+    }
+    out
 }
 
 /// UTC timestamp for the dump header: `2026-10-07T16:55:00Z` format.
@@ -410,5 +433,21 @@ mod tests {
         // Reset override & clean up
         set_dump_dir_override(None);
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn test_redact_sensitive() {
+        assert_eq!(
+            redact_sensitive("Authorization: Bearer secret-token-12345"),
+            "Authorization: Bearer [REDACTED]"
+        );
+        assert_eq!(
+            redact_sensitive("proxy url http://admin:pass123@example.com:8080/path"),
+            "proxy url http://[REDACTED]@example.com:8080/path"
+        );
+        assert_eq!(
+            redact_sensitive("plain benign message"),
+            "plain benign message"
+        );
     }
 }
