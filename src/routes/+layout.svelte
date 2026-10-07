@@ -164,6 +164,23 @@
       (fn) => (unlistenOpenInspector = fn),
     );
 
+    let unlistenWake: UnlistenFn | undefined;
+    void listen("system-wake", async () => {
+      try {
+        await profileStore.refresh();
+        void updaterStore.check(true);
+      } catch (err) {
+        console.error("Failed to refresh on system wake:", err);
+      }
+    }).then((fn) => (unlistenWake = fn));
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void profileStore.refresh();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     // The loading UI is now rendered — reveal the window (kills the white flash)
     // and kick off the core startup. show() is fire-and-forget.
     void getCurrentWindow().show();
@@ -174,7 +191,9 @@
       logsStore.stopListening();
       notificationStore.stopListening();
       unlistenOpenInspector?.();
+      unlistenWake?.();
       document.removeEventListener("open-settings", handleOpenSettings);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   });
 

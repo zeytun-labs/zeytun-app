@@ -181,7 +181,11 @@ pub fn start_daemon_listener(
 
     let handle = tauri::async_runtime::spawn(async move {
         let endpoint =
-            tonic::transport::Channel::from_static(crate::core::constants::GRPC_API_ENDPOINT);
+            tonic::transport::Channel::from_static(crate::core::constants::GRPC_API_ENDPOINT)
+                .tcp_keepalive(Some(Duration::from_secs(10)))
+                .http2_keep_alive_interval(Duration::from_secs(15))
+                .keep_alive_timeout(Duration::from_secs(5))
+                .keep_alive_while_idle(true);
         let mut status: &'static str = STATUS_STOPPED;
         emit_status(&app_clone, &mut status, STATUS_CONNECTING);
         loop {

@@ -776,6 +776,16 @@ impl CoreManager {
         Ok(())
     }
 
+    /// Re-evaluates and re-applies system proxy settings to all currently active network
+    /// services without restarting the core or rewriting the database.
+    /// Safe to call on system wake or network interface changes.
+    pub fn reapply_system_proxy(&mut self) -> Result<(), crate::error::CommandError> {
+        if self.profile.local_proxy.system_proxy.unwrap_or(false) && self.is_running() {
+            self.lifecycle.set_system_proxy(true, &self.profile)?;
+        }
+        Ok(())
+    }
+
     pub fn set_allow_lan(&mut self, enabled: bool) -> Result<(), crate::error::CommandError> {
         self.profile.local_proxy.listen = if enabled {
             "0.0.0.0".to_string()
@@ -2494,5 +2504,15 @@ mod tests {
             Some(bundled_path)
         );
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn reapply_system_proxy_calls_lifecycle_when_enabled_and_running() {
+        let code = include_str!("manager.rs");
+        let reapply = code.split("pub fn reapply_system_proxy(").nth(1).unwrap();
+        let reapply = reapply.split("pub fn set_allow_lan(").next().unwrap();
+        assert!(reapply.contains("self.profile.local_proxy.system_proxy.unwrap_or(false)"));
+        assert!(reapply.contains("self.is_running()"));
+        assert!(reapply.contains("self.lifecycle.set_system_proxy(true, &self.profile)"));
     }
 }

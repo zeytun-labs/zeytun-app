@@ -56,6 +56,11 @@ pub struct TempRuleGcState {
     pub task_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
+pub struct WakeMonitorState {
+    pub shutdown_tx: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub task_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+}
+
 pub struct NetworkTestState {
     pub task_handle: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
@@ -1884,11 +1889,20 @@ pub fn run() {
                 task_handle: std::sync::Mutex::new(Some(au_handle)),
             });
 
-            let (gc_handle, gc_shutdown) =
-                crate::core::temp_rule_gc::start_temp_rule_gc(app.handle().clone(), core_arc);
+            let (gc_handle, gc_shutdown) = crate::core::temp_rule_gc::start_temp_rule_gc(
+                app.handle().clone(),
+                core_arc.clone(),
+            );
             app.manage(TempRuleGcState {
                 shutdown_tx: std::sync::Mutex::new(Some(gc_shutdown)),
                 task_handle: std::sync::Mutex::new(Some(gc_handle)),
+            });
+
+            let (wake_handle, wake_shutdown) =
+                crate::core::wake_monitor::start_wake_monitor(app.handle().clone(), core_arc);
+            app.manage(WakeMonitorState {
+                shutdown_tx: std::sync::Mutex::new(Some(wake_shutdown)),
+                task_handle: std::sync::Mutex::new(Some(wake_handle)),
             });
 
             app.manage(NetworkTestState {
@@ -2110,6 +2124,15 @@ pub fn run() {
                 }
 
                 if let Some(state) = app_handle.try_state::<TempRuleGcState>() {
+                    if let Some(tx) = state.shutdown_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    if let Some(handle) = state.task_handle.lock().unwrap().take() {
+                        handle.abort();
+                    }
+                }
+
+                if let Some(state) = app_handle.try_state::<WakeMonitorState>() {
                     if let Some(tx) = state.shutdown_tx.lock().unwrap().take() {
                         let _ = tx.send(());
                     }

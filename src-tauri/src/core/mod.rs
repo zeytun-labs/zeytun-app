@@ -14,4 +14,5 @@ pub mod storage;
 pub mod subscription;
 pub mod subscription_refresh;
 pub mod temp_rule_gc;
+pub mod wake_monitor;
 pub mod zeytun_core_config;
