@@ -265,6 +265,20 @@ impl CoreLifecycle {
         self.applied.as_ref().map(|(p, _)| p)
     }
 
+    pub fn update_applied_selection(&mut self, policy_tag: &str, member_tag: &str) {
+        if let Some((applied, _)) = self.applied.as_mut() {
+            if let Some(policy) = applied.policies.iter_mut().find(|p| p.tag == policy_tag) {
+                policy.selected_member_tag = Some(member_tag.to_string());
+            }
+        }
+    }
+
+    pub fn update_applied_mode(&mut self, mode: crate::core::dto::OutboundMode) {
+        if let Some((applied, _)) = self.applied.as_mut() {
+            applied.outbound_mode = mode;
+        }
+    }
+
     pub fn clash_api(&self) -> Option<&ClashApiClient> {
         self.clash_api.as_ref()
     }

@@ -113,3 +113,65 @@ fn failed_start_never_claims_applied_revision_and_preserves_pending() {
     );
     assert!(status.applied_mixed_port.is_none());
 }
+
+#[test]
+fn selecting_proxy_member_or_mode_does_not_advance_saved_revision() {
+    let mut f = Fixture::new();
+    let initial = f.manager.saved_revision("default").unwrap();
+    let p1 = f
+        .manager
+        .proxy_import_link("socks5://node1.test:1080#N1")
+        .unwrap();
+    let p2 = f
+        .manager
+        .proxy_import_link("socks5://node2.test:1080#N2")
+        .unwrap();
+    let rev_after_import = f.manager.saved_revision("default").unwrap();
+    assert!(rev_after_import > initial);
+
+    let pol = f
+        .manager
+        .create_policy(CreatePolicyInput {
+            name: "Group".into(),
+            kind: ProxyPolicyType::Selector,
+            members: vec![p1.tag.clone(), p2.tag.clone()],
+            selected_member_tag: Some(p1.tag.clone()),
+            tolerance_ms: None,
+            test_url: None,
+            interval_seconds: None,
+            strategy: None,
+            weights: None,
+        })
+        .unwrap();
+    let rev_after_policy = f.manager.saved_revision("default").unwrap();
+    assert!(rev_after_policy > rev_after_import);
+
+    // Switching selected member must NOT bump revision
+    f.manager
+        .select_policy_member(SelectPolicyMemberInput {
+            policy_tag: pol.tag.clone(),
+            member_tag: p2.tag.clone(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        f.manager.saved_revision("default").unwrap(),
+        rev_after_policy,
+        "switching policy member must not advance saved revision"
+    );
+
+    // Switching outbound mode must NOT bump revision
+    f.manager.set_mode(OutboundMode::Global).unwrap();
+    assert_eq!(
+        f.manager.saved_revision("default").unwrap(),
+        rev_after_policy,
+        "switching outbound mode must not advance saved revision"
+    );
+
+    f.manager.set_mode(OutboundMode::Rule).unwrap();
+    assert_eq!(
+        f.manager.saved_revision("default").unwrap(),
+        rev_after_policy,
+        "switching outbound mode to rule must not advance saved revision"
+    );
+}

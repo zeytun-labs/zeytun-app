@@ -895,7 +895,7 @@ impl CoreManager {
                 .ok()
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "rule".to_string());
-            let clash_client = self.lifecycle.clash_api().ok_or_else(|| {
+            let clash_client = self.lifecycle.clash_api().cloned().ok_or_else(|| {
                 crate::error::CommandError::State("clash api is not available".to_string())
             })?;
             clash_client
@@ -905,6 +905,8 @@ impl CoreManager {
             if matches!(self.profile.outbound_mode, OutboundMode::Global) {
                 let _ = clash_client.select_proxy("GLOBAL", DEFAULT_SELECTOR_POLICY_TAG);
             }
+
+            self.lifecycle.update_applied_mode(mode);
 
             // Temp overlay follows the mode: switching to Rule re-pushes the
             // full temp+session list; switching to Direct/Global clears it
@@ -1158,12 +1160,15 @@ impl CoreManager {
 
         // If core is running, use clash API to hot-swap the proxy selection
         if self.lifecycle.is_running() {
-            if let Some(clash_api) = self.lifecycle.clash_api() {
+            if let Some(clash_api) = self.lifecycle.clash_api().cloned() {
                 clash_api
                     .select_proxy(&input.policy_tag, &input.member_tag)
                     .map_err(|e| {
                         crate::error::CommandError::Api(format!("clash api error: {e:?}"))
                     })?;
+
+                self.lifecycle
+                    .update_applied_selection(&input.policy_tag, &input.member_tag);
 
                 // Flush all connections on proxy switch to prevent browser keep-alive issues
                 let api_clone = clash_api.clone();

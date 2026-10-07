@@ -37,6 +37,14 @@ fn runtime_intent(profile: &ZeytunCore) -> Value {
     };
     let mut profile = profile.clone();
     profile.session_rules.clear();
+    // Dynamic runtime controls that do not require restarting the core:
+    // 1. Selector policy active selection is dynamically hot-swapped via Clash API
+    for policy in &mut profile.policies {
+        policy.selected_member_tag = None;
+    }
+    // 2. Outbound mode is dynamically patched via Clash API
+    profile.outbound_mode = crate::core::dto::OutboundMode::Rule;
+
     if let Ok(runtime) = RuntimeProfileCompiler::new().compile(&ProfileConverter::convert(&profile))
     {
         if let Ok(config) =
