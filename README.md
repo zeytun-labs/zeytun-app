@@ -14,6 +14,10 @@ Free and open source.
 
 [Features](#features) · [Get started](#get-started) · [Support development](#support)
 
+<br/>
+
+<img src="docs/assets/demo.gif" alt="Zeytun app demo" width="760">
+
 </div>
 
 ---
