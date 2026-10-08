@@ -37,7 +37,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo=' 'sha256-EY1GXsCYzdDzPQN1Mu1pMIy/qx2qS2LIrzMjPVS3y00='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 ws://localhost:1420; font-src 'self' data:",
+      "csp": "default-src 'self'; script-src 'self' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo=' 'sha256-rn3R/vHKoeJTKhoOj7lvcmEjZdQ0OYquaVHLK1+vuLI='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 ws://localhost:1420; font-src 'self' data:",
       "assetProtocol": {
         "enable": true,
         "scope": [

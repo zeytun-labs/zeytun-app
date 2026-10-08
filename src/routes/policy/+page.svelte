@@ -452,6 +452,7 @@
   {#if currentTab === "subscriptions"}
     <SubscriptionList
       onEdit={(source) => openSubscriptionDialog("edit", source)}
+      onAdd={() => openSubscriptionDialog("create")}
     />
   {:else if profileStore.loading}
     <div class="flex flex-col gap-6 w-full animate-in fade-in duration-500">

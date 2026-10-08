@@ -1,6 +1,10 @@
 <script lang="ts">
   import { Badge } from "$lib/components/ui/badge/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { HugeiconsIcon } from "@hugeicons/svelte";
+  import { Add01Icon, AddressBookIcon } from "@hugeicons/core-free-icons";
   import type {
     DnsRuleDto,
     DnsRuleKind,
@@ -29,6 +33,7 @@
     finalTarget?: string | null;
     onFinalChange?: (target: string | null) => void;
     disabled?: boolean;
+    onAddRule?: () => void;
   }
 
   let {
@@ -41,6 +46,7 @@
     finalTarget = null,
     onFinalChange,
     disabled = false,
+    onAddRule,
   }: Props = $props();
 
   const GRID = "grid-cols-[44px_110px_1fr_160px_1fr]";
@@ -98,8 +104,29 @@
   </div>
   <div class="p-0">
     {#if rules.length === 0}
-      <div class="text-muted-foreground p-8 text-center text-sm">
-        No DNS rules configured yet.
+      <div class="p-6">
+        <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+          <Empty.Media variant="icon">
+            <HugeiconsIcon
+              icon={AddressBookIcon}
+              class="size-5 text-muted-foreground"
+            />
+          </Empty.Media>
+          <Empty.Header>
+            <Empty.Title>No DNS rules configured</Empty.Title>
+            <Empty.Description>
+              Add DNS routing rules to route domain lookups to specific resolvers.
+            </Empty.Description>
+          </Empty.Header>
+          {#if onAddRule}
+            <Empty.Content>
+              <Button variant="outline" size="sm" class="gap-1.5" onclick={onAddRule}>
+                <HugeiconsIcon icon={Add01Icon} class="size-4" />
+                Add DNS Rule
+              </Button>
+            </Empty.Content>
+          {/if}
+        </Empty.Root>
       </div>
     {:else}
       {#each rules as r, i (r.id)}

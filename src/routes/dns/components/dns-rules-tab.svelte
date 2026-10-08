@@ -203,13 +203,14 @@
         <DnsRuleTable
           rules={filteredRules}
           dnsServers={profileStore.profile?.dns?.servers ?? []}
-          {selectedId}
+          selectedId={selectedId}
           onSelect={(id) => (selectedId = id)}
           onEdit={openEditDialog}
           onToggleEnabled={toggleEnabled}
           finalTarget={profileStore.profile?.dns?.final_server ?? null}
           onFinalChange={changeFinal}
           disabled={action.saving}
+          onAddRule={openCreateDialog}
         />
       </div>
     {/if}

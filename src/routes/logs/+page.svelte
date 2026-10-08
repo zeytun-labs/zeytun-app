@@ -3,7 +3,7 @@
   import { logsStore } from "$lib/stores/logs.svelte";
   import { Button } from "$lib/components/ui/button";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { Delete01Icon } from "@hugeicons/core-free-icons";
+  import { Delete01Icon, CommandLineIcon } from "@hugeicons/core-free-icons";
   import ScrollArea from "$lib/components/ui/scroll-area/scroll-area.svelte";
 
   let viewportRef = $state<HTMLElement | null>(null);
@@ -73,9 +73,10 @@
   >
     {#if logsStore.logs.length === 0}
       <div
-        class="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm font-mono z-10 pointer-events-none"
+        class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground z-10 pointer-events-none"
       >
-        No logs yet...
+        <HugeiconsIcon icon={CommandLineIcon} class="size-6 text-muted-foreground/30" />
+        <p class="font-mono text-xs">Waiting for core log entries…</p>
       </div>
     {/if}
 

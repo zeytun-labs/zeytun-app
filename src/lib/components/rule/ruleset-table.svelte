@@ -3,6 +3,10 @@
   import { Badge, type BadgeVariant } from "$lib/components/ui/badge/index.js";
   import { notificationStore } from "$lib/stores/notifications.svelte";
   import CellEnabled from "./cell-enabled.svelte";
+  import * as Empty from "$lib/components/ui/empty/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { HugeiconsIcon } from "@hugeicons/svelte";
+  import { Add01Icon, Layers01Icon } from "@hugeicons/core-free-icons";
 
   interface Props {
     ruleSets: RuleSet[];
@@ -11,6 +15,7 @@
     onSelect: (id: string) => void;
     onEdit: (id: string) => void;
     onToggleEnabled?: (id: string, enabled: boolean) => void;
+    onAddRuleSet?: () => void;
   }
 
   let {
@@ -20,6 +25,7 @@
     onSelect,
     onEdit,
     onToggleEnabled,
+    onAddRuleSet,
   }: Props = $props();
 
   function downloadViaLabel(rs: RuleSet): string {
@@ -69,7 +75,27 @@
 </script>
 
 {#if ruleSets.length === 0}
-  <div class="text-muted-foreground p-8 text-center text-sm">No rulesets yet.</div>
+  <div class="p-6">
+    <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+      <Empty.Media variant="icon">
+        <HugeiconsIcon icon={Layers01Icon} class="size-5 text-muted-foreground" />
+      </Empty.Media>
+      <Empty.Header>
+        <Empty.Title>No rulesets yet</Empty.Title>
+        <Empty.Description>
+          Subscribe to remote rule sets or import local files for reusable routing lists.
+        </Empty.Description>
+      </Empty.Header>
+      {#if onAddRuleSet}
+        <Empty.Content>
+          <Button variant="outline" size="sm" class="gap-1.5" onclick={onAddRuleSet}>
+            <HugeiconsIcon icon={Add01Icon} class="size-4" />
+            Add Ruleset
+          </Button>
+        </Empty.Content>
+      {/if}
+    </Empty.Root>
+  </div>
 {:else}
     <div class="w-full text-sm">
       <div class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[44px_100px_1fr_120px_1fr_160px_160px_1fr] px-2 border-b border-border/70">

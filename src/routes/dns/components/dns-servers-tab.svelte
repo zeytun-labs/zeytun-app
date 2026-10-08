@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { toast } from "svelte-sonner";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
@@ -264,28 +265,33 @@
 
 <div class="w-full text-sm px-2 pb-2 flex flex-col">
   {#if allServers.length === 0}
-    <div
-      class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/40 py-12 text-center bg-card/40 mt-4"
-    >
-      <HugeiconsIcon
-        icon={ServerStack01Icon}
-        class="size-8 text-muted-foreground/40"
-      />
-      <p class="text-sm text-muted-foreground">No servers configured.</p>
-      <Button
-        variant="outline"
-        size="sm"
-        class="mt-1"
-        onclick={openAddDialog}
-        disabled={isSaving || profileStore.loading}
-      >
-        <HugeiconsIcon
-          icon={Add01Icon}
-          class="size-4"
-          data-icon="inline-start"
-        />
-        Add your first server
-      </Button>
+    <div class="mt-4">
+      <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+        <Empty.Media variant="icon">
+          <HugeiconsIcon
+            icon={ServerStack01Icon}
+            class="size-5 text-muted-foreground"
+          />
+        </Empty.Media>
+        <Empty.Header>
+          <Empty.Title>No DNS servers configured</Empty.Title>
+          <Empty.Description>
+            Add upstream DNS servers (DoH, DoT, UDP, TCP) to resolve domain queries.
+          </Empty.Description>
+        </Empty.Header>
+        <Empty.Content>
+          <Button
+            variant="outline"
+            size="sm"
+            class="gap-1.5"
+            onclick={openAddDialog}
+            disabled={isSaving || profileStore.loading}
+          >
+            <HugeiconsIcon icon={Add01Icon} class="size-4" />
+            Add Server
+          </Button>
+        </Empty.Content>
+      </Empty.Root>
     </div>
   {:else}
     <div

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { toast } from "svelte-sonner";
   import * as Card from "$lib/components/ui/card";
+  import * as Empty from "$lib/components/ui/empty/index.js";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -233,12 +234,30 @@
   {/if}
 
   {#if hosts.length === 0}
-    <div class="flex flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/40 py-12 text-center bg-card/40 mt-1">
-      <HugeiconsIcon icon={ComputerIcon} class="size-8 text-muted-foreground/40" />
-      <p class="text-sm font-medium text-muted-foreground">No local host overrides</p>
-      <p class="max-w-sm text-xs text-muted-foreground/70 mb-2">
-        Add a domain and IPv4 or IPv6 address to create a static DNS mapping.
-      </p>
+    <div class="mt-2">
+      <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+        <Empty.Media variant="icon">
+          <HugeiconsIcon icon={ComputerIcon} class="size-5 text-muted-foreground" />
+        </Empty.Media>
+        <Empty.Header>
+          <Empty.Title>No local host overrides</Empty.Title>
+          <Empty.Description>
+            Add a domain and IPv4 or IPv6 address to create a static DNS mapping.
+          </Empty.Description>
+        </Empty.Header>
+        <Empty.Content>
+          <Button
+            variant="outline"
+            size="sm"
+            class="gap-1.5"
+            onclick={openCreateDialog}
+            disabled={isSaving || profileStore.loading}
+          >
+            <HugeiconsIcon icon={Add01Icon} class="size-4" />
+            Add Local Host
+          </Button>
+        </Empty.Content>
+      </Empty.Root>
     </div>
   {:else}
     <div

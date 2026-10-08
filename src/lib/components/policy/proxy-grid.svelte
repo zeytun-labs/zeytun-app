@@ -1,6 +1,7 @@
 <script lang="ts">
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import ProxyCard from "./proxy-card.svelte";
   import ProxyQrDialog from "./proxy-qr-dialog.svelte";
@@ -16,6 +17,7 @@
     Copy01Icon,
     Delete01Icon,
     Edit01Icon,
+    InternetIcon,
     QrCodeIcon,
     ZapIcon,
   } from "@hugeicons/core-free-icons";
@@ -142,14 +144,24 @@
     {/each}
 
     {#if proxies.length === 0}
-      <div
-        class="col-span-full flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border/50 py-12 text-center"
-      >
-        <p class="text-muted-foreground text-sm">No proxies in this group</p>
-        <Button variant="outline" size="sm" onclick={onAddProxy}>
-          <HugeiconsIcon icon={Add01Icon} />
-          Add Proxy
-        </Button>
+      <div class="col-span-full">
+        <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+          <Empty.Media variant="icon">
+            <HugeiconsIcon icon={InternetIcon} class="size-5 text-muted-foreground" />
+          </Empty.Media>
+          <Empty.Header>
+            <Empty.Title>No proxies in this group</Empty.Title>
+            <Empty.Description>
+              Add a proxy server to start routing traffic through this group.
+            </Empty.Description>
+          </Empty.Header>
+          <Empty.Content>
+            <Button variant="outline" size="sm" class="gap-1.5" onclick={onAddProxy}>
+              <HugeiconsIcon icon={Add01Icon} class="size-4" />
+              Add Proxy
+            </Button>
+          </Empty.Content>
+        </Empty.Root>
       </div>
     {/if}
   </div>

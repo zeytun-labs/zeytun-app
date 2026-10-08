@@ -5,6 +5,7 @@
     MoreVerticalCircle01Icon,
     Configuration01Icon,
     Cancel01Icon,
+    CommandLineIcon,
   } from "@hugeicons/core-free-icons";
   import type { ProcessStat } from "$lib/stores/dashboardStore.svelte";
   import { formatBytes, formatSpeed } from "$lib/utils";
@@ -47,8 +48,12 @@
         {/each}
       </div>
     {:else if dashboardStore.filteredProcesses.length === 0}
-      <div class="text-muted-foreground flex items-center justify-center h-20">
-        No active processes found.
+      <div class="flex flex-col items-center justify-center gap-2 rounded-3xl border border-dashed border-border/40 py-16 text-center bg-card/20 my-2">
+        <HugeiconsIcon icon={CommandLineIcon} class="size-6 text-muted-foreground/40" />
+        <p class="font-medium text-foreground text-sm">No active processes</p>
+        <p class="text-xs text-muted-foreground max-w-xs">
+          Applications routing traffic through Zeytun will appear here automatically.
+        </p>
       </div>
     {:else}
       {#each dashboardStore.filteredProcesses as process (process.name)}

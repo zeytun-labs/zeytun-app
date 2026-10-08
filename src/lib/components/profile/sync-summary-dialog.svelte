@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import type { SyncSummary } from "$lib/core/types";
 
@@ -65,7 +66,14 @@
         {/if}
       </div>
     {:else}
-      <p class="text-muted-foreground py-4 text-sm">No summary available.</p>
+      <Empty.Root class="py-6 border-none bg-transparent">
+        <Empty.Header>
+          <Empty.Title class="text-sm font-medium">No summary available</Empty.Title>
+          <Empty.Description class="text-xs">
+            No updates or subscription changes have been recorded yet.
+          </Empty.Description>
+        </Empty.Header>
+      </Empty.Root>
     {/if}
 
     <Dialog.Footer>

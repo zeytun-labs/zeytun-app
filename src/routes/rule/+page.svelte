@@ -595,13 +595,14 @@
           {:else}
             <RuleTable
               rules={filteredRules}
-              {selectedRuleId}
+              selectedRuleId={selectedRuleId}
               disableReorder={search.trim().length > 0 || action.saving}
               onSelectRule={(id) => (selectedRuleId = id)}
               onEditRule={handleEditClick}
               {getActionName}
               onReorder={(nr) => reorderRules(nr as Rule[])}
               onToggleEnabled={toggleRuleEnabled}
+              onAddRule={handleAddClick}
             />
           {/if}
         </div>
@@ -635,6 +636,7 @@
               {getActionName}
               onReorder={(nr) => reorderTempRules(nr as TempRule[])}
               onToggleEnabled={toggleTempEnabled}
+              onAddRule={handleAddTempClick}
             />
           {/if}
         </div>
@@ -666,6 +668,7 @@
               onSelect={(id) => (selectedRulesetId = id)}
               onEdit={handleEditRuleset}
               onToggleEnabled={toggleRulesetEnabled}
+              onAddRuleSet={handleAddRuleset}
             />
           {/if}
         </div>

@@ -14,7 +14,9 @@
     SubscriptionDeletePreview,
     SubscriptionDeleteMode,
   } from "$lib/core/types";
+  import * as Empty from "$lib/components/ui/empty/index.js";
   import {
+    Add01Icon,
     ReloadIcon,
     Edit01Icon,
     Delete01Icon,
@@ -29,9 +31,10 @@
 
   interface Props {
     onEdit: (source: SubscriptionSource) => void;
+    onAdd?: () => void;
   }
 
-  let { onEdit }: Props = $props();
+  let { onEdit, onAdd }: Props = $props();
 
   const sources = $derived(subscriptionsStore.sources);
   const loading = $derived(subscriptionsStore.loading);
@@ -216,19 +219,25 @@
       <Spinner class="size-6 text-muted-foreground" />
     </div>
   {:else if sources.length === 0}
-    <div
-      class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border/60 py-16 text-center"
-    >
-      <div
-        class="flex size-12 items-center justify-center rounded-full bg-primary/10 text-primary"
-      >
-        <HugeiconsIcon icon={Link04Icon} class="size-6" />
-      </div>
-      <h3 class="mt-4 text-sm font-semibold">No subscriptions yet</h3>
-      <p class="mt-1 max-w-sm text-xs text-muted-foreground">
-        Use the + menu above to add a subscription source.
-      </p>
-    </div>
+    <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-16">
+      <Empty.Media variant="icon">
+        <HugeiconsIcon icon={Link04Icon} class="size-5 text-muted-foreground" />
+      </Empty.Media>
+      <Empty.Header>
+        <Empty.Title>No subscriptions yet</Empty.Title>
+        <Empty.Description>
+          Add a subscription URL to import and synchronize proxy nodes automatically.
+        </Empty.Description>
+      </Empty.Header>
+      {#if onAdd}
+        <Empty.Content>
+          <Button variant="outline" size="sm" class="gap-1.5" onclick={onAdd}>
+            <HugeiconsIcon icon={Add01Icon} class="size-4" />
+            Add Subscription
+          </Button>
+        </Empty.Content>
+      {/if}
+    </Empty.Root>
   {:else}
     <div class="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
       {#each sources as source (source.id)}

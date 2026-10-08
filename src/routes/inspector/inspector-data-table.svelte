@@ -4,7 +4,7 @@
   import * as ContextMenu from "$lib/components/ui/context-menu";
   import { Input } from "$lib/components/ui/input";
   import { Button } from "$lib/components/ui/button";
-  import { ListXIcon, Search01Icon } from "@hugeicons/core-free-icons";
+  import { ListXIcon, Search01Icon, Activity04Icon } from "@hugeicons/core-free-icons";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
     getCoreRowModel,
@@ -227,9 +227,15 @@
             <Table.Row>
               <Table.Cell
                 colspan={columns.length}
-                class="h-24 text-center text-sm"
+                class="h-64 text-center text-sm"
               >
-                No connections.
+                <div class="flex flex-col items-center justify-center gap-2 py-8">
+                  <HugeiconsIcon icon={Activity04Icon} class="size-6 text-muted-foreground/40 animate-pulse" />
+                  <p class="font-medium text-foreground text-sm">Waiting for connections</p>
+                  <p class="text-xs text-muted-foreground max-w-xs">
+                    Live network requests handled by Zeytun will stream here in real time.
+                  </p>
+                </div>
               </Table.Cell>
             </Table.Row>
           {/if}

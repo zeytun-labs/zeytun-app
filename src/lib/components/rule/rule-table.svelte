@@ -1,5 +1,9 @@
 <script lang="ts">
   import * as Table from "$lib/components/ui/table/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { HugeiconsIcon } from "@hugeicons/svelte";
+  import { Add01Icon, Route01Icon } from "@hugeicons/core-free-icons";
   import {
     getCoreRowModel,
     getFacetedRowModel,
@@ -49,6 +53,7 @@
     onToggleEnabled?: (id: number, enabled: boolean) => void;
     disableReorder?: boolean;
     showExpires?: boolean;
+    onAddRule?: () => void;
   }
 
   let {
@@ -61,6 +66,7 @@
     onToggleEnabled,
     disableReorder = false,
     showExpires = false,
+    onAddRule,
   }: Props = $props();
 
   function formatExpires(ms?: number) {
@@ -242,10 +248,26 @@
             {/if}
           {/each}
         {:else}
-          <div
-            class="h-24 flex items-center justify-center text-muted-foreground"
-          >
-            No rules found.
+          <div class="p-6">
+            <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+              <Empty.Media variant="icon">
+                <HugeiconsIcon icon={Route01Icon} class="size-5 text-muted-foreground" />
+              </Empty.Media>
+              <Empty.Header>
+                <Empty.Title>No routing rules</Empty.Title>
+                <Empty.Description>
+                  Create rules to decide how traffic is routed based on application, domain, or IP.
+                </Empty.Description>
+              </Empty.Header>
+              {#if onAddRule}
+                <Empty.Content>
+                  <Button variant="outline" size="sm" class="gap-1.5" onclick={onAddRule}>
+                    <HugeiconsIcon icon={Add01Icon} class="size-4" />
+                    Add Rule
+                  </Button>
+                </Empty.Content>
+              {/if}
+            </Empty.Root>
           </div>
         {/if}
       </div>
