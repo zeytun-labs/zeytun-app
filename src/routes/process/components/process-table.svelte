@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
     MoreVerticalCircle01Icon,
@@ -48,12 +49,22 @@
         {/each}
       </div>
     {:else if dashboardStore.filteredProcesses.length === 0}
-      <div class="flex flex-col items-center justify-center gap-2 rounded-3xl border border-dashed border-border/40 py-16 text-center bg-card/20 my-2">
-        <HugeiconsIcon icon={CommandLineIcon} class="size-6 text-muted-foreground/40" />
-        <p class="font-medium text-foreground text-sm">No active processes</p>
-        <p class="text-xs text-muted-foreground max-w-xs">
-          Applications routing traffic through Zeytun will appear here automatically.
-        </p>
+      <div class="my-2">
+        <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
+          <Empty.Media variant="icon">
+            <HugeiconsIcon icon={CommandLineIcon} class="size-5 text-muted-foreground" />
+          </Empty.Media>
+          <Empty.Header>
+            <Empty.Title>
+              {dashboardStore.searchQuery ? "No matching processes" : "No active processes"}
+            </Empty.Title>
+            <Empty.Description>
+              {dashboardStore.searchQuery
+                ? "No applications match your current search query."
+                : "Applications routing traffic through Zeytun will appear here automatically."}
+            </Empty.Description>
+          </Empty.Header>
+        </Empty.Root>
       </div>
     {:else}
       {#each dashboardStore.filteredProcesses as process (process.name)}
