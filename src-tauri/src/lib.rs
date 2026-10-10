@@ -1632,7 +1632,10 @@ async fn core_run_diagnostics(
             OutboundMode::Global => "global",
             OutboundMode::Rule => "rule",
         };
-        let proxy_port = profile.local_proxy.mixed_port.unwrap_or(6060);
+        let proxy_port = profile
+            .local_proxy
+            .mixed_port
+            .unwrap_or(crate::core::constants::DEFAULT_MIXED_PORT);
         // Only probe the proxy when it can actually serve traffic: Global mode
         // (the whole tunnel is proxied) and the core is up. Rule mode is excluded
         // on purpose — the probe would traverse the routing table and could land
@@ -1669,7 +1672,10 @@ async fn core_get_external_ip_info(
         (
             core.is_running(),
             profile.outbound_mode,
-            profile.local_proxy.mixed_port.unwrap_or(6060),
+            profile
+                .local_proxy
+                .mixed_port
+                .unwrap_or(crate::core::constants::DEFAULT_MIXED_PORT),
         )
     };
 

@@ -57,9 +57,16 @@ pub fn dump_dir() -> Option<PathBuf> {
             return Some(dir.clone());
         }
     }
-    // ponytail: hardcoded bundle ID com.zeytun.app; upgrade to env!("TAURI_BUNDLE_IDENTIFIER") when Tauri exposes it at build time
+    // ponytail: bundle ID separated between debug and release builds
     let home = std::env::var("HOME").ok()?;
-    let dir = PathBuf::from(home).join("Library/Application Support/com.zeytun.app/crash-dumps");
+    let bundle_id = if cfg!(debug_assertions) {
+        "com.zeytun.app.dev"
+    } else {
+        "com.zeytun.app"
+    };
+    let dir = PathBuf::from(home).join(format!(
+        "Library/Application Support/{bundle_id}/crash-dumps"
+    ));
     fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }

@@ -873,7 +873,7 @@ impl CoreManager {
             .ok_or_else(|| crate::error::CommandError::State("no applied inbound endpoint".into()))?
             .local_proxy
             .mixed_port
-            .unwrap_or(6060);
+            .unwrap_or(crate::core::constants::DEFAULT_MIXED_PORT);
         let (url, degraded) = policy.resolve(port);
         if degraded {
             println!(

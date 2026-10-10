@@ -128,7 +128,7 @@ impl OutboundFactory {
                 server_port: server.port,
                 dial: build_dial_options(server),
                 password: trojan.password.clone(),
-                network: parse_network_option(&trojan.network),
+                network: None,
                 tls: trojan
                     .tls
                     .as_ref()
@@ -166,7 +166,7 @@ impl OutboundFactory {
                 dial: build_dial_options(server),
                 uuid: vless.uuid.clone(),
                 flow,
-                network: parse_network_option(&vless.network),
+                network: None,
                 tls: vless
                     .tls
                     .as_ref()
@@ -208,7 +208,7 @@ impl OutboundFactory {
                 alter_id: Some(vmess.alter_id),
                 global_padding: None,
                 authenticated_length: None,
-                network: parse_network_option(&vmess.network),
+                network: None,
                 tls: vmess
                     .tls
                     .as_ref()
@@ -501,6 +501,7 @@ where
         )
 }
 
+#[allow(dead_code)]
 fn parse_network_option(network: &str) -> Option<NetworkOptions> {
     parse_enum_from_optional_str::<NetworkOptions>("", "", Some(network))
         .ok()

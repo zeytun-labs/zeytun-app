@@ -201,7 +201,10 @@ impl ProfileConverter {
 
         let mixed = crate::core::models::runtime::RuntimeMixedInbound {
             listen: profile.local_proxy.listen.clone(),
-            listen_port: profile.local_proxy.mixed_port.unwrap_or(6060),
+            listen_port: profile
+                .local_proxy
+                .mixed_port
+                .unwrap_or(crate::core::constants::DEFAULT_MIXED_PORT),
         };
 
         let tun = match &profile.local_proxy.mode {

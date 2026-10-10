@@ -426,9 +426,9 @@ impl Default for ZeytunCore {
             local_proxy: LocalProxyConfig {
                 mode: Some(InboundMode::Mixed),
                 listen: "127.0.0.1".to_string(),
-                socks_port: 6061,
-                http_port: 6062,
-                mixed_port: Some(6060),
+                socks_port: crate::core::constants::DEFAULT_SOCKS_PORT,
+                http_port: crate::core::constants::DEFAULT_HTTP_PORT,
+                mixed_port: Some(crate::core::constants::DEFAULT_MIXED_PORT),
                 tun_name: Some("utun9".to_string()),
                 tun_mtu: Some(9000),
                 tun_auto_route: Some(true),

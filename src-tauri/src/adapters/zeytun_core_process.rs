@@ -166,9 +166,11 @@ impl ZeytunCoreProcessManager {
     }
 
     /// Tier 1: SIGKILL every stray `zeytun-core` currently in the process table
-    /// (excluding this app itself). Best-effort — failures are non-fatal.
+    /// that matches this app's binary path (excluding this app itself).
+    /// Best-effort — failures are non-fatal.
     fn kill_orphaned_processes(&self) {
         let self_pid = std::process::id();
+        let expected_canonical = std::fs::canonicalize(&self.binary_path).ok();
         let expected_name = self
             .binary_path
             .file_name()
@@ -184,21 +186,29 @@ impl ZeytunCoreProcessManager {
                 continue;
             }
 
-            // Match on the reported process name OR the executable's file name.
-            // (`name()` can be truncated on some platforms, so we check both.)
-            let name_matches = process
-                .name()
-                .to_str()
-                .map(|n| n == CORE_PROCESS_NAME || n == expected_name)
-                .unwrap_or(false);
-            let exe_matches = process
-                .exe()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .map(|n| n == CORE_PROCESS_NAME || n == expected_name)
-                .unwrap_or(false);
+            // Only kill processes matching our binary path (canonicalized).
+            // This prevents dev instances from killing a production core or vice-versa.
+            let matches = if let (Some(expected), Some(proc_exe)) = (
+                &expected_canonical,
+                process.exe().and_then(|p| std::fs::canonicalize(p).ok()),
+            ) {
+                proc_exe == *expected
+            } else {
+                let name_matches = process
+                    .name()
+                    .to_str()
+                    .map(|n| n == CORE_PROCESS_NAME || n == expected_name)
+                    .unwrap_or(false);
+                let exe_matches = process
+                    .exe()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|n| n == CORE_PROCESS_NAME || n == expected_name)
+                    .unwrap_or(false);
+                name_matches || exe_matches
+            };
 
-            if name_matches || exe_matches {
+            if matches {
                 let _ = process.kill();
             }
         }

@@ -10,9 +10,36 @@ pub const GEOIP_COUNTRY_PATH: &str = "resources/geoip.mmdb";
 pub const GEOIP_DB_FILENAME: &str = "geoip.mmdb";
 
 // Ports & Addresses
+#[cfg(debug_assertions)]
+pub const CLASH_API_PORT: u16 = 19090;
+#[cfg(not(debug_assertions))]
 pub const CLASH_API_PORT: u16 = 9090;
+
+#[cfg(debug_assertions)]
+pub const GRPC_API_PORT: u16 = 19999;
+#[cfg(not(debug_assertions))]
 pub const GRPC_API_PORT: u16 = 9999;
+
+#[cfg(debug_assertions)]
+pub const GRPC_API_ENDPOINT: &str = "http://127.0.0.1:19999";
+#[cfg(not(debug_assertions))]
 pub const GRPC_API_ENDPOINT: &str = "http://127.0.0.1:9999";
+
+#[cfg(debug_assertions)]
+pub const DEFAULT_MIXED_PORT: u16 = 16060;
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_MIXED_PORT: u16 = 6060;
+
+#[cfg(debug_assertions)]
+pub const DEFAULT_SOCKS_PORT: u16 = 16061;
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_SOCKS_PORT: u16 = 6061;
+
+#[cfg(debug_assertions)]
+pub const DEFAULT_HTTP_PORT: u16 = 16062;
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_HTTP_PORT: u16 = 6062;
+
 pub const LOCALHOST: &str = "127.0.0.1";
 
 // Wait & Retry Timeouts

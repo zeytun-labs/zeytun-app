@@ -355,8 +355,13 @@ impl CoreLifecycle {
         }
         let host = &profile.local_proxy.listen;
         let host = if host.is_empty() { "127.0.0.1" } else { host };
-        self.system_proxy_manager
-            .enable(host, profile.local_proxy.mixed_port.unwrap_or(6060))
+        self.system_proxy_manager.enable(
+            host,
+            profile
+                .local_proxy
+                .mixed_port
+                .unwrap_or(crate::core::constants::DEFAULT_MIXED_PORT),
+        )
     }
 
     pub fn stop(&mut self) -> CoreRuntimeStatus {
