@@ -907,3 +907,47 @@ fn unreferenced_source_delete_only_removes_its_nodes_and_preserves_other_profile
     );
     assert_eq!(fresh.list_subscriptions("other").unwrap()[0].id, "a");
 }
+
+#[test]
+fn root_policy_selection_does_not_block_subscription_delete_and_resets_selection() {
+    use zeytun_lib::core::storage::{Db, Storage};
+    let f = DeleteFixture::new();
+    let mut p = ZeytunCore {
+        proxies: profile().proxies,
+        ..ZeytunCore::default()
+    };
+    p.normalize_policy_graph();
+    // Point root policy directly to node "saved" from source "a"
+    p.policies[0].selected_member_tag = Some("saved".into());
+    f.db.save_profile(&p).unwrap();
+
+    let preview =
+        f.db.subscription_delete_preview("default", "a", &[])
+            .unwrap();
+    assert!(
+        preview.dependencies.is_empty(),
+        "root-policy selection must not be counted as a blocking dependency: {:?}",
+        preview.dependencies
+    );
+
+    let mut input = delete_input(preview);
+    input.mode = SubscriptionDeleteMode::DeleteNodes;
+    f.db.delete_subscription(&input, &[]).unwrap();
+
+    let fresh = Db::new(f.db.path().to_path_buf());
+    let after = fresh.load_profile("default").unwrap();
+    assert!(
+        !after.proxies.iter().any(|proxy| proxy.tag == "saved"),
+        "deleted proxy must not remain"
+    );
+    let root = after
+        .policies
+        .iter()
+        .find(|policy| policy.tag == DEFAULT_SELECTOR_POLICY_TAG)
+        .unwrap();
+    assert_ne!(
+        root.selected_member_tag.as_deref(),
+        Some("saved"),
+        "root policy selection must be reset"
+    );
+}

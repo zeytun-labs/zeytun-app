@@ -61,14 +61,14 @@ impl SubscriptionManager {
             }
         };
         for policy in &profile.policies {
-            // Synthetic root membership is registry-derived, not authored intent.
+            // Synthetic root membership and selection are registry-derived, not authored intent.
             if policy.tag != DEFAULT_SELECTOR_POLICY_TAG {
                 for tag in policy.members.iter().flatten() {
                     add(Kind::PolicyMember, policy.tag.clone(), tag);
                 }
-            }
-            if let Some(tag) = &policy.selected_member_tag {
-                add(Kind::PolicySelection, policy.tag.clone(), tag);
+                if let Some(tag) = &policy.selected_member_tag {
+                    add(Kind::PolicySelection, policy.tag.clone(), tag);
+                }
             }
         }
         for proxy in &profile.proxies {

@@ -179,6 +179,19 @@ impl Db {
                     tx.execute("UPDATE proxy SET origin='manual',source_id=NULL,enabled=CASE WHEN available=0 THEN 0 ELSE enabled END WHERE profile_id=?1 AND source_id=?2",params![input.profile_id,input.source_id])?;
                 }
                 SubscriptionDeleteMode::DeleteNodes => {
+                    tx.execute(
+                        "UPDATE policy
+                         SET selected_member_tag = (
+                             SELECT member_tag FROM policy_member
+                             WHERE profile_id = ?1 AND policy_tag = ?3
+                               AND member_tag NOT IN (SELECT tag FROM proxy WHERE profile_id = ?1 AND source_id = ?2)
+                             ORDER BY position ASC LIMIT 1
+                         )
+                         WHERE profile_id = ?1 AND tag = ?3 AND selected_member_tag IN (
+                             SELECT tag FROM proxy WHERE profile_id = ?1 AND source_id = ?2
+                         )",
+                        params![input.profile_id, input.source_id, DEFAULT_SELECTOR_POLICY_TAG],
+                    )?;
                     tx.execute("DELETE FROM policy_member WHERE profile_id=?1 AND policy_tag=?3 AND member_tag IN (SELECT tag FROM proxy WHERE profile_id=?1 AND source_id=?2)",params![input.profile_id,input.source_id,DEFAULT_SELECTOR_POLICY_TAG])?;
                     tx.execute("DELETE FROM proxy WHERE profile_id=?1 AND source_id=?2",params![input.profile_id,input.source_id])?;
                 }
