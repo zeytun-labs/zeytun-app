@@ -12,7 +12,8 @@
     ReloadIcon,
   } from "@hugeicons/core-free-icons";
   import { untrack } from "svelte";
-  import { slide } from "svelte/transition";
+  import { slide, fly, fade } from "svelte/transition";
+  import { cubicOut } from "svelte/easing";
   import { toast } from "svelte-sonner";
   import { cn } from "$lib/utils.js";
   import { coreRestart } from "$lib/core/api";
@@ -184,22 +185,28 @@
          never floats over the text it is anchored below. -->
     <div class="flex min-w-0 flex-1 flex-col">
       <ScrollArea class="min-h-0 flex-1 bg-background">
-        <div class="px-16 py-8">
-          {#key activeTab}
-            <div class="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
-              {#if activeTab === "general"}
-                <GeneralSection {draft} />
-              {:else if activeTab === "network"}
-                <NetworkSection {draft} />
-              {:else if activeTab === "dns"}
-                <DnsSection {draft} />
-              {:else if activeTab === "connectivity"}
-                <ConnectivitySection {draft} />
-              {:else}
-                <AboutSection />
-              {/if}
-            </div>
-          {/key}
+        <div class="px-16 py-8 overflow-hidden">
+          <div class="grid grid-cols-1 grid-rows-1">
+            {#key activeTab}
+              <div
+                class="col-start-1 row-start-1 w-full"
+                in:fly={{ y: 6, duration: 150, easing: cubicOut }}
+                out:fade={{ duration: 100 }}
+              >
+                {#if activeTab === "general"}
+                  <GeneralSection {draft} />
+                {:else if activeTab === "network"}
+                  <NetworkSection {draft} />
+                {:else if activeTab === "dns"}
+                  <DnsSection {draft} />
+                {:else if activeTab === "connectivity"}
+                  <ConnectivitySection {draft} />
+                {:else}
+                  <AboutSection />
+                {/if}
+              </div>
+            {/key}
+          </div>
         </div>
       </ScrollArea>
 
