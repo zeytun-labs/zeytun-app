@@ -76,14 +76,10 @@
     }
   }
 
-  // While restarting the core cycles stopped→connecting→running; hold the
-  // spinner across the whole cycle so the light never flashes red mid-restart.
   let restarting = $state(false);
-  $effect(() => {
-    if (restarting && profileStore.coreStatus === "running") restarting = false;
-  });
 
   async function handleRestartCore() {
+    if (restarting) return;
     restarting = true;
     // Safety: never let the spinner hang if the core never reaches "running".
     const guard = setTimeout(() => (restarting = false), 15000);
@@ -92,10 +88,11 @@
       await profileStore.clearPendingRestart();
       toast.success("Core restarted successfully");
     } catch (err) {
-      restarting = false;
-      clearTimeout(guard);
       console.error("Failed to restart core:", err);
       toast.error("Failed to restart core", { description: errorMessage(err) });
+    } finally {
+      clearTimeout(guard);
+      restarting = false;
     }
   }
 </script>
@@ -168,7 +165,7 @@
         TUN Mode
       </Toggle>
 
-      {#if profileStore.pendingRestart && profileStore.isRunning}
+      {#if profileStore.pendingRestart && profileStore.isRunning && !restarting}
         <div
           transition:slide={{ axis: "x", duration: 250 }}
           class="flex items-center"
