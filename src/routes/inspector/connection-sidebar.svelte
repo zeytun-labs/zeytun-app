@@ -75,29 +75,31 @@
     {/if}
   </div>
   <ScrollArea class="min-h-0 flex-1 px-1">
-    <div class="p-1.5 flex flex-col gap-0.5">
-      {#each groups as [name, info] (name)}
-        <button
-          class="flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-xs {selectedGroup ===
-          name
-            ? 'bg-accent text-accent-foreground'
-            : 'hover:bg-accent/50'}"
-          onclick={() => onSelectGroup(selectedGroup === name ? null : name)}
-        >
-          {#if groupBy === "client"}
-            <ProcessIcon {name} path={info.path} class="size-6 shrink-0" />
-            <span class="min-w-0 flex-1 truncate text-left" title={name}
-              >{name}</span
-            >
-          {:else}
-            <span
-              class="min-w-0 flex-1 truncate text-left font-mono"
-              title={name}>{name}</span
-            >
-          {/if}
-          <span class="text-muted-foreground shrink-0">{info.count}</span>
-        </button>
-      {/each}
-    </div>
+    {#key groupBy}
+      <div class="p-1.5 flex flex-col gap-0.5 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+        {#each groups as [name, info] (name)}
+          <button
+            class="flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-xs {selectedGroup ===
+            name
+              ? 'bg-accent text-accent-foreground'
+              : 'hover:bg-accent/50'}"
+            onclick={() => onSelectGroup(selectedGroup === name ? null : name)}
+          >
+            {#if groupBy === "client"}
+              <ProcessIcon {name} path={info.path} class="size-6 shrink-0" />
+              <span class="min-w-0 flex-1 truncate text-left" title={name}
+                >{name}</span
+              >
+            {:else}
+              <span
+                class="min-w-0 flex-1 truncate text-left font-mono"
+                title={name}>{name}</span
+              >
+            {/if}
+            <span class="text-muted-foreground shrink-0">{info.count}</span>
+          </button>
+        {/each}
+      </div>
+    {/key}
   </ScrollArea>
 </div>

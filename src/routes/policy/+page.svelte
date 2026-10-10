@@ -419,8 +419,13 @@
 
   async function handleRefreshAllSubscriptions() {
     try {
-      await subscriptionsStore.refreshAll();
-      toast.success("All subscriptions refreshed");
+      const results = await subscriptionsStore.refreshAll();
+      const failed = results.filter((r) => r.status === "failed");
+      if (failed.length > 0) {
+        toast.warning(`Refreshed with ${failed.length} failure(s)`);
+      } else {
+        toast.success("All subscriptions refreshed");
+      }
     } catch (e: any) {
       toast.error(`Refresh all failed: ${e?.message ?? e}`);
     }
@@ -450,17 +455,25 @@
   </PolicyHeader>
 
   {#if currentTab === "subscriptions"}
-    <SubscriptionList
-      onEdit={(source) => openSubscriptionDialog("edit", source)}
-      onAdd={() => openSubscriptionDialog("create")}
-    />
+    <div class="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+      <SubscriptionList
+        onEdit={(source) => openSubscriptionDialog("edit", source)}
+        onAdd={() => openSubscriptionDialog("create")}
+      />
+    </div>
   {:else if profileStore.loading}
     <div class="flex flex-col gap-6 w-full animate-in fade-in duration-500">
       <div class="flex flex-col gap-3">
         <Skeleton class="h-6 w-32" />
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
           {#each Array(4) as _}
-            <Skeleton class="h-24 w-full" />
+            <div class="rounded-3xl border border-border/40 bg-card/40 p-4 flex flex-col justify-between h-24">
+              <div class="flex items-center justify-between">
+                <Skeleton class="h-4 w-28" />
+                <Skeleton class="size-5 rounded-md" />
+              </div>
+              <Skeleton class="h-3 w-16" />
+            </div>
           {/each}
         </div>
       </div>
@@ -470,39 +483,47 @@
           class="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
         >
           {#each Array(4) as _}
-            <Skeleton class="h-24 w-full" />
+            <div class="rounded-3xl border border-border/40 bg-card/40 p-4 flex flex-col justify-between h-24">
+              <div class="flex items-center justify-between">
+                <Skeleton class="h-4 w-24" />
+                <Skeleton class="h-4 w-12 rounded-full" />
+              </div>
+              <Skeleton class="h-3 w-20" />
+            </div>
           {/each}
         </div>
       </div>
     </div>
   {:else if profileStore.profile && activeProfile}
-    <PolicyGrid
-      policies={profileStore.visiblePolicies}
-      {canSelectProxy}
-      groupName={activeProfile.name}
-      onPolicyClick={handlePolicyClick}
-      onSelectPolicy={selectPolicy}
-      onSelectMember={(policyTag, memberTag) =>
-        selectPolicyMemberAction(policyTag, memberTag)}
-      onEditPolicy={(policy) => openPolicyDialog("edit-policy", policy)}
-      onDeletePolicy={deletePolicy}
-    />
+    <div class="flex flex-col gap-6 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+      <PolicyGrid
+        policies={profileStore.visiblePolicies}
+        {canSelectProxy}
+        groupName={activeProfile.name}
+        onPolicyClick={handlePolicyClick}
+        onSelectPolicy={selectPolicy}
+        onSelectMember={(policyTag, memberTag) =>
+          selectPolicyMemberAction(policyTag, memberTag)}
+        onEditPolicy={(policy) => openPolicyDialog("edit-policy", policy)}
+        onDeletePolicy={deletePolicy}
+      />
 
-    <ProxyGrid
-      proxies={visibleProxies}
-      {canSelectProxy}
-      groupName={activeProfile.name}
-      onProxyClick={handleProxyClick}
-      onEditProxy={(proxy) =>
-        openProxyDialog(
-          proxy.protocol === "chain" ? "edit-chain" : "edit",
-          proxy,
-        )}
-      onSelectProxy={selectProxy}
-      onTestProxy={runUrlTestSingle}
-      onDeleteProxy={requestDeleteProxy}
-      onAddProxy={() => openProxyDialog("proxy")}
-    />
+      <ProxyGrid
+        proxies={visibleProxies}
+        {canSelectProxy}
+        groupName={activeProfile.name}
+        onProxyClick={handleProxyClick}
+        onEditProxy={(proxy) =>
+          openProxyDialog(
+            proxy.protocol === "chain" ? "edit-chain" : "edit",
+            proxy,
+          )}
+        onSelectProxy={selectProxy}
+        onTestProxy={runUrlTestSingle}
+        onDeleteProxy={requestDeleteProxy}
+        onAddProxy={() => openProxyDialog("proxy")}
+      />
+    </div>
   {:else}
     <div
       class="text-muted-foreground flex flex-1 items-center justify-center py-12 text-sm"

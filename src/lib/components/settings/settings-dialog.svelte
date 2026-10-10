@@ -185,17 +185,21 @@
     <div class="flex min-w-0 flex-1 flex-col">
       <ScrollArea class="min-h-0 flex-1 bg-background">
         <div class="px-16 py-8">
-          {#if activeTab === "general"}
-            <GeneralSection {draft} />
-          {:else if activeTab === "network"}
-            <NetworkSection {draft} />
-          {:else if activeTab === "dns"}
-            <DnsSection {draft} />
-          {:else if activeTab === "connectivity"}
-            <ConnectivitySection {draft} />
-          {:else}
-            <AboutSection />
-          {/if}
+          {#key activeTab}
+            <div class="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+              {#if activeTab === "general"}
+                <GeneralSection {draft} />
+              {:else if activeTab === "network"}
+                <NetworkSection {draft} />
+              {:else if activeTab === "dns"}
+                <DnsSection {draft} />
+              {:else if activeTab === "connectivity"}
+                <ConnectivitySection {draft} />
+              {:else}
+                <AboutSection />
+              {/if}
+            </div>
+          {/key}
         </div>
       </ScrollArea>
 

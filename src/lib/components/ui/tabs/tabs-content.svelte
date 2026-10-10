@@ -12,6 +12,9 @@
 <TabsPrimitive.Content
 	bind:ref
 	data-slot="tabs-content"
-	class={cn("text-sm flex-1 outline-none", className)}
+	class={cn(
+		"text-sm flex-1 outline-none motion-safe:data-[state=active]:animate-in motion-safe:data-[state=active]:fade-in motion-safe:data-[state=active]:duration-200",
+		className
+	)}
 	{...restProps}
 />

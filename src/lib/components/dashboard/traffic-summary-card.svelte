@@ -40,8 +40,8 @@
     `repeating-linear-gradient(-45deg, ${color} 0 6px, color-mix(in oklab, ${color} 65%, transparent) 6px 12px)`;
 </script>
 
-<DashCard class="justify-between gap-2 p-5">
-  <div class="flex items-start gap-2 relative">
+<DashCard class="gap-2 p-4">
+  <div class="flex shrink-0 items-start gap-2 relative">
     <div
       class="text-muted-foreground text-[11px] font-medium tracking-wider uppercase"
     >
@@ -57,18 +57,20 @@
     </div>
   </div>
 
-  <div class="flex items-end gap-1.5">
-    <span class="text-4xl font-semibold tracking-tight leading-none">
-      {totalFmt.value}
-    </span>
-    <span class="text-muted-foreground mb-0.5 text-sm font-medium"
-      >{totalFmt.unit}</span
-    >
-  </div>
+  {#key period}
+    <div class="flex h-9 shrink-0 items-end gap-1.5 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+      <span class="text-4xl font-semibold tracking-tight leading-none">
+        {totalFmt.value}
+      </span>
+      <span class="text-muted-foreground mb-0.5 text-sm font-medium"
+        >{totalFmt.unit}</span
+      >
+    </div>
+  {/key}
 
-  <div class="space-y-3">
+  <div class="mt-auto shrink-0 space-y-3">
     <!-- Proxy green left · Direct orange right (mock order) -->
-    <div class="flex h-8 gap-1 overflow-hidden">
+    <div class="flex h-6 gap-1 overflow-hidden">
       <div
         class="min-w-1 rounded-lg transition-all"
         style="width: {Math.max(
@@ -85,35 +87,37 @@
       ></div>
     </div>
 
-    <div class="grid grid-cols-2 gap-3">
-      <div class="flex items-start gap-1">
-        <span class="mt-0.75 size-2 shrink-0 rounded-full bg-chart-1"></span>
-        <div class="min-w-0">
-          <div
-            class="text-muted-foreground text-xs font-medium tracking-wider uppercase"
-          >
-            Proxy
-          </div>
-          <div class="truncate text-sm font-medium mt-px">
-            {proxyFmt.toString()}
-            <span class="text-muted-foreground">· {proxyPct}%</span>
-          </div>
-        </div>
-      </div>
-      <div class="flex items-start justify-end gap-2 text-end">
-        <div class="min-w-0">
-          <div
-            class="text-muted-foreground text-xs font-medium tracking-wider uppercase"
-          >
-            Direct
-          </div>
-          <div class="truncate text-sm font-medium mt-px">
-            {directFmt.toString()}
-            <span class="text-muted-foreground">· {directPct}%</span>
+    {#key period}
+      <div class="grid grid-cols-2 gap-3 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+        <div class="flex items-start gap-1">
+          <span class="mt-0.75 size-2 shrink-0 rounded-full bg-chart-1"></span>
+          <div class="min-w-0">
+            <div
+              class="text-muted-foreground text-xs leading-4 font-medium tracking-wider uppercase"
+            >
+              Proxy
+            </div>
+            <div class="truncate text-sm leading-5 font-medium mt-px">
+              {proxyFmt.toString()}
+              <span class="text-muted-foreground">· {proxyPct}%</span>
+            </div>
           </div>
         </div>
-        <span class="mt-0.75 size-2 shrink-0 rounded-full bg-chart-2"></span>
+        <div class="flex items-start justify-end gap-2 text-end">
+          <div class="min-w-0">
+            <div
+              class="text-muted-foreground text-xs leading-4 font-medium tracking-wider uppercase"
+            >
+              Direct
+            </div>
+            <div class="truncate text-sm leading-5 font-medium mt-px">
+              {directFmt.toString()}
+              <span class="text-muted-foreground">· {directPct}%</span>
+            </div>
+          </div>
+          <span class="mt-0.75 size-2 shrink-0 rounded-full bg-chart-2"></span>
+        </div>
       </div>
-    </div>
+    {/key}
   </div>
 </DashCard>

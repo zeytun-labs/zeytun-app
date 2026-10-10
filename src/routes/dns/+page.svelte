@@ -140,19 +140,21 @@
         </div>
       </div>
 
-      <div class="text-[13px] text-muted-foreground/80 px-2">
-        {#if activeTab === "servers"}
-          List of all DNS servers used for resolution. Assign outbounds to
-          control routing and whether it is a Local or Remote DNS.
-        {:else if activeTab === "rules"}
-          Route matching domains through a configured DNS server or block them.
-        {:else if activeTab === "hosts"}
-          Resolve a domain to a fixed IPv4 or IPv6 address before querying
-          upstream DNS.
-        {:else if activeTab === "lookup"}
-          Query configured DNS servers to test routing and resolution behavior.
-        {/if}
-      </div>
+      {#key activeTab}
+        <div class="text-[13px] text-muted-foreground/80 px-2 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+          {#if activeTab === "servers"}
+            List of all DNS servers used for resolution. Assign outbounds to
+            control routing and whether it is a Local or Remote DNS.
+          {:else if activeTab === "rules"}
+            Route matching domains through a configured DNS server or block them.
+          {:else if activeTab === "hosts"}
+            Resolve a domain to a fixed IPv4 or IPv6 address before querying
+            upstream DNS.
+          {:else if activeTab === "lookup"}
+            Query configured DNS servers to test routing and resolution behavior.
+          {/if}
+        </div>
+      {/key}
     </div>
 
     <TabsContent value="servers" class="min-w-0">

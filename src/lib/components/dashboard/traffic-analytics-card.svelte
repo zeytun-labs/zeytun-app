@@ -11,6 +11,10 @@
   import { BarChart, Highlight } from "layerchart";
   import { cubicInOut } from "svelte/easing";
   import * as Chart from "$lib/components/ui/chart/index.js";
+  import * as Empty from "$lib/components/ui/empty/index.js";
+  import { Skeleton } from "$lib/components/ui/skeleton/index.js";
+  import { HugeiconsIcon } from "@hugeicons/svelte";
+  import { Activity04Icon } from "@hugeicons/core-free-icons";
 
   import type {
     TrafficAnalytics,
@@ -187,8 +191,8 @@
   });
 </script>
 
-<DashCard class="gap-4 p-5">
-  <div class="flex flex-wrap items-center gap-2 relative">
+<DashCard class="gap-2 p-4">
+  <div class="flex h-7 shrink-0 items-center gap-2 relative">
     <div
       class="text-muted-foreground text-[11px] font-medium tracking-wider uppercase"
     >
@@ -217,7 +221,7 @@
   </div>
 
   <!-- REQUIRED: existing Chart + BarChart stack (up/down) -->
-  <Chart.Container config={chartConfig} class="h-40 w-full">
+  <Chart.Container config={chartConfig} class="h-36 w-full shrink-0 aspect-auto">
     <BarChart
       data={buckets}
       xScale={scaleBand().padding(0.25)}
@@ -286,8 +290,8 @@
     </BarChart>
   </Chart.Container>
 
-  <Tabs.Root bind:value={bottomTab} class="gap-2">
-    <div class="flex items-center justify-between">
+  <Tabs.Root bind:value={bottomTab} class="h-50.5 shrink-0 gap-1.5">
+    <div class="flex h-7 shrink-0 items-center justify-between">
       <Tabs.List class="h-7! p-0.5!">
         <Tabs.Trigger value="domain" class="flex-1 text-xs">Host</Tabs.Trigger>
         <Tabs.Trigger value="policy" class="flex-1 text-xs">Policy</Tabs.Trigger
@@ -314,52 +318,66 @@
       </div>
     </div>
 
-    <div class="h-39">
+    <div class="h-42 shrink-0 overflow-y-auto">
       {#if loading && !data}
-        <div class="text-muted-foreground py-6 text-center text-xs">
-          Loading…
+        <div class="flex h-full flex-col justify-center gap-2 px-1">
+          <Skeleton class="h-8 w-full rounded-xl" />
+          <Skeleton class="h-8 w-full rounded-xl" />
+          <Skeleton class="h-8 w-full rounded-xl" />
         </div>
       {:else if topList.length === 0}
-        <div class="text-muted-foreground py-6 text-center text-xs">
-          No traffic yet.
-        </div>
+        <Empty.Root class="h-full border border-dashed border-border/40 bg-card/20 p-3 gap-1.5 justify-center">
+          <Empty.Media variant="icon" class="mb-0 size-8">
+            <HugeiconsIcon icon={Activity04Icon} class="size-4 text-muted-foreground/60" />
+          </Empty.Media>
+          <Empty.Header class="gap-0.5">
+            <Empty.Title class="text-xs font-medium">No traffic recorded</Empty.Title>
+            <Empty.Description class="text-[11px] text-muted-foreground max-w-xs">
+              Live data will show up once connections route through Zeytun.
+            </Empty.Description>
+          </Empty.Header>
+        </Empty.Root>
       {:else}
-        {#each topList as entry (entry.name)}
-          {@const pct = sharePct(entry)}
-          <div
-            class="flex items-center justify-between gap-2 rounded-xl px-2.5 py-1.5 hover:bg-foreground/5"
-          >
-            <span class="flex min-w-0 items-center gap-2">
-              {#if bottomTab === "process"}
-                <ProcessIcon
-                  name={entry.name}
-                  path={processPath(entry.name)}
-                  class="size-4 shrink-0"
-                />
-              {/if}
-              <span
-                class="truncate text-sm {bottomTab === 'domain'
-                  ? 'font-mono'
-                  : ''}"
-                title={displayName(entry.name)}
+        {#key bottomTab}
+          <div class="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-150">
+            {#each topList as entry (entry.name)}
+              {@const pct = sharePct(entry)}
+              <div
+                class="flex items-center justify-between gap-2 rounded-xl px-2.5 py-1 hover:bg-foreground/5"
               >
-                {displayName(entry.name)}
-              </span>
-            </span>
-            <span class="text-muted-foreground shrink-0 text-xs tabular-nums">
-              <span class="text-chart-2"
-                >↑ {formatBytes(entry.up).toString()}</span
-              >
-              <span class="mx-1 opacity-40">/</span>
-              <span class="text-chart-1"
-                >↓ {formatBytes(entry.down).toString()}</span
-              >
-              <span class="text-muted-foreground/60 ml-1.5"
-                >{pct.toFixed(0)}%</span
-              >
-            </span>
+                <span class="flex min-w-0 items-center gap-2">
+                  {#if bottomTab === "process"}
+                    <ProcessIcon
+                      name={entry.name}
+                      path={processPath(entry.name)}
+                      class="size-4 shrink-0"
+                    />
+                  {/if}
+                  <span
+                    class="truncate text-sm {bottomTab === 'domain'
+                      ? 'font-mono'
+                      : ''}"
+                    title={displayName(entry.name)}
+                  >
+                    {displayName(entry.name)}
+                  </span>
+                </span>
+                <span class="text-muted-foreground shrink-0 text-xs tabular-nums">
+                  <span class="text-chart-2"
+                    >↑ {formatBytes(entry.up).toString()}</span
+                  >
+                  <span class="mx-1 opacity-40">/</span>
+                  <span class="text-chart-1"
+                    >↓ {formatBytes(entry.down).toString()}</span
+                  >
+                  <span class="text-muted-foreground/60 ml-1.5"
+                    >{pct.toFixed(0)}%</span
+                  >
+                </span>
+              </div>
+            {/each}
           </div>
-        {/each}
+        {/key}
       {/if}
     </div>
   </Tabs.Root>
