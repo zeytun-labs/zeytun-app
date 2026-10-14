@@ -5,6 +5,7 @@ pub mod adapters;
 pub mod core;
 pub mod tray;
 pub mod tray_icon;
+pub mod update_security;
 
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -2007,6 +2008,8 @@ pub fn run() {
             core_update_geoip_db,
             core_auto_update_geoip_db,
             crate::adapters::update_release::check_release_update,
+            crate::adapters::update_release::download_release_update,
+            crate::adapters::update_release::install_release_update,
             core_decide_connection_ask,
             core_open_connection_ask_window,
             core_clash_proxy_delay_test,

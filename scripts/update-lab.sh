@@ -1,125 +1,102 @@
 #!/usr/bin/env bash
-# Local self-update lab: unlimited update cycles, no GitHub Releases.
+# Isolated self-update lab: real versioned bundles, no GitHub Releases.
 # See update-lab.README.md
 set -euo pipefail
 
 SERVE_DIR="${ZEYTUN_UPDATE_LAB_DIR:-/tmp/zeytun-update-lab}"
 PORT="${ZEYTUN_UPDATE_LAB_PORT:-8787}"
 BASE_URL="http://127.0.0.1:$PORT"
-KEY_PATH="$HOME/.tauri/zeytun.key"
-KEY_PW_FILE="$HOME/.tauri/zeytun.key.password"
+KEY_PATH="${ZEYTUN_UPDATE_LAB_KEY_PATH:-$HOME/.tauri/zeytun-lab.key}"
+KEY_PW_FILE="${ZEYTUN_UPDATE_LAB_PASSWORD_FILE:-$HOME/.tauri/zeytun-lab.key.password}"
 APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'lab: error: %s\n' "$*" >&2; exit 1; }
 
-# Resolve + fence the lab dir. Refuse anything not under /tmp or the repo's expected lab root.
+# Resolve symlinks before fencing any writes/removals to the lab workspace.
 resolve_dir() {
-  case "$SERVE_DIR" in
-    /tmp/*|*/.lab-update/*) ;;
-    *) die "serve dir '$SERVE_DIR' not under /tmp — refusing (override with ZEYTUN_UPDATE_LAB_DIR=/tmp/...)" ;;
-  esac
-  mkdir -p "$SERVE_DIR"
-  SERVE_DIR="$(cd "$SERVE_DIR" && pwd)"
-}
-
-tarball() {
-  local t
-  t="$(ls -1 "$SERVE_DIR"/*.app.tar.gz 2>/dev/null | head -1 || true)"
-  [ -n "$t" ] || die "no staged .app.tar.gz in $SERVE_DIR — run: $0 build"
-  printf '%s' "$t"
-}
-
-staged_app() {
-  local a
-  a="$(ls -1d "$SERVE_DIR"/*.app 2>/dev/null | head -1 || true)"
-  [ -n "$a" ] || die "no staged .app in $SERVE_DIR — run: $0 build"
-  printf '%s' "$a"
+  SERVE_DIR="$(python3 - "$SERVE_DIR" "$APP_ROOT" <<'PYCODE'
+from pathlib import Path
+import sys
+path=Path(sys.argv[1]).resolve()
+roots=[Path('/tmp').resolve(), Path(sys.argv[2]).resolve()/'.lab-update']
+if not any(path != root and path.is_relative_to(root) for root in roots):
+    raise SystemExit('Lab directory must resolve under /tmp or this checkout/.lab-update')
+path.mkdir(parents=True, exist_ok=True)
+print(path)
+PYCODE
+)" || die "unsafe lab directory"
 }
 
 app_version() {
-  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
-    "$(staged_app)/Contents/Info.plist" 2>/dev/null || echo "?"
+  python3 - "$1/Contents/Info.plist" <<'PYCODE'
+import plistlib,sys
+print(plistlib.load(open(sys.argv[1], 'rb'))['CFBundleShortVersionString'])
+PYCODE
+}
+
+lab_target() {
+  case "$(uname -m)" in
+    arm64|aarch64) echo darwin-aarch64 ;;
+    x86_64) echo darwin-x86_64 ;;
+    *) die "unsupported lab architecture" ;;
+  esac
+}
+
+run_verifier() {
+  (cd "$APP_ROOT" && cargo run --locked --manifest-path src-tauri/Cargo.toml \
+    --features updater-tools --bin verify-update -- --mode lab \
+    --config "$SERVE_DIR/lab-config.json" --manifest "$1" \
+    --artifacts "$SERVE_DIR" --target "$(lab_target)")
 }
 
 do_build() {
-  say "==> building (dev-updater config, endpoint $BASE_URL/latest.json)"
-  [ -f "$KEY_PATH" ] || die "missing $KEY_PATH"
-  [ -f "$KEY_PW_FILE" ] || die "missing $KEY_PW_FILE"
-  local cmd=(pnpm tauri build --bundles app -c src-tauri/tauri.dev-updater.json)
+  local version="${1:-}"
+  local config_args=(--port "$PORT" --output "$SERVE_DIR/lab-config.json")
+  [ -z "$version" ] || config_args+=(--version "$version")
+  [ -z "${ZEYTUN_UPDATE_LAB_PUBLIC_KEY_PATH:-}" ] || config_args+=(--public-key "$ZEYTUN_UPDATE_LAB_PUBLIC_KEY_PATH")
+  python3 "$APP_ROOT/scripts/update_lab.py" config "${config_args[@]}"
+  local pnpm_cmd; read -r -a pnpm_cmd <<< "${PNPM:-pnpm}"
+  local cmd=("${pnpm_cmd[@]}" exec tauri build --bundles app --features updater-lab -c "$SERVE_DIR/lab-config.json")
+  say "==> isolated lab build (endpoint $BASE_URL/latest.json)"
   if [ "$DRY_RUN" = 1 ]; then
-    say "[dry-run] would run (in $APP_ROOT):"
-    printf '  %s\n' "${cmd[*]}"
-    say "[dry-run] would then stage into $SERVE_DIR:"
-    printf '  src-tauri/target/release/bundle/macos/zeytun.app\n'
-    printf '  src-tauri/target/release/bundle/macos/zeytun.app.tar.gz\n'
-    printf '  src-tauri/target/release/bundle/macos/zeytun.app.tar.gz.sig\n'
+    printf '[dry-run] %s\n' "${cmd[*]}"
+    cat "$SERVE_DIR/lab-config.json"
     return 0
   fi
-  ( cd "$APP_ROOT" && \
-    TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_PATH")" \
-    TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY_PATH" \
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$KEY_PW_FILE")" \
-    "${cmd[@]}" )
-
+  [ -f "$KEY_PATH" ] || die "missing lab signing key: $KEY_PATH"
+  [ -f "$KEY_PW_FILE" ] || die "missing lab key password file: $KEY_PW_FILE"
+  (cd "$APP_ROOT" && \
+    TAURI_SIGNING_PRIVATE_KEY="$KEY_PATH" \
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$KEY_PW_FILE")" "${cmd[@]}")
   local bundle="$APP_ROOT/src-tauri/target/release/bundle/macos"
-  [ -d "$bundle" ] || die "no bundle dir: $bundle"
-  local app src
-  app="$(ls -1d "$bundle"/*.app | head -1)"
-  src="$(ls -1 "$bundle"/*.app.tar.gz | head -1)"
-  [ -f "$src.sig" ] || die "missing $src.sig (createUpdaterArtifacts off?)"
-
-  say "==> staging into $SERVE_DIR"
-  rm -rf "$SERVE_DIR"/*.app "$SERVE_DIR"/*.app.tar.gz "$SERVE_DIR"/*.app.tar.gz.sig
-  cp -R "$app" "$SERVE_DIR/"
-  cp "$src" "$src.sig" "$SERVE_DIR/"
-  say "produced:"
-  printf '  %s\n  %s\n  %s\n' "$SERVE_DIR/$(basename "$app")" "$SERVE_DIR/$(basename "$src")" "$SERVE_DIR/$(basename "$src").sig"
+  local name="Zeytun Lab.app"
+  [ -f "$bundle/$name.tar.gz.sig" ] || die "missing signed lab archive"
+  mkdir -p "$SERVE_DIR/candidate"
+  rm -rf "$SERVE_DIR/candidate/$name"
+  cp -R "$bundle/$name" "$SERVE_DIR/candidate/"
+  local version_built; version_built="$(app_version "$SERVE_DIR/candidate/$name")"
+  local asset="Zeytun Lab_${version_built}.app.tar.gz"
+  cp "$bundle/$name.tar.gz" "$SERVE_DIR/$asset"
+  cp "$bundle/$name.tar.gz.sig" "$SERVE_DIR/$asset.sig"
+  # Never overwrite the running bundle when building the next candidate.
+  if [ ! -d "$SERVE_DIR/installed/$name" ]; then
+    mkdir -p "$SERVE_DIR/installed"
+    cp -R "$bundle/$name" "$SERVE_DIR/installed/"
+  fi
+  say "==> staged candidate $(app_version "$SERVE_DIR/candidate/$name")"
 }
 
 do_manifest() {
   local version="${1:-}"
-  [ -n "$version" ] || die "usage: $0 manifest VERSION"
-  case "$version" in
-    *[!0-9.]*) die "version must be dotted numeric, got '$version'" ;;
-  esac
-  [ -f "$KEY_PATH" ] || die "missing $KEY_PATH"
-  [ -f "$KEY_PW_FILE" ] || die "missing $KEY_PW_FILE"
-
-  local tb sig name pubdate
-  tb="$(tarball)"
-  sig="$tb.sig"
-  name="$(basename "$tb")"
-  say "==> re-signing $name for version $version"
-  ( cd "$APP_ROOT" && \
-    TAURI_SIGNING_PRIVATE_KEY_PATH="$KEY_PATH" \
-    TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$KEY_PW_FILE")" \
-    npx tauri signer sign -f "$KEY_PATH" "$tb" ) >"$sig.new" 2>"$sig.err" \
-    || { cat "$sig.err" >&2; rm -f "$sig.new" "$sig.err"; die "signing failed"; }
-  rm -f "$sig.err"
-  # signer prints the base64 signature on stdout; minisign sigs are base64 of
-  # "untrusted comment:..." i.e. start with dW50cnVzdGVk. Grab that line.
-  local signature
-  signature="$(grep -E '^dW50cnVzdGVk[A-Za-z0-9+/=]+$' "$sig.new" | tail -1 || true)"
-  rm -f "$sig.new"
-  [ -n "$signature" ] || die "empty signature output"
-  [ -f "$sig" ] || die "signer did not write $sig"
-  say "    sig: ${signature:0:32}...  ($(wc -c <"$sig" | tr -d ' ') bytes at $(basename "$sig"))"
-
-  pubdate="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  python3 - "$SERVE_DIR/latest.json" "$version" "$pubdate" "$signature" "$BASE_URL/$name" <<'PY'
-import json, sys
-path, version, pub_date, signature, url = sys.argv[1:6]
-json.dump({
-    "version": version,
-    "notes": "Local update-lab build %s. Not stable." % version,
-    "pub_date": pub_date,
-    "platforms": {"darwin-aarch64": {"signature": signature, "url": url}},
-}, open(path, "w"), indent=2)
-PY
-  say "==> wrote $SERVE_DIR/latest.json"
-  cat "$SERVE_DIR/latest.json"
+  [ -n "$version" ] || die "usage: $0 manifest VERSION (must match the candidate bundle)"
+  local pending="$SERVE_DIR/latest.pending.json"
+  python3 "$APP_ROOT/scripts/update_lab.py" manifest --directory "$SERVE_DIR" \
+    --version "$version" --port "$PORT" --target "$(lab_target)" --output "$pending"
+  run_verifier "$pending"
+  mv "$pending" "$SERVE_DIR/latest.json"
+  say "==> published verified manifest $version"
 }
 
 do_serve() {
@@ -164,42 +141,24 @@ PY
 
 do_run() {
   resolve_dir
-  local app; app="$(staged_app)"
-  say "==> launching $app"
-  say "    (endpoint $BASE_URL/latest.json; keep '$0 serve' running)"
+  local app="$SERVE_DIR/installed/Zeytun Lab.app"
+  [ -d "$app" ] || die "no installed lab bundle; run build first"
+  say "==> launching isolated lab $(app_version "$app") ($BASE_URL/latest.json)"
   open "$app"
 }
 
 do_status() {
   resolve_dir
-  say "lab dir     : $SERVE_DIR"
-  if [ -d "$SERVE_DIR" ]; then
-    local app tb
-    app="$(ls -1d "$SERVE_DIR"/*.app 2>/dev/null | head -1 || true)"
-    if [ -n "$app" ]; then
-      say "staged app  : $(basename "$app")  version $(app_version)"
-    else
-      say "staged app  : none (run: $0 build)"
-    fi
-    tb="$(ls -1 "$SERVE_DIR"/*.app.tar.gz 2>/dev/null | head -1 || true)"
-    if [ -n "$tb" ]; then
-      say "tarball     : $(basename "$tb")"
-      say "  sha256    : $(shasum -a 256 "$tb" | cut -d' ' -f1)"
-      say "  sig file  : $([ -f "$tb.sig" ] && echo present || echo MISSING)"
-    else
-      say "tarball     : none"
-    fi
-  fi
-  if [ -f "$SERVE_DIR/latest.json" ]; then
-    say "manifest    : version $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$SERVE_DIR/latest.json")"
-    say "  url       : $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["platforms"]["darwin-aarch64"]["url"])' "$SERVE_DIR/latest.json")"
-  else
-    say "manifest    : none (run: $0 manifest VERSION)"
-  fi
+  say "lab dir: $SERVE_DIR"
+  for kind in installed candidate; do
+    local app="$SERVE_DIR/$kind/Zeytun Lab.app"
+    [ ! -d "$app" ] || say "$kind: $(app_version "$app")"
+  done
+  [ ! -f "$SERVE_DIR/latest.json" ] || cat "$SERVE_DIR/latest.json"
   if curl -fsS -m 2 "$BASE_URL/latest.json" >/dev/null 2>&1; then
-    say "server      : UP on $PORT"
+    say "server: UP on $PORT"
   else
-    say "server      : DOWN (run: $0 serve)"
+    say "server: DOWN (run: $0 serve)"
   fi
 }
 
@@ -207,8 +166,8 @@ usage() {
   cat <<EOF
 zeytun update lab
 
-  $0 build [--dry-run]     build .app with local endpoint + stage artifacts
-  $0 manifest VERSION      re-sign tarball + rewrite latest.json (no rebuild)
+  $0 build [VERSION] [--dry-run]  build a versioned isolated lab bundle
+  $0 manifest VERSION      verify and publish the matching candidate
   $0 serve                 serve lab dir on $BASE_URL (foreground)
   $0 run                   launch the staged .app
   $0 status                show lab state
@@ -222,8 +181,13 @@ main() {
   [ $# -gt 0 ] && shift || true
   case "$cmd" in
     build)
-      for a in "$@"; do [ "$a" = "--dry-run" ] && DRY_RUN=1; done
-      resolve_dir; do_build ;;
+      local version=""
+      for a in "$@"; do
+        if [ "$a" = "--dry-run" ]; then DRY_RUN=1
+        elif [ -z "$version" ]; then version="$a"
+        else die "unexpected build argument: $a"; fi
+      done
+      resolve_dir; do_build "$version" ;;
     manifest) resolve_dir; do_manifest "${1:-}" ;;
     serve) do_serve ;;
     run) do_run ;;

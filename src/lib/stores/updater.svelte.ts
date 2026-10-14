@@ -1,4 +1,4 @@
-import { Update } from "@tauri-apps/plugin-updater";
+import { ReleaseUpdate as Update } from "$lib/core/release-update";
 import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { toast } from "svelte-sonner";

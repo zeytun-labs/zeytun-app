@@ -10,34 +10,34 @@ pub const GEOIP_COUNTRY_PATH: &str = "resources/geoip.mmdb";
 pub const GEOIP_DB_FILENAME: &str = "geoip.mmdb";
 
 // Ports & Addresses
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "updater-lab")))]
 pub const CLASH_API_PORT: u16 = 19090;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "updater-lab")))]
 pub const CLASH_API_PORT: u16 = 9090;
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "updater-lab")))]
 pub const GRPC_API_PORT: u16 = 19999;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "updater-lab")))]
 pub const GRPC_API_PORT: u16 = 9999;
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "updater-lab")))]
 pub const GRPC_API_ENDPOINT: &str = "http://127.0.0.1:19999";
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "updater-lab")))]
 pub const GRPC_API_ENDPOINT: &str = "http://127.0.0.1:9999";
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "updater-lab")))]
 pub const DEFAULT_MIXED_PORT: u16 = 16060;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "updater-lab")))]
 pub const DEFAULT_MIXED_PORT: u16 = 6060;
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "updater-lab")))]
 pub const DEFAULT_SOCKS_PORT: u16 = 16061;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "updater-lab")))]
 pub const DEFAULT_SOCKS_PORT: u16 = 6061;
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(feature = "updater-lab")))]
 pub const DEFAULT_HTTP_PORT: u16 = 16062;
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(feature = "updater-lab")))]
 pub const DEFAULT_HTTP_PORT: u16 = 6062;
 
 pub const LOCALHOST: &str = "127.0.0.1";
@@ -58,3 +58,17 @@ pub fn unix_millis() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
 }
+
+// Lab release bundles must not connect to or control a production/dev core.
+#[cfg(feature = "updater-lab")]
+pub const CLASH_API_PORT: u16 = 29090;
+#[cfg(feature = "updater-lab")]
+pub const GRPC_API_PORT: u16 = 29999;
+#[cfg(feature = "updater-lab")]
+pub const GRPC_API_ENDPOINT: &str = "http://127.0.0.1:29999";
+#[cfg(feature = "updater-lab")]
+pub const DEFAULT_MIXED_PORT: u16 = 26060;
+#[cfg(feature = "updater-lab")]
+pub const DEFAULT_SOCKS_PORT: u16 = 26061;
+#[cfg(feature = "updater-lab")]
+pub const DEFAULT_HTTP_PORT: u16 = 26062;

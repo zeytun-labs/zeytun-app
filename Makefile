@@ -90,7 +90,7 @@ fmt-check: ## Check Rust formatting
 
 check-rs: resources-check repair-dev disk fmt-check ## Run the same Clippy and Rust tests as CI
 	@cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings -A clippy::result_large_err
-	@cd src-tauri && cargo test --all-targets
+	@cd src-tauri && cargo test --all-targets --features updater-tools
 
 ci-frontend: version check-tooling check build-web csp-check test ## Verify frontend and CSP without changing tracked files
 

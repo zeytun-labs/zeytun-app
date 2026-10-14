@@ -111,14 +111,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$TAG" zeytun-core-source.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern latest.json --dir "$RUNNER_TEMP/release-check"
-          node --input-type=module -e '
-            import fs from "node:fs";
-            const manifest = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/release-check/latest.json"));
-            const platform = manifest.platforms?.["darwin-aarch64"];
-            const prefix = `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${process.env.TAG}/`;
-            if (manifest.version !== process.env.TAG.slice(1) || !platform?.signature || !platform?.url?.startsWith(prefix)) {
-              throw new Error("Release manifest version, signature, or repository URL is invalid");
-            }
-            console.log(`Verified ${manifest.version}: ${platform.url}`);
-          '
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json --pattern '*.app.tar.gz' --dir "$RUNNER_TEMP/release-check"
+          python3 scripts/verify-release.py \
+            --manifest "$RUNNER_TEMP/release-check/latest.json" \
+            --artifacts "$RUNNER_TEMP/release-check" --tag "$TAG"

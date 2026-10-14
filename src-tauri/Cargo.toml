@@ -5,6 +5,7 @@ description = "Zeytun macOS desktop client for application-aware network routing
 authors = ["AmirHossein Sadeghi"]
 license = "GPL-3.0-only"
 edition = "2021"
+default-run = "Zeytun"
 
 [lib]
 name = "zeytun_lib"
@@ -13,6 +14,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "Zeytun"
 path = "src/main.rs"
+
+[[bin]]
+name = "verify-update"
+path = "src/bin/verify-update.rs"
+required-features = ["updater-tools"]
+
+[features]
+updater-tools = []
+updater-lab = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -55,6 +65,10 @@ tauri-plugin-process = "2"
 # GeoIP database download: gunzip the DB-IP archive, and month arithmetic for the
 # URL. Both are already in the lockfile as transitive deps — no new versions.
 flate2 = "1.1.9"
+# Already locked transitive dependencies; shared native/CI updater verification.
+tar = "0.4.46"
+plist = "1.9.0"
+minisign-verify = "0.2.5"
 time = "0.3.47"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]

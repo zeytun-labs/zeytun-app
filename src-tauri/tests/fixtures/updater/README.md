@@ -1,0 +1,1 @@
+These are harmless signed updater test fixtures, containing only bundle metadata and a 32-byte Mach-O header (no runnable program). The public key is disposable and is never trusted by production. The private fixture key was discarded. release/lab are version 3.0.0; older is 1.0.0. Signatures cover the exact archive bytes.

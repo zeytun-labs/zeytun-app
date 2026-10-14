@@ -8,5 +8,7 @@
       ],
       "dangerousInsecureTransportProtocol": true
     }
-  }
+  },
+  "identifier": "com.zeytun.app.lab",
+  "productName": "Zeytun Lab"
 }
