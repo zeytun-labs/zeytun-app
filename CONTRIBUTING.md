@@ -131,95 +131,153 @@ generated output is not evidence that a check was run or a behavior was verified
 
 ## Development setup
 
-The current release target is macOS on Apple Silicon. The instructions below
-describe a fresh checkout, with the app and core repositories side by side.
+Clone **this public repository** directly. All commands below run from its root;
+no private parent repository or sibling checkout is required. The native target
+is macOS (Apple Silicon releases). Frontend checks also run on Linux.
 
 ### Prerequisites
 
-- Xcode Command Line Tools, including the macOS SDK and C compiler.
-- Node.js 22 and pnpm 10.27.0 (the version in `package.json`).
-- Rust stable and Cargo.
-- Go 1.25.5 or newer for the core build. Go is required for this setup, not
-  an optional frontend dependency.
-- Protocol Buffers compiler (`protoc`); on macOS, `brew install protobuf`.
-- Git, Make, curl, and gzip.
+For all contributors:
 
-### Clone and prepare resources
+- Node.js 22 (`.nvmrc`) and pnpm 10.27.0 (`package.json`).
+- Python 3.10 or newer, Git, and Make. No Python packages are required.
+
+For native development and app bundles:
+
+- macOS with Xcode Command Line Tools (`xcode-select --install`).
+- Rust stable with rustfmt and Clippy (`rustup component add rustfmt clippy`).
+- Go 1.25.5 or newer, with CGO and the C compiler available for the production
+  core, including Naive.
+- Protocol Buffers compiler (`brew install protobuf`), curl, and gzip.
+
+`make doctor-web` checks frontend tools; `make doctor` also checks native tools.
+The tools must already be installed; setup does not change system toolchains.
+
+### One-time setup
 
 ```bash
 git clone https://github.com/zeytun-labs/zeytun-app.git
 cd zeytun-app
-pnpm install --frozen-lockfile
-
-git clone --branch zeytun-port https://github.com/zeytun-labs/zeytun-core.git ../zeytun-core
-CGO_ENABLED=1 make build-core
+make setup
+make dev
 ```
 
-`make build-core` preserves the production feature tags, including
-`with_naive_outbound`, and copies the binary to
-`src-tauri/resources/bin/macos-aarch64/zeytun-core` on Apple Silicon.
-Keep CGO enabled and the C compiler available for that build.
+Use your fork's URL if contributing. `make setup` installs locked frontend
+packages, installs the pre-commit hook for this clone, clones the public
+[zeytun-core](https://github.com/zeytun-labs/zeytun-core) `zeytun-port` branch
+into ignored `.cache/zeytun-core`, builds the production core, and downloads the
+DB-IP country database. Existing core/data files are validated and reused.
+Failed downloads leave an existing database intact.
 
-Download the country database required by the Tauri resource configuration:
+For frontend work on macOS or Linux without building the native core:
 
 ```bash
-set -o pipefail
-curl -fsSL --retry 3 \
-  "https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz" \
-  | gzip -dc > src-tauri/resources/geoip.mmdb
-test -s src-tauri/resources/geoip.mmdb
+make setup-web
+make dev-web
 ```
 
-If this download fails, do not continue with the empty or partial database;
-retry the download before building the app.
+Vite alone does not provide Tauri IPC; native API calls need `make dev`.
 
-### Run the app
+### Daily commands
+
+Run `make` or `make help` to list commands.
+
+| Command | Purpose |
+|---|---|
+| `make dev` | Start Vite and **Zeytun Dev** together, using the separate development app identifier |
+| `make dev-web` | Start Vite only |
+| `make build` | Build a local app/DMG with fresh frontend/CSP, without updater signing secrets |
+| `make prepare` | Type-check, test, build the frontend, and refresh generated CSP hashes |
+| `make ci-frontend` | Run frontend and tooling checks exactly as CI does, including CSP verification |
+| `make check-rs` | Run Rust format check, Clippy, and tests with CI flags |
+| `make ci` | Run both frontend and Rust checks |
+| `make fmt` | Format Rust before staging it |
+| `make build-core` | Rebuild the full production core from the cached source checkout |
+| `make geoip` | Refresh the country database with a validated download |
+| `make hooks` | Install the hook in an existing clone |
+| `make clean` | Remove frontend and Cargo build outputs, keeping cached source and bundled resources |
+
+`make build-ui` remains an alias for `make build`; `make check` only type-checks
+the frontend. Local native bundles are not Apple-notarized releases or signed
+updater tests. Maintainer releases continue through the Release workflow.
+
+Do not run a second Vite server on port 1420. Run development/build commands as
+your normal user. Core startup currently requests administrator permission to
+set up the core executable. `make dev`, `make build`, and `make check-rs` remove
+non-writable **generated** core copies before Cargo needs to replace them; source
+files and the cached core checkout are retained.
+
+To develop the core itself, edit `.cache/zeytun-core`, then run `make build-core`.
+Existing core checkouts are never automatically pulled or reset. You can also
+use your own public core checkout:
 
 ```bash
-pnpm run tauri dev
+make build-core CORE_SRC=/absolute/path/to/zeytun-core
 ```
 
-This starts Vite and the native Tauri app together. Do not start a second Vite
-server if port 1420 is already occupied by a development session.
+`CORE_REPO`, `CORE_REF`, `CORE_TAGS`, `CORE_VERSION`, and `TARGET` are overridable
+Make variables. `CORE_REF` selects the branch/tag for a new clone; it does not
+switch an existing checkout. The bundled binary path is selected from the host
+architecture. Apple Silicon is the release target; Intel builds are not released.
+CI's `make build-core-ci` omits Naive/CGO and is not a substitute for checking a
+production build when a change affects that integration.
 
-For a local release bundle without updater signing secrets:
+### Before committing: the pre-commit hook
+
+`make setup` and `make setup-web` configure this clone's `core.hooksPath` to
+`.githooks`. The hooks are versioned here, require no extra package, and are not
+installed automatically by cloning. Setup preserves an existing custom hook
+configuration and reports how to integrate it instead of silently replacing it.
+
+After editing, stage the intended files and commit normally:
 
 ```bash
-pnpm exec tauri build --target aarch64-apple-darwin \
-  --config '{"bundle":{"createUpdaterArtifacts":false}}'
+git add src/path/to/changed-file.svelte
+git commit -m "fix: describe the change"
 ```
 
-This is a local build, not an Apple-notarized release or a signed updater test.
+The hook checks whitespace for every commit. For frontend/build-input changes
+it runs `make prepare`: version consistency, tooling tests, Svelte/TypeScript
+checks, frontend tests, a fresh production build, and CSP synchronization. It
+adds **only the generated CSP hash refresh** to the commit. For Rust/native
+changes it runs `make check-rs` too. A CSP hash-only edit does not trigger Rust
+compilation. Documentation-only commits need only the whitespace check.
 
-### Network permissions
+A build must describe the files in the commit. If relevant input files have
+unstaged edits (including partially staged files or untracked frontend source),
+the hook stops with their names. Stage the intended complete files or use a
+clean worktree for that commit. Unrelated unstaged documentation can stay.
+The hook never stashes edits or stages source code for you. Failed checks abort
+the commit and print the failed command.
 
-The default local mixed proxy can run without elevating the app. TUN needs
-administrator privileges; the app requests permission when macOS denies
-creation of the tunnel interface. Do not run the entire desktop app as root.
+You may also run `make prepare` before staging; then explicitly stage the
+updated `src-tauri/tauri.conf.json` with your source changes. Use `make fmt`
+before staging Rust if its formatting check fails. Each clone needs setup once;
+CI verifies the same checks even when local hooks have not been installed.
 
-Do not commit generated core binaries, GeoIP databases, local profiles,
-subscription URLs, credentials, or signing keys.
+### Why CSP hashes change
+
+The desktop webview's Content Security Policy (CSP) allows scripts from the app
+and specifically approved inline scripts. The static frontend contains a theme
+initialization script and SvelteKit's hydration bootstrap. The bootstrap turns
+rendered HTML into the interactive app. Its SHA-256 hash can change when the
+frontend output changes, even if you did not edit a script tag directly.
+
+The generated hashes in `src-tauri/tauri.conf.json` must match the exact built
+script bytes. Otherwise the webview can block hydration. `make prepare` and the
+hook refresh the hashes; CI's `make ci-frontend` verifies them without modifying
+the configuration. This keeps the policy restrictive without manual hash
+copying or enabling `unsafe-inline` for scripts.
 
 ## Checks
 
-| Component | Command |
-|---|---|
-| Frontend | `pnpm install --frozen-lockfile && pnpm run check && pnpm run build && pnpm run test` |
-| Rust | `cd src-tauri && cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings -A clippy::result_large_err && cargo test --all-targets` |
+Use `make ci-frontend` for frontend/tooling changes, `make check-rs` for Rust,
+and `make ci` before a PR that affects both. Rust checks require the core and
+GeoIP resources from `make setup`. No updater signing secrets are needed.
 
-For frontend changes, also run `python3 scripts/check-csp-hashes.py` after the
-build, as CI does. Rust checks require the core and GeoIP resources prepared
-above. These checks do not require updater signing secrets.
-
-`make check` only type-checks the frontend; run its build and tests separately.
-`make check-rs` runs formatting, Clippy, and tests, but its Clippy flags differ
-from CI. Use the Rust commands in the table for CI parity.
-
-Run checks relevant to your change and include their real results in your PR.
-For changes to routing, permissions, or app lifecycle, also describe the manual
-native-app scenarios you exercised and their outcomes. CI's core build omits
-`with_naive_outbound`; it is not a substitute for verifying a production build
-when a change affects that integration.
+Report the commands actually run and their results in your PR. For routing,
+permissions, or lifecycle changes, also describe the native-app scenarios you
+exercised. Passing automated checks does not establish runtime behavior.
 
 For documentation changes, check relative links, anchors, images, and rendered
 Markdown, then run `git diff --check`. Preserve donation addresses exactly and

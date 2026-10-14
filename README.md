@@ -107,7 +107,16 @@ A star, a useful bug report, or a contribution helps too.
 
 ## For developers
 
-Want to build Zeytun or contribute a change? See [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) for prerequisites, core and GeoIP setup, development commands, and checks.
+Clone this public repository, install the [prerequisites](CONTRIBUTING.md#prerequisites), then run:
+
+```bash
+make setup   # Dependencies, pre-commit hook, public core, and GeoIP
+make dev     # Isolated Zeytun Dev app + Vite
+```
+
+For frontend-only work use `make setup-web`. Run `make help` for build/check commands.
+The pre-commit hook prepares and checks the frontend, including generated CSP hashes.
+See [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) for the full workflow.
 
 The network engine is [zeytun-core](https://github.com/zeytun-labs/zeytun-core); proxy-link conversion is provided by [zeytun-config](https://github.com/zeytun-labs/zeytun-config).
 

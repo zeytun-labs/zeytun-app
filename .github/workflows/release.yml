@@ -70,18 +70,12 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch zeytun-port https://github.com/zeytun-labs/zeytun-core.git ../zeytun-core
           make build-core
-          git -C ../zeytun-core archive --format=tar.gz --prefix=zeytun-core/ \
+          git -C .cache/zeytun-core archive --format=tar.gz --prefix=zeytun-core/ \
             --output="$GITHUB_WORKSPACE/zeytun-core-source.tar.gz" HEAD
-          url="https://download.db-ip.com/free/dbip-country-lite-$(date -u +%Y-%m).mmdb.gz"
-          curl -fsSL --retry 3 "$url" | gunzip > "$GITHUB_WORKSPACE/src-tauri/resources/geoip.mmdb"
+          make geoip
       - name: Check frontend
-        run: |
-          pnpm run check
-          pnpm run build
-          pnpm run test
-          python3 scripts/check-csp-hashes.py
+        run: make ci-frontend
       - name: Check GeoIP updates against DB-IP
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib adapters::geoip_update::tests -- --include-ignored
       - name: Smoke-test app and DMG bundles

@@ -18,6 +18,11 @@ vite.config.ts.timestamp-*
 skills-lock.json
 .hermes/
 
+# Public core checkout and Python tooling caches (local only).
+/.cache/
+__pycache__/
+*.pyc
+
 # Binaries & Sidecars
 src-tauri/resources/bin/
 src-tauri/bin/

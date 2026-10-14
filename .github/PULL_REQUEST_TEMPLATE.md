@@ -14,6 +14,8 @@
 ## Verification
 
 <!-- List the exact commands you ran and their results, plus manual app checks.
+     Use make ci-frontend for frontend changes, make check-rs for Rust, or make ci
+     for both. The local pre-commit hook is installed by make setup/setup-web.
      For a bug fix, describe the regression test or reproducible manual test.
      State which checks you did not run and why. Do not claim unexecuted checks passed. -->
 
