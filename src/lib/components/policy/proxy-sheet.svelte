@@ -560,32 +560,36 @@
       });
     }
   });
+
+  const isTlsExpanded = $derived(
+    Boolean(
+      ($formData.settings?.tls?.enabled ||
+        protocolRequiresTls(selectedProtocol)) &&
+        protocolSupportsTls(selectedProtocol)
+    )
+  );
 </script>
 
 <form method="POST" use:enhance id="proxy-form">
   <Sheet.Root bind:open>
     <Sheet.Content
       side="right"
-      class="flex flex-col gap-0 px-1 transition-all duration-300 {($formData
-        .settings?.tls?.enabled ||
-        protocolRequiresTls(selectedProtocol)) &&
-      protocolSupportsTls(selectedProtocol)
-        ? 'w-3xl! max-w-3xl!'
-        : ''}"
+      class="flex flex-col gap-0 p-0 transition-all duration-300 w-full {isTlsExpanded
+        ? 'sm:max-w-3xl!'
+        : 'sm:max-w-md!'}"
     >
+      <Sheet.Header class="px-6 pt-6 pb-4 shrink-0 pr-12">
+        <Sheet.Title
+          >{mode === "create" ? "Add new Proxy" : "Edit Proxy"}</Sheet.Title
+        >
+        <Sheet.Description>
+          Configure the proxy settings and protocol below.
+        </Sheet.Description>
+      </Sheet.Header>
+
       <ScrollArea class="h-0 flex-1 min-h-0">
-        <Sheet.Header class="px-3">
-          <Sheet.Title
-            >{mode === "create" ? "Add new Proxy" : "Edit Proxy"}</Sheet.Title
-          >
-          <Sheet.Description>
-            Configure the proxy settings and protocol below.
-          </Sheet.Description>
-        </Sheet.Header>
         <div
-          class="grid gap-3 px-3 {($formData.settings?.tls?.enabled ||
-            protocolRequiresTls(selectedProtocol)) &&
-          protocolSupportsTls(selectedProtocol)
+          class="grid gap-4 px-6 pb-6 {isTlsExpanded
             ? 'md:grid-cols-2'
             : 'grid-cols-1'}"
         >
@@ -1203,13 +1207,11 @@
           {#if protocolSupportsTls(selectedProtocol) && !!$formData.settings?.tls?.enabled}
             <TlsFields />
           {/if}
-
-          <div class="h-4"></div>
-        </div></ScrollArea
-      >
+        </div>
+      </ScrollArea>
 
       <Sheet.Footer
-        class="-mx-1 bg-background border-t border-border flex-row justify-end"
+        class="p-4 border-t border-border flex flex-row justify-end gap-2 shrink-0"
       >
         <Button variant="outline" onclick={() => (open = false)}>Cancel</Button>
         <Button

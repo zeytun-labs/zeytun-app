@@ -5,6 +5,7 @@ import { toast } from "svelte-sonner";
 import { coreNetworkPolicyGet, coreProfileGet } from "$lib/core/api";
 import { errorMessage } from "$lib/errors";
 import { settingsStore } from "$lib/stores/settings.svelte";
+import { notificationStore, SCOPE_APP } from "$lib/stores/notifications.svelte";
 
 /** Background re-check cadence. Also runs once right after core startup. */
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -133,6 +134,13 @@ class UpdaterStore {
     } catch {
       // private mode / quota — toast anyway, worst case it repeats
     }
+    notificationStore.pushNotification({
+      title: `Zeytun ${version} available`,
+      message: "A new version of Zeytun is ready to download",
+      severity: 1,
+      scope: SCOPE_APP,
+      code: "APP_UPDATE_AVAILABLE",
+    });
     toast.info(`Zeytun ${version} is available`, {
       duration: 15_000,
       action: { label: "Download", onClick: () => void this.download() },
@@ -156,6 +164,13 @@ class UpdaterStore {
       });
       this.phase = "ready";
       this.progress = 1;
+      notificationStore.pushNotification({
+        title: `Zeytun ${this.update.version} ready`,
+        message: "Download complete. Restart to apply update.",
+        severity: 1,
+        scope: SCOPE_APP,
+        code: "APP_UPDATE_READY",
+      });
       toast.success(`Zeytun ${this.update.version} is ready to install`, {
         duration: 15_000,
         action: { label: "Restart", onClick: () => void this.install() },
@@ -163,6 +178,13 @@ class UpdaterStore {
     } catch (e) {
       this.phase = "available";
       this.progress = 0;
+      notificationStore.pushNotification({
+        title: "Update download failed",
+        message: errorMessage(e),
+        severity: 2,
+        scope: SCOPE_APP,
+        code: "APP_UPDATE_FAILED",
+      });
       toast.error("Update download failed", { description: errorMessage(e) });
     }
   }

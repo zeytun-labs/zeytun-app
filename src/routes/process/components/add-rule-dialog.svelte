@@ -118,58 +118,56 @@
 </script>
 
 <Dialog.Root bind:open>
-  <Dialog.Content class="sm:max-w-106.25">
+  <Dialog.Content class="sm:max-w-md">
     <Dialog.Header>
       <Dialog.Title>Add Bypass/Proxy Rule</Dialog.Title>
       <Dialog.Description>
         Create a rule for connections from <strong>{processName}</strong>.
       </Dialog.Description>
     </Dialog.Header>
-    <div class="grid gap-4 py-4">
-      <div class="grid grid-cols-4 items-center gap-4">
-        <Label for="processName" class="text-right">Process</Label>
-        <Input id="processName" value={processName} class="col-span-3 h-9" disabled />
+    <div class="flex flex-col gap-4 py-2">
+      <div class="flex flex-col gap-2">
+        <Label for="processName">Process</Label>
+        <Input id="processName" value={processName} disabled />
       </div>
-      <div class="grid grid-cols-4 items-center gap-4">
-        <Label for="outbound" class="text-right">Outbound</Label>
-        <div class="col-span-3">
-          <Select.Root
-            type="single"
-            value={ruleOutbound}
-            onValueChange={(v) => {
-              ruleOutbound = v;
-            }}
-          >
-            <Select.Trigger class="w-full justify-between h-9">
-              {actionGroups
-                .flatMap((group) => group.options)
-                .find((item) => item.tag === ruleOutbound)?.name}
-            </Select.Trigger>
-            <Select.Content class="max-h-64">
-              {#each actionGroups as group (group.label || "builtin")}
-                <Select.Group>
-                  {#if group.label}
-                    <Select.Label>{group.label}</Select.Label>
-                  {/if}
-                  {#each group.options as option (option.tag)}
-                    <Select.Item value={option.tag} label={option.name}>
-                      {option.name}
-                    </Select.Item>
-                  {/each}
-                </Select.Group>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-        </div>
+      <div class="flex flex-col gap-2">
+        <Label for="outbound">Outbound</Label>
+        <Select.Root
+          type="single"
+          value={ruleOutbound}
+          onValueChange={(v) => {
+            ruleOutbound = v;
+          }}
+        >
+          <Select.Trigger class="w-full">
+            {actionGroups
+              .flatMap((group) => group.options)
+              .find((item) => item.tag === ruleOutbound)?.name}
+          </Select.Trigger>
+          <Select.Content>
+            {#each actionGroups as group (group.label || "builtin")}
+              <Select.Group>
+                {#if group.label}
+                  <Select.Label>{group.label}</Select.Label>
+                {/if}
+                {#each group.options as option (option.tag)}
+                  <Select.Item value={option.tag} label={option.name}>
+                    {option.name}
+                  </Select.Item>
+                {/each}
+              </Select.Group>
+            {/each}
+          </Select.Content>
+        </Select.Root>
       </div>
-      <div class="grid grid-cols-4 items-center gap-4">
-        <Label for="comment" class="text-right">Comment</Label>
-        <Input id="comment" bind:value={ruleComment} class="col-span-3 h-9" placeholder="Comment for this rule" />
+      <div class="flex flex-col gap-2">
+        <Label for="comment">Comment</Label>
+        <Input id="comment" bind:value={ruleComment} placeholder="Comment for this rule" />
       </div>
     </div>
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => open = false}>Cancel</Button>
-      <Button onclick={handleAddRuleSave}>Save Rule</Button>
+      <Button type="button" variant="outline" onclick={() => (open = false)}>Cancel</Button>
+      <Button type="button" onclick={handleAddRuleSave}>Save Rule</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

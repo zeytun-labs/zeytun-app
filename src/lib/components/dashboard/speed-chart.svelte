@@ -21,13 +21,13 @@
 </script>
 
 <DashCard class="pt-5">
-  <div class="px-5">
+  <div class="shrink-0 px-5">
     <div
-      class="text-muted-foreground text-[11px] font-medium tracking-wider uppercase"
+      class="text-muted-foreground h-4 text-[11px] leading-4 font-medium tracking-wider uppercase"
     >
       {title}
     </div>
-    <div class="mt-3 flex items-end gap-1.5">
+    <div class="mt-3 flex h-7.5 items-end gap-1.5">
       <span class="text-3xl font-semibold tracking-tight leading-none"
         >{value}</span
       >
@@ -35,7 +35,10 @@
     </div>
   </div>
 
-  <Chart.Container config={chartConfig} class="mt-auto h-24 w-full">
+  <Chart.Container
+    config={chartConfig}
+    class="mt-auto h-28 w-full shrink-0 aspect-auto"
+  >
     <AreaChart
       {data}
       x="date"

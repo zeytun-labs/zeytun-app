@@ -410,10 +410,10 @@
       </div>
     </div>
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => (addDialogOpen = false)}
-        >Cancel</Button
-      >
-      <Button onclick={addServer} disabled={isSaving}>Add Server</Button>
+      <Button type="button" variant="outline" onclick={() => (addDialogOpen = false)}>
+        Cancel
+      </Button>
+      <Button type="button" onclick={addServer} disabled={isSaving}>Add Server</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

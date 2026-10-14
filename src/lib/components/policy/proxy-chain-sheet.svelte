@@ -82,26 +82,26 @@
 </script>
 
 <Sheet.Root bind:open>
-  <Sheet.Content class="flex w-full flex-col sm:max-w-md" side="right">
+  <Sheet.Content class="flex w-full flex-col sm:max-w-md! p-0 gap-0" side="right">
     <form
       id="proxy-chain-form"
       class="flex flex-1 flex-col overflow-hidden"
       onsubmit={handleSubmit}
     >
-      <ScrollArea class="flex-1 px-4 py-4">
-        <Sheet.Header>
-          <Sheet.Title
-            >{mode === "create"
-              ? "Create Proxy Chain"
-              : "Edit Proxy Chain"}</Sheet.Title
-          >
-          <Sheet.Description>
-            Route traffic through a sequence of proxies. (e.g., Proxy A ➔ Proxy
-            B). Traffic will enter the first proxy and exit from the last.
-          </Sheet.Description>
-        </Sheet.Header>
+      <Sheet.Header class="px-6 pt-6 pb-4 shrink-0 pr-12">
+        <Sheet.Title
+          >{mode === "create"
+            ? "Create Proxy Chain"
+            : "Edit Proxy Chain"}</Sheet.Title
+        >
+        <Sheet.Description>
+          Route traffic through a sequence of proxies. (e.g., Proxy A ➔ Proxy
+          B). Traffic will enter the first proxy and exit from the last.
+        </Sheet.Description>
+      </Sheet.Header>
 
-        <div class="space-y-6 pb-20">
+      <ScrollArea class="h-0 flex-1 min-h-0">
+        <div class="space-y-6 px-6 pb-6">
           <div class="space-y-2">
             <Label for="chain-name">Chain Name</Label>
             <Input
@@ -176,8 +176,8 @@
         </div>
       </ScrollArea>
 
-      <div
-        class="bg-background mt-auto flex items-center justify-end gap-3 border-t p-4"
+      <Sheet.Footer
+        class="p-4 border-t border-border flex flex-row justify-end gap-2 shrink-0"
       >
         <Button type="button" variant="outline" onclick={() => (open = false)}>
           Cancel
@@ -189,7 +189,7 @@
         >
           {saving ? "Saving..." : "Save"}
         </Button>
-      </div>
+      </Sheet.Footer>
     </form>
   </Sheet.Content>
 </Sheet.Root>

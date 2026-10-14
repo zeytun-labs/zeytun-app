@@ -98,8 +98,8 @@
     </div>
 
     <Dialog.Footer>
-      <Button variant="outline" onclick={() => (open = false)}>Cancel</Button>
-      <Button disabled={!outboundTag || saving} onclick={submit}>
+      <Button type="button" variant="outline" onclick={() => (open = false)}>Cancel</Button>
+      <Button type="button" disabled={!outboundTag || saving} onclick={submit}>
         {saving ? "Retrying…" : "Retry all remote"}
       </Button>
     </Dialog.Footer>

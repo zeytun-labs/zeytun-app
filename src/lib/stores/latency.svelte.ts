@@ -14,6 +14,7 @@ import {
   RESERVED_TAGS,
 } from "$lib/core/constants";
 import { profileStore } from "./profile.svelte";
+import { settingsStore } from "./settings.svelte";
 import { errorMessage } from "$lib/errors";
 
 async function allowUiToPaint() {
@@ -80,9 +81,10 @@ class LatencyStore {
             return;
           }
           try {
+            const testUrl = settingsStore.settings.proxyTestUrl || DELAY_TEST_URL;
             const result = await coreClashProxyDelayTest(
               clashTag,
-              DELAY_TEST_URL,
+              testUrl,
               DELAY_TEST_TIMEOUT_MS,
             );
             this.#applyResult(proxy, result);
@@ -123,9 +125,10 @@ class LatencyStore {
       if (!proxyTag) {
         return `Could not find proxy "${proxy.title}" in clash API.`;
       }
+      const testUrl = settingsStore.settings.proxyTestUrl || DELAY_TEST_URL;
       const result = await coreClashProxyDelayTest(
         proxyTag,
-        DELAY_TEST_URL,
+        testUrl,
         DELAY_TEST_TIMEOUT_MS,
       );
       this.#applyResult(proxy, result);

@@ -1,7 +1,8 @@
 <script lang="ts">
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import * as Empty from "$lib/components/ui/empty/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
+  import { HugeiconsIcon } from "@hugeicons/svelte";
+  import { AlertCircleIcon, Link04Icon } from "@hugeicons/core-free-icons";
   import type { SyncSummary } from "$lib/core/types";
 
   interface Props {
@@ -18,66 +19,124 @@
     onClose,
   }: Props = $props();
 
-  const rows = $derived(
-    summary
-      ? [
-          { label: "Proxies added", value: summary.proxies_added },
-          { label: "Proxies removed", value: summary.proxies_removed },
-          { label: "Proxies kept", value: summary.proxies_kept },
-          { label: "Rules orphaned", value: summary.rules_orphaned },
-        ]
-      : [],
-  );
+  let latchedSummary = $state<SyncSummary | null>(null);
+  let latchedProfileName = $state("");
+
+  $effect(() => {
+    if (summary) latchedSummary = summary;
+  });
+
+  $effect(() => {
+    if (profileName) latchedProfileName = profileName;
+  });
+
+  function formatSyncTime(ms?: number | null): string {
+    if (!ms || ms <= 0) return "Unknown";
+    return new Date(ms).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
 </script>
 
 <Dialog.Root bind:open onOpenChange={(v) => !v && onClose()}>
-  <Dialog.Content class="sm:max-w-md">
+  <Dialog.Content class="sm:max-w-md gap-5">
     <Dialog.Header>
-      <Dialog.Title>Update summary — {profileName}</Dialog.Title>
-      <Dialog.Description>
-        Result of the latest subscription sync for this profile.
+      <Dialog.Title class="text-base font-semibold tracking-tight">Sync Summary — {latchedProfileName}</Dialog.Title>
+      <Dialog.Description class="text-xs text-muted-foreground">
+        Overview of changes from the latest subscription synchronization.
       </Dialog.Description>
     </Dialog.Header>
 
-    {#if summary}
-      <div class="grid gap-2 py-2">
-        {#each rows as row (row.label)}
-          <div class="flex items-center justify-between text-sm">
-            <span class="text-muted-foreground">{row.label}</span>
-            <span class="font-medium tabular-nums">{row.value}</span>
+    {#if latchedSummary}
+      <div class="flex flex-col gap-4">
+        <!-- Proxies Metrics (Process style divide box) -->
+        <div class="flex flex-col gap-1.5">
+          <span class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Proxy Nodes
+          </span>
+          <div class="flex rounded-xl bg-muted/40 border border-border/40 divide-x divide-border/30 overflow-hidden">
+            <div class="flex flex-col flex-1 p-3">
+              <span class="text-[11px] text-muted-foreground">Added</span>
+              <span class="text-lg font-semibold tabular-nums mt-0.5 {latchedSummary.proxies_added > 0 ? 'text-emerald-500' : 'text-foreground'}">
+                {latchedSummary.proxies_added > 0 ? `+${latchedSummary.proxies_added}` : "0"}
+              </span>
+            </div>
+            <div class="flex flex-col flex-1 p-3">
+              <span class="text-[11px] text-muted-foreground">Removed</span>
+              <span class="text-lg font-semibold tabular-nums mt-0.5 {latchedSummary.proxies_removed > 0 ? 'text-destructive' : 'text-foreground'}">
+                {latchedSummary.proxies_removed}
+              </span>
+            </div>
+            <div class="flex flex-col flex-1 p-3">
+              <span class="text-[11px] text-muted-foreground">Kept</span>
+              <span class="text-lg font-semibold tabular-nums mt-0.5 text-foreground">
+                {latchedSummary.proxies_kept}
+              </span>
+            </div>
           </div>
-        {/each}
+        </div>
 
-        {#if summary.rules_orphaned > 0}
-          <p
-            class="text-muted-foreground mt-1 rounded-md bg-muted/40 px-3 py-2 text-xs"
-          >
-            {summary.rules_orphaned} rule(s) targeted a removed proxy and were repointed
-            to Direct. Review them on the Rules page.
-          </p>
+        <!-- Sync Details & Routing (Process style divide list) -->
+        <div class="flex flex-col gap-1.5">
+          <span class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            Details
+          </span>
+          <div class="rounded-xl bg-muted/40 border border-border/40 divide-y divide-border/30 overflow-hidden text-xs">
+            <div class="flex items-center justify-between px-3.5 py-2.5">
+              <span class="text-muted-foreground">Orphaned Rules</span>
+              <span class="font-medium tabular-nums {latchedSummary.rules_orphaned > 0 ? 'text-amber-500' : 'text-foreground'}">
+                {latchedSummary.rules_orphaned}
+              </span>
+            </div>
+            <div class="flex items-center justify-between px-3.5 py-2.5">
+              <span class="text-muted-foreground">Last Sync Time</span>
+              <span class="text-muted-foreground font-medium">
+                {formatSyncTime(latchedSummary.at_unix_ms)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Orphaned Rules Warning -->
+        {#if latchedSummary.rules_orphaned > 0}
+          <div class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-500 flex items-start gap-2.5">
+            <HugeiconsIcon icon={AlertCircleIcon} class="size-4 shrink-0 mt-0.5" />
+            <span class="leading-relaxed">
+              {latchedSummary.rules_orphaned} rule(s) targeted removed proxies and were redirected to Direct. Check the Rules page to reassign them.
+            </span>
+          </div>
         {/if}
 
-        {#if summary.errors.length > 0}
-          <div class="mt-1 flex flex-col gap-1">
-            {#each summary.errors as err (err)}
-              <p class="text-destructive text-xs">{err}</p>
-            {/each}
+        <!-- Errors List -->
+        {#if latchedSummary.errors && latchedSummary.errors.length > 0}
+          <div class="rounded-xl border border-destructive/25 bg-destructive/10 p-3 text-xs text-destructive flex flex-col gap-1.5">
+            <div class="flex items-center gap-1.5 font-medium">
+              <HugeiconsIcon icon={AlertCircleIcon} class="size-4 shrink-0" />
+              <span>Errors encountered during sync ({latchedSummary.errors.length})</span>
+            </div>
+            <div class="space-y-1 pl-5">
+              {#each latchedSummary.errors as err}
+                <p class="text-[11px] opacity-90 break-all">{err}</p>
+              {/each}
+            </div>
           </div>
         {/if}
       </div>
     {:else}
-      <Empty.Root class="py-6 border-none bg-transparent">
+      <Empty.Root class="py-8 border border-dashed border-border/40 rounded-xl bg-muted/20">
+        <Empty.Media variant="icon">
+          <HugeiconsIcon icon={Link04Icon} class="size-5 text-muted-foreground" />
+        </Empty.Media>
         <Empty.Header>
-          <Empty.Title class="text-sm font-medium">No summary available</Empty.Title>
-          <Empty.Description class="text-xs">
-            No updates or subscription changes have been recorded yet.
+          <Empty.Title class="text-xs font-semibold">No sync record</Empty.Title>
+          <Empty.Description class="text-[11px]">
+            This subscription hasn't recorded any sync metrics yet.
           </Empty.Description>
         </Empty.Header>
       </Empty.Root>
     {/if}
-
-    <Dialog.Footer>
-      <Button onclick={() => { open = false; onClose(); }}>Close</Button>
-    </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

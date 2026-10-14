@@ -5,6 +5,19 @@
   import { Label } from "$lib/components/ui/label/index.js";
   import * as Form from "$lib/components/ui/form/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
+  import * as Popover from "$lib/components/ui/popover/index.js";
+  import { Calendar } from "$lib/components/ui/calendar/index.js";
+  import {
+    CalendarDateTime,
+    DateFormatter,
+    type DateValue,
+    fromAbsolute,
+    getLocalTimeZone,
+    toCalendarDate,
+    today,
+  } from "@internationalized/date";
+  import { Calendar01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
+  import { HugeiconsIcon } from "@hugeicons/svelte";
   import { superForm } from "sveltekit-superforms";
   import { zod4 } from "sveltekit-superforms/adapters";
   import {
@@ -130,12 +143,49 @@
     }
   });
 
-  function expiresLocalValue(ms?: number) {
-    if (!ms) return "";
-    const d = new Date(ms);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const tz = getLocalTimeZone();
+  const df = new DateFormatter("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  let calendarDate = $derived.by(() => {
+    if (!$formData.expires_at || $formData.expires_at === 0) return undefined;
+    try {
+      const zdt = fromAbsolute($formData.expires_at, tz);
+      return toCalendarDate(zdt);
+    } catch {
+      return undefined;
+    }
+  });
+
+  let timeString = $derived.by(() => {
+    if (!$formData.expires_at || $formData.expires_at === 0) return "12:00";
+    try {
+      const zdt = fromAbsolute($formData.expires_at, tz);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${pad(zdt.hour)}:${pad(zdt.minute)}`;
+    } catch {
+      return "12:00";
+    }
+  });
+
+  function handleDateChange(d: DateValue | undefined) {
+    if (!d) return;
+    const [h, m] = timeString.split(":").map(Number);
+    const cdt = new CalendarDateTime(d.year, d.month, d.day, h || 0, m || 0);
+    $formData.expires_at = cdt.toDate(tz).getTime();
   }
+
+  function handleTimeChange(e: Event) {
+    const v = (e.currentTarget as HTMLInputElement).value;
+    if (!v) return;
+    const [h, m] = v.split(":").map(Number);
+    const curDate = calendarDate ?? today(tz);
+    const cdt = new CalendarDateTime(curDate.year, curDate.month, curDate.day, h || 0, m || 0);
+    $formData.expires_at = cdt.toDate(tz).getTime();
+  }
+
   let currentActionGroups = $derived(
     $formData.kind === "FINAL"
       ? [
@@ -189,10 +239,10 @@
                   $formData.kind = v as any;
                 }}
               >
-                <Select.Trigger class="w-full justify-between" {...props}>
+                <Select.Trigger class="w-full" {...props}>
                   {$formData.kind}
                 </Select.Trigger>
-                <Select.Content class="max-h-64">
+                <Select.Content>
                   {#each ruleKinds as kindGroup, index (index)}
                     <Select.Group>
                       {#if !!kindGroup.title}
@@ -240,10 +290,10 @@
                   $formData.outbound = v as any;
                 }}
               >
-                <Select.Trigger class="w-full justify-between" {...props}>
+                <Select.Trigger class="w-full" {...props}>
                   {getLocalActionName($formData.outbound)}
                 </Select.Trigger>
-                <Select.Content class="max-h-64">
+                <Select.Content>
                   {#each currentActionGroups as group}
                     {#if group.options.length > 0}
                       <Select.Group>
@@ -266,7 +316,7 @@
         </Form.Field>
 
         {#if temp}
-          <div class="grid gap-2">
+          <div class="flex flex-col gap-2">
             <Label>Expires</Label>
             <div class="flex flex-wrap gap-2">
               {#each TTL_PRESETS as p}
@@ -293,14 +343,48 @@
               </Button>
             </div>
             {#if $formData.expires_at !== 0}
-              <Input
-                type="datetime-local"
-                value={expiresLocalValue($formData.expires_at)}
-                oninput={(e) => {
-                  const v = (e.currentTarget as HTMLInputElement).value;
-                  $formData.expires_at = v ? new Date(v).getTime() : undefined;
-                }}
-              />
+              <Popover.Root>
+                <Popover.Trigger>
+                  {#snippet child({ props })}
+                    <Button
+                      {...props}
+                      type="button"
+                      variant="outline"
+                      class="w-full justify-start text-left font-normal gap-2 h-9"
+                    >
+                      <HugeiconsIcon
+                        icon={Calendar01Icon}
+                        class="size-4 text-muted-foreground"
+                      />
+                      <span>
+                        {$formData.expires_at
+                          ? df.format(new Date($formData.expires_at))
+                          : "Pick date and time"}
+                      </span>
+                    </Button>
+                  {/snippet}
+                </Popover.Trigger>
+                <Popover.Content class="w-auto p-3 flex flex-col gap-3" align="start">
+                  <Calendar
+                    type="single"
+                    value={calendarDate}
+                    onValueChange={handleDateChange}
+                    minValue={today(tz)}
+                  />
+                  <div class="flex items-center justify-between border-t border-border/60 pt-3 px-1">
+                    <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <HugeiconsIcon icon={Clock01Icon} class="size-3.5" />
+                      <span>Expiry Time</span>
+                    </div>
+                    <Input
+                      type="time"
+                      value={timeString}
+                      oninput={handleTimeChange}
+                      class="h-8 w-28 px-2 py-0 text-xs font-mono"
+                    />
+                  </div>
+                </Popover.Content>
+              </Popover.Root>
             {/if}
             {#if $formData.expires_at === 0}
               <p class="text-muted-foreground text-xs">

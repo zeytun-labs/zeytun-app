@@ -24,10 +24,12 @@
     AlertCircleIcon,
     Copy01Icon,
     QrCodeIcon,
+    InformationCircleIcon,
   } from "@hugeicons/core-free-icons";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import { toast } from "svelte-sonner";
   import Badge from "../ui/badge/badge.svelte";
+  import SyncSummaryDialog from "../profile/sync-summary-dialog.svelte";
 
   interface Props {
     onEdit: (source: SubscriptionSource) => void;
@@ -43,6 +45,18 @@
   let qrOpen = $state(false);
   let qrLink = $state("");
   let qrTitle = $state("");
+
+  // Summary Dialog state
+  let summaryDialogOpen = $state(false);
+  let summarySource = $state<SubscriptionSource | null>(null);
+
+  async function openSummary(source: SubscriptionSource) {
+    summarySource = source;
+    summaryDialogOpen = true;
+    if (source.unread_summary) {
+      await subscriptionsStore.markSummaryRead(source.id);
+    }
+  }
 
   function showQr(source: SubscriptionSource) {
     qrLink = source.settings.url;
@@ -75,7 +89,10 @@
       if (res.status === "accepted") {
         toast.success(`Synced "${source.settings.name}"`);
       } else {
-        toast.error(`Sync failed for "${source.settings.name}"`);
+        const errDetail = res.summary?.errors?.join("; ");
+        toast.error(`Sync failed for "${source.settings.name}"`, {
+          description: errDetail || undefined,
+        });
       }
     } catch (e: any) {
       toast.error(`Failed to refresh: ${e?.message ?? e}`);
@@ -285,7 +302,28 @@
                       </div>
                     </div>
 
-                    <div>
+                    <div class="flex items-center gap-1">
+                      {#if source.last_sync_summary}
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          class="relative size-8 text-muted-foreground hover:text-foreground"
+                          onclick={(e) => {
+                            e.stopPropagation();
+                            openSummary(source);
+                          }}
+                          title="View sync summary"
+                        >
+                          <HugeiconsIcon icon={InformationCircleIcon} class="size-4" />
+                          {#if source.unread_summary}
+                            <span
+                              class="absolute top-1.5 right-1.5 size-2 rounded-full bg-primary shadow-[0_0_6px_var(--color-primary)]"
+                            ></span>
+                          {/if}
+                          <span class="sr-only">View sync summary</span>
+                        </Button>
+                      {/if}
+
                       <Button
                         size="icon"
                         variant="outline"
@@ -400,6 +438,15 @@
               <HugeiconsIcon icon={ReloadIcon} />
               Sync Now
             </ContextMenu.Item>
+            {#if source.last_sync_summary}
+              <ContextMenu.Item onclick={() => openSummary(source)}>
+                <HugeiconsIcon icon={InformationCircleIcon} />
+                View Sync Summary
+                {#if source.unread_summary}
+                  <span class="ml-auto size-2 rounded-full bg-primary"></span>
+                {/if}
+              </ContextMenu.Item>
+            {/if}
             <ContextMenu.Item onclick={() => onEdit(source)}>
               <HugeiconsIcon icon={Edit01Icon} />
               Edit
@@ -520,3 +567,13 @@
 </AlertDialog.Root>
 
 <ProxyQrDialog bind:open={qrOpen} link={qrLink} title={qrTitle} />
+
+<SyncSummaryDialog
+  bind:open={summaryDialogOpen}
+  profileName={summarySource?.settings.name ?? ""}
+  summary={summarySource?.last_sync_summary ?? null}
+  onClose={() => {
+    summaryDialogOpen = false;
+    summarySource = null;
+  }}
+/>

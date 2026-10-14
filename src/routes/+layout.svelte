@@ -14,7 +14,7 @@
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { profileStore } from "$lib/stores/profile.svelte";
   import { logsStore } from "$lib/stores/logs.svelte";
-  import { notificationStore } from "$lib/stores/notifications.svelte";
+  import { notificationStore, SCOPE_SYSTEM } from "$lib/stores/notifications.svelte";
   import { updaterStore } from "$lib/stores/updater.svelte";
   import { geoipStore } from "$lib/stores/geoip.svelte";
   import { page } from "$app/state";
@@ -24,7 +24,14 @@
 
   import "./layout.css";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { Alert01Icon } from "@hugeicons/core-free-icons";
+  import {
+    Alert01Icon,
+    RefreshIcon,
+    Settings02Icon,
+    Copy01Icon,
+    Tick01Icon,
+  } from "@hugeicons/core-free-icons";
+  import LogoLoader from "$lib/components/logo-loader.svelte";
 
   import SettingsDialog from "$lib/components/settings/settings-dialog.svelte";
   import CriticalBanner from "$lib/components/critical-banner.svelte";
@@ -50,29 +57,49 @@
 
   let isAppInitializing = $state(true);
   let startupError = $state<string | null>(null);
+  let startupProgress = $state(0);
+  let copied = $state(false);
   let settingsOpen = $state(false);
   let unlistenOpenInspector: UnlistenFn | null = null;
 
-  // Show the same full-page loading overlay while a profile switch is in flight
-  // (the backend regenerates config + restarts the core, which briefly freezes
-  // the UI). Reuses the startup screen so the transition feels intentional.
-  const showLoadingOverlay = $derived(
-    isAppInitializing || profileStore.switching,
-  );
+  async function copyStartupError() {
+    if (!startupError) return;
+    try {
+      await writeText(startupError);
+      copied = true;
+      toast.success("Error copied to clipboard");
+      setTimeout(() => {
+        copied = false;
+      }, 2000);
+    } catch {
+      toast.error("Failed to copy error");
+    }
+  }
 
   async function runStartupSequence() {
     startupError = null;
+    startupProgress = 15;
     try {
+      // Load saved settings and profile registry first (local SQLite, independent of core).
+      await settingsStore.init();
+      startupProgress = 40;
+
+      await profileStore.load();
+      startupProgress = 65;
+
       // Direct mode on every launch, then bring the core up.
       // lifecycle.start() PATCHes the clash API mode immediately after boot
       // to override any stale cached mode, so the order here is safe.
       await coreSetMode("direct");
+      startupProgress = 80;
+
       await coreStart();
-      // Populate the profile registry so the sidebar profile switcher is
-      // available on every page, not just Policy/Inspector.
-      await profileStore.load();
-      // Both background checks need saved settings before reading their toggles.
-      await settingsStore.init();
+      await profileStore.refresh();
+      startupProgress = 100;
+
+      // Brief gentle transition to let 100% register before unmounting
+      await new Promise((r) => setTimeout(r, 150));
+
       isAppInitializing = false;
       void checkCrashDumps();
       // Updater needs the profile and never blocks startup.
@@ -83,6 +110,12 @@
       }
     } catch (err) {
       startupError = errorMessage(err);
+      try {
+        await settingsStore.init();
+        await profileStore.load();
+      } catch {
+        // ignore fallback failure
+      }
     }
   }
 
@@ -93,6 +126,17 @@
 
       const latest = dumps[0];
       const content = await crashDumpRead(latest).catch(() => null);
+
+      notificationStore.pushNotification({
+        title: "Previous session crashed",
+        message:
+          dumps.length > 1
+            ? `${dumps.length} crash reports found`
+            : "1 crash report found",
+        severity: 2,
+        scope: SCOPE_SYSTEM,
+        code: "CRASH_DUMP",
+      });
 
       toast.error("Zeytun crashed in the previous session", {
         description:
@@ -208,74 +252,139 @@
 
 {#if bare}
   {@render children()}
-{:else if showLoadingOverlay}
-  <div
-    class="bg-background text-foreground flex h-screen flex-col items-center justify-center gap-6"
-    data-tauri-drag-region
-  >
-    {#if startupError && !profileStore.switching}
-      <div class="flex max-w-md flex-col items-center gap-4 text-center">
-        <div
-          class="flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive"
-        >
-          <HugeiconsIcon icon={Alert01Icon} />
-        </div>
-        <div class="flex flex-col gap-1">
-          <h1 class="text-lg font-semibold">Startup Error</h1>
-          <p class="text-muted-foreground text-sm wrap-break-word">
-            {startupError}
-          </p>
-        </div>
-        <Button onclick={() => void runStartupSequence()}>Retry</Button>
-      </div>
-    {:else}
-      <div class="flex flex-col items-center gap-4">
-        <Spinner class="size-6" />
-        <p class="text-muted-foreground text-sm font-medium">
-          {profileStore.switching
-            ? "Switching profile…"
-            : "Starting Zeytun Core…"}
-        </p>
-      </div>
-    {/if}
-  </div>
 {:else}
-  <Tooltip.Provider>
+  {#if isAppInitializing}
     <div
-      class="relative flex h-screen flex-row overflow-hidden"
+      class="bg-background text-foreground relative flex h-screen flex-col items-center justify-center p-6 select-none"
       data-tauri-drag-region
     >
-      <div class="w-24">
-        <AppSidebar />
-      </div>
-      <!-- pl leaves room for fixed icon rail (w-14 + start-3 gutter) -->
+      {#if startupError}
+        <div
+          class="bg-card/75 border-border/80 shadow-2xl relative flex w-full max-w-md flex-col items-center gap-5 rounded-2xl border p-6 text-center backdrop-blur-xl animate-in fade-in zoom-in-95 duration-200"
+        >
+          <div
+            class="bg-destructive/10 text-destructive flex size-12 items-center justify-center rounded-full"
+          >
+            <HugeiconsIcon icon={Alert01Icon} class="size-6" />
+          </div>
+
+          <div class="flex flex-col gap-1.5">
+            <h1 class="text-base font-semibold text-foreground">Core Startup Failed</h1>
+            <p class="text-muted-foreground text-xs leading-relaxed max-w-sm">
+              Zeytun could not start the core proxy engine. You can retry, adjust your configuration, or continue in offline mode.
+            </p>
+          </div>
+
+          <div class="w-full overflow-hidden rounded-xl border border-border/60 bg-muted/40 text-left">
+            <div class="flex items-center justify-between border-b border-border/40 px-3 py-1.5 bg-muted/20">
+              <span class="text-[11px] font-mono font-medium text-muted-foreground">Error Details</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                onclick={copyStartupError}
+              >
+                <HugeiconsIcon icon={copied ? Tick01Icon : Copy01Icon} class="size-3 text-muted-foreground" />
+                <span>{copied ? "Copied" : "Copy"}</span>
+              </Button>
+            </div>
+            <pre class="max-h-28 overflow-y-auto p-3 font-mono text-xs text-foreground/80 whitespace-pre-wrap break-all select-text">{startupError}</pre>
+          </div>
+
+          <div class="flex w-full flex-col gap-2 pt-1">
+            <div class="flex w-full gap-2">
+              <Button
+                class="flex-1 gap-2"
+                onclick={() => void runStartupSequence()}
+              >
+                <HugeiconsIcon icon={RefreshIcon} class="size-4" />
+                <span>Retry</span>
+              </Button>
+
+              <Button
+                variant="outline"
+                class="gap-2"
+                onclick={() => { settingsOpen = true; }}
+              >
+                <HugeiconsIcon icon={Settings02Icon} class="size-4" />
+                <span>Settings</span>
+              </Button>
+            </div>
+
+            <Button
+              variant="ghost"
+              class="w-full text-xs text-muted-foreground hover:text-foreground h-8"
+              onclick={() => { isAppInitializing = false; }}
+            >
+              Continue to App (Offline Mode)
+            </Button>
+          </div>
+        </div>
+      {:else}
+        <div class="flex flex-col items-center gap-5 animate-in fade-in duration-300">
+          <LogoLoader size={64} variant="shimmer" />
+          <div class="w-16 h-[5px] rounded-full bg-border/60 overflow-hidden relative">
+            <div
+              class="h-full bg-primary rounded-full transition-all duration-300 ease-out shadow-[0_0_8px_var(--color-primary)]"
+              style="width: {startupProgress}%;"
+            ></div>
+          </div>
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <Tooltip.Provider>
       <div
-        class="relative flex min-h-0 min-w-0 flex-1 flex-col"
+        class="relative flex h-screen flex-row overflow-hidden"
         data-tauri-drag-region
       >
-        <CriticalBanner />
-        <div class="relative flex min-h-0 flex-1 flex-col pr-2">
-          <!-- sticky glass topbar sits over scroll so blur catches content -->
-          <div class="absolute inset-x-0 top-0 z-40">
-            <AppTopbar />
+        <div class="w-24">
+          <AppSidebar />
+        </div>
+        <!-- pl leaves room for fixed icon rail (w-14 + start-3 gutter) -->
+        <div
+          class="relative flex min-h-0 min-w-0 flex-1 flex-col"
+          data-tauri-drag-region
+        >
+          <CriticalBanner />
+          <div class="relative flex min-h-0 flex-1 flex-col pr-2">
+            <!-- sticky glass topbar sits over scroll so blur catches content -->
+            <div class="absolute inset-x-0 top-0 z-40">
+              <AppTopbar />
+            </div>
+            <ScrollArea class="h-0 min-h-0 flex-1">
+              <!-- keying on the pathname remounts the page on route change, so
+                   the in:fly transition plays on every sidebar switch -->
+              {#key page.url.pathname}
+                <main
+                  in:fly={{ y: 16, duration: 250 }}
+                  class="flex flex-col pl-2 pt-20 pr-4 *:min-w-0"
+                  data-tauri-drag-region
+                >
+                  {@render children()}
+                </main>
+              {/key}
+            </ScrollArea>
           </div>
-          <ScrollArea class="h-0 min-h-0 flex-1">
-            <!-- keying on the pathname remounts the page on route change, so
-                 the in:fly transition plays on every sidebar switch -->
-            {#key page.url.pathname}
-              <main
-                in:fly={{ y: 16, duration: 250 }}
-                class="flex flex-col pl-2 pt-20 pr-4 *:min-w-0"
-                data-tauri-drag-region
-              >
-                {@render children()}
-              </main>
-            {/key}
-          </ScrollArea>
         </div>
       </div>
-    </div>
-  </Tooltip.Provider>
+    </Tooltip.Provider>
+
+    {#if profileStore.switching}
+      <div
+        class="bg-background/60 backdrop-blur-sm fixed inset-0 z-50 flex items-center justify-center transition-opacity animate-in fade-in duration-150"
+        data-tauri-drag-region
+      >
+        <div
+          class="bg-card/90 border-border/80 shadow-2xl flex items-center gap-3 rounded-2xl border px-5 py-3 text-foreground"
+        >
+          <Spinner class="size-4 text-primary" />
+          <span class="text-xs font-medium">Switching profile…</span>
+        </div>
+      </div>
+    {/if}
+  {/if}
+
   <SettingsDialog bind:open={settingsOpen} initialTab={settingsTab} />
   <Toaster
     position="bottom-right"

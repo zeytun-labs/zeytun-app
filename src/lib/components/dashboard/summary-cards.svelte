@@ -69,14 +69,14 @@
     </div>
     <div class="min-w-0 flex-1">
       <div
-        class="text-muted-foreground text-[11px] font-medium tracking-wider uppercase"
+        class="text-muted-foreground text-[11px] font-medium tracking-wider uppercase leading-none mb-1"
       >
         {label}
       </div>
       {#if loading}
-        <Skeleton class="h-4 mt-1 w-2/3" />
+        <Skeleton class="h-5 w-2/3" />
       {:else}
-        <div class="truncate text-sm font-medium text-foreground">{value ?? "Unavailable"}</div>
+        <div class="truncate text-sm font-medium text-foreground leading-5">{value ?? "Unavailable"}</div>
       {/if}
     </div>
   </DashCard>

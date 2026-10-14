@@ -20,13 +20,17 @@ export const SCOPE_CLASH_MODE = 2;
 export const SCOPE_RULESET = 3;
 export const SCOPE_SYSTEM = 4;
 export const SCOPE_CONNECTION_ASK = 5;
+export const SCOPE_SUBSCRIPTION = 6;
+export const SCOPE_APP = 7;
 
 export const SCOPE_LABELS: Record<number, string> = {
   [SCOPE_SERVICE]: "Core",
   [SCOPE_CLASH_MODE]: "Mode",
   [SCOPE_RULESET]: "Ruleset",
   [SCOPE_SYSTEM]: "System",
-  [SCOPE_CONNECTION_ASK]: "Connection Ask",
+  [SCOPE_CONNECTION_ASK]: "Connection",
+  [SCOPE_SUBSCRIPTION]: "Subscription",
+  [SCOPE_APP]: "App",
 };
 
 const MAX = 100;
@@ -54,7 +58,7 @@ class NotificationStore {
    * Clear() must not wipe this or badges flip to Pending.
    */
   rulesetLive = $state<Record<string, RulesetLive>>({});
-  #unlisten: UnlistenFn | null = null;
+  #unsubscribes: UnlistenFn[] = [];
   #toastAt = new Map<string, number>();
   #hydrated = false;
 
@@ -72,20 +76,9 @@ class NotificationStore {
   }
 
   get visibleItems(): CoreNotification[] {
-    // INFO stays in history but center defaults to warn+ (and unmuted).
-    // Ruleset rows are aggregated into a single live summary (rulesetSummary)
-    // — no per-tag rows with tags in the bell.
     return this.items.filter(
       (i) => !this.isMuted(i.scope),
     );
-  }
-
-  /**
-   * One aggregated ruleset row for the bell, derived from live download state
-   * (never from clearable history). No tags, no per-ruleset noise.
-   */
-  get rulesetSummary(): { severity: number; title: string; subtitle: string; failedCount: number } | null {
-    return null; // Disabled summary array in favor of individual ruleset titles
   }
 
   isMuted(scope: number): boolean {
@@ -167,19 +160,46 @@ class NotificationStore {
   }
 
   async init() {
-    if (this.#unlisten) return;
+    if (this.#unsubscribes.length > 0) return;
     this.#hydrate();
-    this.#unlisten = await listen<Omit<CoreNotification, "read" | "dismissed">>(
+    const u1 = await listen<Omit<CoreNotification, "read" | "dismissed">>(
       "core-notification",
       (event) => {
         this.#ingest(event.payload);
       },
     );
+    this.#unsubscribes.push(u1);
+
+    const u2 = await listen<{
+      profile_id?: string;
+      source_id?: string;
+      status?: string;
+      summary?: { errors?: string[] };
+    }>("subscription-updated", (event) => {
+      const res = event.payload;
+      if (res?.status === "failed" || (res?.summary?.errors && res.summary.errors.length > 0)) {
+        const errMsg = res.summary?.errors?.join("; ") || "Subscription update failed";
+        this.pushNotification({
+          title: "Subscription update failed",
+          message: errMsg,
+          severity: 2,
+          scope: SCOPE_SUBSCRIPTION,
+          code: "SUBSCRIPTION_UPDATE_FAILED",
+          attrs: {
+            source_id: res.source_id || "",
+            profile_id: res.profile_id || "",
+          },
+        });
+      }
+    });
+    this.#unsubscribes.push(u2);
   }
 
   stopListening() {
-    this.#unlisten?.();
-    this.#unlisten = null;
+    for (const fn of this.#unsubscribes) {
+      fn();
+    }
+    this.#unsubscribes = [];
   }
 
   #hydrate() {
@@ -277,11 +297,33 @@ class NotificationStore {
     } else if (item.scope === SCOPE_RULESET && item.attrs?.tag) {
       // Collapse previous events for the same ruleset tag so history doesn't explode
       next = next.filter((x) => x.scope !== SCOPE_RULESET || x.attrs?.tag !== item.attrs.tag);
+    } else if (item.scope === SCOPE_SUBSCRIPTION && item.attrs?.source_id) {
+      next = next.filter((x) => x.scope !== SCOPE_SUBSCRIPTION || x.attrs?.source_id !== item.attrs.source_id);
     }
 
     this.items = [item, ...next].slice(0, MAX);
     this.#persist();
     this.#maybeToast(item);
+  }
+
+  pushNotification(p: {
+    title: string;
+    message?: string;
+    severity?: number;
+    scope?: number;
+    code?: string;
+    attrs?: Record<string, string>;
+  }) {
+    this.#ingest({
+      id: crypto.randomUUID(),
+      ts_ms: Date.now(),
+      scope: p.scope ?? SCOPE_SYSTEM,
+      code: p.code ?? "SYSTEM_NOTICE",
+      severity: p.severity ?? 0,
+      title: p.title,
+      message: p.message ?? "",
+      attrs: p.attrs ?? {},
+    });
   }
 
   #maybeToast(item: CoreNotification) {
@@ -299,7 +341,7 @@ class NotificationStore {
     if (item.severity >= 3) {
       toast.error(item.title || item.code, {
         description: item.message || "Requires attention",
-        duration: Infinity,
+        duration: 10_000,
       });
     } else {
       toast.error(item.title || item.code, {
@@ -332,6 +374,11 @@ class NotificationStore {
     this.items = this.items.map((i) =>
       i.id === id ? { ...i, read: true } : i,
     );
+    this.#persist();
+  }
+
+  deleteItem(id: string) {
+    this.items = this.items.filter((i) => i.id !== id);
     this.#persist();
   }
 

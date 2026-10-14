@@ -7,7 +7,6 @@
     Delete01Icon,
     Download01Icon,
     Edit03Icon,
-    Notification03Icon,
     UnfoldMoreIcon,
     Upload01Icon,
   } from "@hugeicons/core-free-icons";
@@ -16,11 +15,10 @@
   import { useAsyncAction } from "$lib/composables/use-async-action.svelte";
   import { cn, formatBytes } from "$lib/utils";
   import { getProfileIcon } from "$lib/core/profile-icons";
-  import type { ProfileMeta, SyncSummary } from "$lib/core/types";
+  import type { ProfileMeta } from "$lib/core/types";
   import ProfileDialog, {
     type ProfileDialogValues,
   } from "./profile/profile-dialog.svelte";
-  import SyncSummaryDialog from "./profile/sync-summary-dialog.svelte";
   import ProfileImportDialog from "./profile/profile-import-dialog.svelte";
   import ProfileExportDialog from "./profile/profile-export-dialog.svelte";
 
@@ -38,11 +36,6 @@
   let importOpen = $state(false);
   let exportOpen = $state(false);
   let exportTarget = $state<ProfileMeta | null>(null);
-
-  // Sync-summary modal
-  let summaryOpen = $state(false);
-  let summaryData = $state<SyncSummary | null>(null);
-  let summaryName = $state("");
 
   // Delete confirmation
   let deleteOpen = $state(false);
@@ -93,15 +86,6 @@
     }
   }
 
-  async function viewSummary(p: ProfileMeta) {
-    summaryData = p.last_sync_summary ?? null;
-    summaryName = p.name;
-    summaryOpen = true;
-    if (p.unread_summary) {
-      await profileStore.markSummaryRead(p.id);
-    }
-  }
-
   function confirmDelete(p: ProfileMeta) {
     deleteTarget = p;
     deleteOpen = true;
@@ -117,10 +101,6 @@
     }, "Profile deleted.");
   }
 </script>
-
-{#snippet notifyDot()}
-  <span class="bg-primary inline-flex size-2 shrink-0 rounded-full"></span>
-{/snippet}
 
 {#snippet profileAvatar(p: ProfileMeta | null, size: "sm" | "lg" = "lg")}
   {@const icon = getProfileIcon(p?.icon)}
@@ -214,13 +194,6 @@
         {#if active}
           <DropdownMenu.Separator />
           <DropdownMenu.Group>
-            {#if active.unread_summary}
-              <DropdownMenu.Item onclick={() => viewSummary(active)}>
-                <HugeiconsIcon icon={Notification03Icon} />
-                View Update Summary
-                <span class="ml-auto">{@render notifyDot()}</span>
-              </DropdownMenu.Item>
-            {/if}
             <DropdownMenu.Item
               onclick={() => {
                 exportTarget = active;
@@ -263,13 +236,6 @@
 <ProfileImportDialog bind:open={importOpen} />
 
 <ProfileExportDialog bind:open={exportOpen} profile={exportTarget} />
-
-<SyncSummaryDialog
-  bind:open={summaryOpen}
-  profileName={summaryName}
-  summary={summaryData}
-  onClose={() => (summaryOpen = false)}
-/>
 
 <AlertDialog.Root bind:open={deleteOpen}>
   <AlertDialog.Content>

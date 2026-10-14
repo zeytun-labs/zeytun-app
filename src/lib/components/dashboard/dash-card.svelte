@@ -14,7 +14,7 @@
 
 <div
   class={cn(
-    "flex h-full flex-col overflow-hidden rounded-4xl border border-border/40",
+    "flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-4xl border border-border/40",
     "bg-card/70 shadow-sm",
     className,
   )}

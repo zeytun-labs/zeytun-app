@@ -54,7 +54,7 @@
     >
       {label}
     </div>
-    <div class="flex items-end gap-1 text-sm font-medium">
+    <div class="flex h-5 items-end gap-1 text-sm font-medium">
       {#if forceNa}
         <span class="text-muted-foreground">N/A</span>
       {:else if loading && value == null}
@@ -69,8 +69,8 @@
   </div>
 {/snippet}
 
-<DashCard class="justify-between gap-4 p-5">
-  <div class="relative flex items-start gap-2">
+<DashCard class="p-4 gap-4">
+  <div class="relative flex shrink-0 items-start gap-2">
     <div
       class="text-muted-foreground text-[11px] font-medium tracking-wider uppercase"
     >
@@ -102,22 +102,22 @@
   </div>
 
   <!-- Main: Direct Policy latency -->
-  <div class="flex items-end gap-1.5">
+  <div class="flex h-10 shrink-0 items-end gap-1.5">
     {#if loading && result?.directMs == null}
-      <Skeleton class="h-10 w-28" />
+      <Skeleton class="h-9 w-28" />
     {:else if result?.directMs != null}
       <span class="text-4xl font-semibold tracking-tight leading-none">
         {result.directMs}
       </span>
       <span class="text-muted-foreground mb-0.5 text-sm font-medium">ms</span>
     {:else}
-      <span class="text-4xl font-semibold tracking-tight text-muted-foreground"
+      <span class="text-4xl font-semibold tracking-tight leading-none text-muted-foreground"
         >N/A</span
       >
     {/if}
   </div>
 
-  <div class="grid grid-cols-3 gap-2">
+  <div class="mt-auto grid shrink-0 grid-cols-3 gap-2">
     {#each metrics as m (m.label)}
       {@render metric(m.label, m.value, "forceNa" in m ? m.forceNa : false)}
     {/each}

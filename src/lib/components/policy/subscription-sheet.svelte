@@ -109,26 +109,26 @@
 <Sheet.Root bind:open>
   <Sheet.Content
     side="right"
-    class="flex flex-col gap-0 px-1 transition-all duration-300 w-full sm:max-w-md"
+    class="flex flex-col gap-0 p-0 transition-all duration-300 w-full sm:max-w-md!"
   >
     <form
       id="subscription-form"
       class="flex flex-1 flex-col h-full overflow-hidden"
       onsubmit={handleSubmit}
     >
-      <ScrollArea class="h-0 flex-1 min-h-0">
-        <Sheet.Header class="px-3">
-          <Sheet.Title>
-            {mode === "create" ? "Add Subscription" : "Edit Subscription"}
-          </Sheet.Title>
-          <Sheet.Description>
-            {mode === "create"
-              ? "Add an upstream subscription URL to automatically sync proxy nodes."
-              : "Update upstream subscription settings."}
-          </Sheet.Description>
-        </Sheet.Header>
+      <Sheet.Header class="px-6 pt-6 pb-4 shrink-0 pr-12">
+        <Sheet.Title>
+          {mode === "create" ? "Add Subscription" : "Edit Subscription"}
+        </Sheet.Title>
+        <Sheet.Description>
+          {mode === "create"
+            ? "Add an upstream subscription URL to automatically sync proxy nodes."
+            : "Update upstream subscription settings."}
+        </Sheet.Description>
+      </Sheet.Header>
 
-        <div class="flex flex-col gap-3 px-3">
+      <ScrollArea class="h-0 flex-1 min-h-0">
+        <div class="flex flex-col gap-4 px-6 pb-6">
           {#if error}
             <div class="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
               {error}
@@ -147,41 +147,38 @@
           </div>
 
           <div class="flex flex-col gap-2">
-            <div class="flex items-center justify-between">
-              <Label for="sub-url">Subscription URL</Label>
-              <div class="flex items-center gap-1">
-                {#if url}
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    class="size-7"
-                    onclick={handleCopy}
-                    title="Copy URL"
-                  >
-                    <HugeiconsIcon icon={copied ? Tick01Icon : Copy01Icon} class="size-3.5" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    class="size-7"
-                    onclick={() => (showUrl = !showUrl)}
-                    title={showUrl ? "Mask URL" : "Reveal URL"}
-                  >
-                    <HugeiconsIcon icon={showUrl ? ViewOffIcon : ViewIcon} class="size-3.5" />
-                  </Button>
-                {/if}
-              </div>
+            <Label for="sub-url">Subscription URL</Label>
+            <div class="flex items-center gap-1.5">
+              <Input
+                id="sub-url"
+                bind:value={url}
+                type={showUrl ? "text" : "password"}
+                placeholder="https://..."
+                required
+                disabled={saving}
+                class="flex-1"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onclick={() => (showUrl = !showUrl)}
+                disabled={!url || saving}
+                title={showUrl ? "Mask URL" : "Reveal URL"}
+              >
+                <HugeiconsIcon icon={showUrl ? ViewOffIcon : ViewIcon} class="size-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onclick={handleCopy}
+                disabled={!url || saving}
+                title="Copy URL"
+              >
+                <HugeiconsIcon icon={copied ? Tick01Icon : Copy01Icon} class="size-4" />
+              </Button>
             </div>
-            <Input
-              id="sub-url"
-              bind:value={url}
-              type={showUrl ? "text" : "password"}
-              placeholder="https://..."
-              required
-              disabled={saving}
-            />
           </div>
 
           <div class="flex items-center justify-between py-1">
@@ -203,13 +200,11 @@
               disabled={saving || !autoUpdate}
             />
           </div>
-
-          <div class="h-4"></div>
         </div>
       </ScrollArea>
 
       <Sheet.Footer
-        class="-mx-1 bg-background border-t border-border flex-row justify-end"
+        class="p-4 border-t border-border flex flex-row justify-end gap-2 shrink-0"
       >
         <Button
           type="button"

@@ -22,6 +22,14 @@
     onAddHostRule,
     onAddProcessRule,
   }: Props = $props();
+
+  let latchedConnection = $state<ConnDto | null>(null);
+
+  $effect(() => {
+    if (connection) {
+      latchedConnection = connection;
+    }
+  });
 </script>
 
 <Sheet.Root
@@ -30,17 +38,17 @@
     if (!o) onClose();
   }}
 >
-  <Sheet.Content side="right" class="flex w-105 flex-col sm:max-w-105">
-    {#if connection}
-      {@const r = connection}
-      <Sheet.Header>
+  <Sheet.Content side="right" class="flex w-full flex-col sm:max-w-md! p-0 gap-0">
+    {#if latchedConnection}
+      {@const r = latchedConnection}
+      <Sheet.Header class="px-6 pt-6 pb-4 shrink-0 pr-12">
         <Sheet.Title class="flex items-center gap-2">
           <ProcessIcon name={r.processName} path={r.processPath} class="size-6" />
           <span class="truncate">{r.processName || "System"}</span>
         </Sheet.Title>
       </Sheet.Header>
 
-      <div class="flex-1 space-y-3 overflow-y-auto text-sm px-4">
+      <div class="flex-1 min-h-0 space-y-3 overflow-y-auto text-sm px-6 pb-6">
         <div class="flex items-center gap-2">
           <span class="size-2 rounded-full {statusColor(r.status)}"></span>
           <span class="capitalize">{r.status}</span>
@@ -80,7 +88,7 @@
         </div>
       </div>
 
-      <Sheet.Footer class="flex-col gap-2">
+      <Sheet.Footer class="p-4 border-t border-border flex flex-col gap-2 shrink-0">
         <Button
           variant="outline"
           class="w-full min-w-0"

@@ -71,8 +71,8 @@
         }}
         disabled={!hasProfile || saving}
       >
-        <Select.Trigger>
-          <span>{getOptionLabel(rulesetsOutbound)}</span>
+        <Select.Trigger class="w-40">
+          <span class="truncate">{getOptionLabel(rulesetsOutbound)}</span>
         </Select.Trigger>
         <Select.Content>
           {#each actionGroups as group (group.label || "default")}

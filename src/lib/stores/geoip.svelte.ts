@@ -1,6 +1,7 @@
 import { toast } from "svelte-sonner";
 import { coreUpdateGeoipDb, coreAutoUpdateGeoipDb } from "$lib/core/api";
 import { errorMessage } from "$lib/errors";
+import { notificationStore, SCOPE_SYSTEM } from "$lib/stores/notifications.svelte";
 
 /**
  * GeoIP database download state.
@@ -46,6 +47,15 @@ class GeoipStore {
     try {
       const result = await coreAutoUpdateGeoipDb();
       if (result.kind === "updated") {
+        notificationStore.pushNotification({
+          title: `GeoIP database updated (${result.month})`,
+          message: result.degraded_to_direct
+            ? "Downloaded via direct connection"
+            : undefined,
+          severity: 0,
+          scope: SCOPE_SYSTEM,
+          code: "GEOIP_UPDATED",
+        });
         toast.success(`GeoIP database updated (${result.month})`, {
           description: result.degraded_to_direct
             ? "The selected route failed; downloaded directly instead."

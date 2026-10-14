@@ -12,7 +12,7 @@
 </script>
 
 <DashCard class="p-5 gap-4">
-  <Card.Header>
+  <Card.Header class="shrink-0">
     <Card.Title
       class="flex items-center gap-2 text-muted-foreground text-xs font-medium tracking-wide"
     >
@@ -36,7 +36,7 @@
       </div>
     </Card.Title>
   </Card.Header>
-  <Card.Content class="flex flex-col h-full justify-between gap-2">
+  <Card.Content class="flex min-h-0 flex-1 flex-col justify-between gap-2">
     <div class="flex items-center gap-2">
       <span class="text-4xl font-semibold tracking-tight leading-none">{headline}</span>
     </div>

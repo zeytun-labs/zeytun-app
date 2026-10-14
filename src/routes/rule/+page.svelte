@@ -585,12 +585,27 @@
       >
         <div class="w-full">
           {#if profileStore.loading}
-            <div
-              class="flex flex-col gap-4 animate-in fade-in duration-500 p-4"
-            >
-              {#each Array(6) as _}
-                <Skeleton class="h-12 w-full" />
-              {/each}
+            <div class="w-full text-sm">
+              <div class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[32px_44px_192px_200px_160px_1fr] px-2 border-b border-border/70">
+                <div class="h-8"></div>
+                <div class="h-8"></div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Type</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Value</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Action</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Comment</div>
+              </div>
+              <div class="p-2 flex flex-col gap-2 animate-in fade-in duration-300">
+                {#each Array(6) as _}
+                  <div class="h-11 grid grid-cols-[32px_44px_192px_200px_160px_1fr] items-center px-2">
+                    <div></div>
+                    <Skeleton class="size-4 rounded-md" />
+                    <Skeleton class="h-5 w-24 rounded-md" />
+                    <Skeleton class="h-4 w-32" />
+                    <Skeleton class="h-5 w-20 rounded-md" />
+                    <Skeleton class="h-4 w-28" />
+                  </div>
+                {/each}
+              </div>
             </div>
           {:else}
             <RuleTable
@@ -618,12 +633,29 @@
       >
         <div class="w-full">
           {#if profileStore.loading}
-            <div
-              class="flex flex-col gap-4 animate-in fade-in duration-500 p-4"
-            >
-              {#each Array(4) as _}
-                <Skeleton class="h-12 w-full" />
-              {/each}
+            <div class="w-full text-sm">
+              <div class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[32px_44px_192px_200px_160px_160px_1fr] px-2 border-b border-border/70">
+                <div class="h-8"></div>
+                <div class="h-8"></div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Type</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Value</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Action</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Expires</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground">Comment</div>
+              </div>
+              <div class="p-2 flex flex-col gap-2 animate-in fade-in duration-300">
+                {#each Array(4) as _}
+                  <div class="h-11 grid grid-cols-[32px_44px_192px_200px_160px_160px_1fr] items-center px-2">
+                    <div></div>
+                    <Skeleton class="size-4 rounded-md" />
+                    <Skeleton class="h-5 w-24 rounded-md" />
+                    <Skeleton class="h-4 w-32" />
+                    <Skeleton class="h-5 w-20 rounded-md" />
+                    <Skeleton class="h-4 w-28" />
+                    <Skeleton class="h-4 w-20" />
+                  </div>
+                {/each}
+              </div>
             </div>
           {:else}
             <RuleTable
@@ -653,12 +685,33 @@
       >
         <div class="w-full">
           {#if profileStore.loading}
-            <div
-              class="flex flex-col gap-4 animate-in fade-in duration-500 p-4"
-            >
-              {#each Array(4) as _}
-                <Skeleton class="h-12 w-full" />
-              {/each}
+            <div class="w-full text-sm">
+              <div class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[44px_100px_1fr_120px_1fr_160px_160px_1fr] px-2 border-b border-border/70">
+                <div class="h-8"></div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Type</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Name</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Status</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Source</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Download via</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Action</div>
+                <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Comment</div>
+              </div>
+              <div class="p-2 flex flex-col gap-2 animate-in fade-in duration-300">
+                {#each Array(4) as _}
+                  <div class="h-11 grid grid-cols-[44px_100px_1fr_120px_1fr_160px_160px_1fr] items-center px-2">
+                    <div class="flex items-center justify-center">
+                      <Skeleton class="size-4 rounded-md" />
+                    </div>
+                    <div class="px-2"><Skeleton class="h-5 w-16 rounded-md" /></div>
+                    <div class="px-2"><Skeleton class="h-4 w-28" /></div>
+                    <div class="px-2"><Skeleton class="h-5 w-16 rounded-md" /></div>
+                    <div class="px-2"><Skeleton class="h-4 w-32" /></div>
+                    <div class="px-2"><Skeleton class="h-4 w-20" /></div>
+                    <div class="px-2"><Skeleton class="h-4 w-20" /></div>
+                    <div class="px-2"><Skeleton class="h-4 w-24" /></div>
+                  </div>
+                {/each}
+              </div>
             </div>
           {:else}
             <RulesetTable

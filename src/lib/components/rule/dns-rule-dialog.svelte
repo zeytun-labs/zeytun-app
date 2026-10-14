@@ -179,7 +179,7 @@
       </Dialog.Header>
 
       {#if error}
-        <div class="rounded bg-red-500/10 p-2 text-sm text-red-500">
+        <div class="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
           {error}
         </div>
       {/if}

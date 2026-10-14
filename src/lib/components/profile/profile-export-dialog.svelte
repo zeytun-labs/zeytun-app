@@ -17,18 +17,25 @@
 
   let { open = $bindable(false), profile }: Props = $props();
 
+  let latchedProfile = $state<ProfileMeta | null>(null);
+
+  $effect(() => {
+    if (profile) latchedProfile = profile;
+  });
+
   let mode = $state<ExportMode>("full");
   let exporting = $state(false);
 
   async function handleExport() {
-    if (!profile) return;
+    const p = profile ?? latchedProfile;
+    if (!p) return;
     exporting = true;
     try {
-      const jsonStr = await coreProfileExport(profile.id, mode);
+      const jsonStr = await coreProfileExport(p.id, mode);
       const blob = new Blob([jsonStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      const safeName = profile.name.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+      const safeName = p.name.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
       const suffix = mode === "snapshot" ? ".snapshot" : "";
       const filename = `${safeName}${suffix}.zeytun.json`;
       a.href = url;
@@ -67,7 +74,7 @@
     <Dialog.Header>
       <Dialog.Title>Export Profile</Dialog.Title>
       <Dialog.Description>
-        Export "{profile?.name}" to your Downloads folder as a portable native document (.zeytun.json).
+        Export "{latchedProfile?.name}" to your Downloads folder as a portable native document (.zeytun.json).
       </Dialog.Description>
     </Dialog.Header>
 

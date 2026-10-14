@@ -1,5 +1,4 @@
-import { toast } from "svelte-sonner";
-import { errorMessage } from "$lib/errors";
+import { appToast } from "$lib/toast";
 
 export function useAsyncAction() {
   let saving = $state(false);
@@ -8,9 +7,9 @@ export function useAsyncAction() {
     saving = true;
     try {
       await action();
-      if (successMessage) toast.success(successMessage);
+      if (successMessage) appToast.success(successMessage);
     } catch (err) {
-      toast.error(errorMessage(err));
+      appToast.error(err);
     } finally {
       saving = false;
     }

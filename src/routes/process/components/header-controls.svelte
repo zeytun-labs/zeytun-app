@@ -33,7 +33,7 @@
   </div>
 
   <div class="flex items-center gap-3">
-    <Select.Root type="single" name="favoriteFruit" bind:value={sortBy}>
+    <Select.Root type="single" name="sortBy" bind:value={sortBy}>
       <Select.Trigger class="w-45" variant="backless">
         {triggerContent}
       </Select.Trigger>

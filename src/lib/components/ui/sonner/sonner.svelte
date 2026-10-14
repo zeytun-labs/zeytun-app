@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Toaster as Sonner, type ToasterProps as SonnerProps } from "svelte-sonner";
-	import { mode } from "mode-watcher";
+	import { themePreference } from "$lib/theme.svelte.js";
 	import { HugeiconsIcon } from "@hugeicons/svelte"
 	import { Loading03Icon } from '@hugeicons/core-free-icons';
 	import { CheckmarkCircle02Icon } from '@hugeicons/core-free-icons';
@@ -18,7 +18,8 @@
 	= same glass chrome as DashCard (bg-card/70 + border-border/40 + blur).
 -->
 <Sonner
-	theme={mode.current}
+	theme={restProps.theme ?? (themePreference.value === "system" ? "system" : themePreference.value)}
+	closeButton
 	class="toaster group"
 	style="--border-radius: 1rem; --normal-bg: color-mix(in oklab, var(--color-card) 72%, transparent); --normal-text: var(--color-card-foreground); --normal-border: color-mix(in oklab, var(--color-border) 60%, transparent); --normal-bg-hover: color-mix(in oklab, var(--color-card) 85%, transparent);"
 	{...restProps}

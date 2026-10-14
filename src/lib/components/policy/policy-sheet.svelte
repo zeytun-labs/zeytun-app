@@ -166,22 +166,21 @@
 <Sheet.Root bind:open>
   <Sheet.Content
     side="right"
-    class="flex flex-col gap-0 px-1 transition-all duration-300 flex-1 w-3xl! max-w-3xl!"
+    class="flex flex-col gap-0 p-0 transition-all duration-300 w-full sm:max-w-3xl!"
   >
     <form use:enhance class="flex flex-col h-full">
-      <div class="flex flex-col flex-1 h-0 min-h-0">
-        <Sheet.Header class="px-3">
-          <Sheet.Title
-            >{mode === "edit" ? "Edit Policy" : "Add new Policy"}</Sheet.Title
-          >
-          <Sheet.Description>
-            {mode === "edit"
-              ? "Edit the existing policy settings and members."
-              : "Create a new policy to organize proxy routing within this group."}
-          </Sheet.Description>
-        </Sheet.Header>
+      <Sheet.Header class="px-6 pt-6 pb-4 shrink-0 pr-12">
+        <Sheet.Title
+          >{mode === "edit" ? "Edit Policy" : "Add new Policy"}</Sheet.Title
+        >
+        <Sheet.Description>
+          {mode === "edit"
+            ? "Edit the existing policy settings and members."
+            : "Create a new policy to organize proxy routing within this group."}
+        </Sheet.Description>
+      </Sheet.Header>
 
-        <div class="gap-6 px-3 flex-1 min-h-0 grid grid-cols-2">
+      <div class="gap-6 px-6 pb-6 flex-1 min-h-0 grid grid-cols-2">
           <div class="flex flex-col gap-3 flex-1">
             <Form.Field {form} name="name">
               <Form.Control>
@@ -415,10 +414,9 @@
             </Form.Field>
           </div>
         </div>
-      </div>
 
       <Sheet.Footer
-        class="-mx-1! mt-auto bg-background border-t border-border flex-row justify-end"
+        class="p-4 border-t border-border flex flex-row justify-end gap-2 shrink-0"
       >
         <Button type="button" variant="outline" onclick={() => (open = false)}
           >Cancel</Button
