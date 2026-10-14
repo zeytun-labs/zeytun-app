@@ -12,7 +12,7 @@
 </script>
 
 <!--
-	Castle glass toast: inline vars on the toaster root override svelte-sonner's
+	Zeytun glass toast: inline vars on the toaster root override svelte-sonner's
 	theme defaults (inline style beats the [data-sonner-theme] stylesheet rules).
 	--normal-bg is translucent card + backdrop-blur from the :global block below
 	= same glass chrome as DashCard (bg-card/70 + border-border/40 + blur).

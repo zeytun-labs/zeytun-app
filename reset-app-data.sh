@@ -1,9 +1,9 @@
 #!/bin/bash
 
-echo "Resetting Castle app data..."
+echo "Resetting Zeytun app data..."
 
 # macOS
-MAC_DIR="$HOME/Library/Application Support/com.castle.app"
+MAC_DIR="$HOME/Library/Application Support/com.zeytun.app"
 if [ -d "$MAC_DIR" ]; then
     echo "Found macOS app data. Deleting..."
     rm -rf "$MAC_DIR"
@@ -11,7 +11,7 @@ if [ -d "$MAC_DIR" ]; then
 fi
 
 # Linux
-LINUX_DIR="$HOME/.local/share/com.castle.app"
+LINUX_DIR="$HOME/.local/share/com.zeytun.app"
 if [ -d "$LINUX_DIR" ]; then
     echo "Found Linux app data. Deleting..."
     rm -rf "$LINUX_DIR"

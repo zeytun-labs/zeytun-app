@@ -1972,7 +1972,7 @@ mod tests {
     #[test]
     fn replacing_dns_rules_persists_order_edits_and_enabled_state() {
         let test_dir =
-            std::env::temp_dir().join(format!("castle-dns-rule-storage-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("zeytun-dns-rule-storage-{}", uuid::Uuid::new_v4()));
         let db = Db::new(test_dir.join("zeytun.db"));
         let mut profile = ZeytunCore {
             dns: Some(DnsConfig {
@@ -2024,7 +2024,7 @@ mod tests {
     #[test]
     fn replacing_dns_hosts_roundtrips_add_edit_toggle_delete_and_order() {
         let test_dir =
-            std::env::temp_dir().join(format!("castle-dns-host-storage-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("zeytun-dns-host-storage-{}", uuid::Uuid::new_v4()));
         let db = Db::new(test_dir.join("zeytun.db"));
         let mut profile = ZeytunCore {
             dns: Some(DnsConfig {
@@ -2091,7 +2091,7 @@ mod tests {
 fn proxies_roundtrip_through_fresh_connection() {
     // The config blob is what link_parser produces and the compiler
     // consumes; losing it means a saved proxy has no server config.
-    let test_dir = std::env::temp_dir().join(format!("castle-proxy-rt-{}", uuid::Uuid::new_v4()));
+    let test_dir = std::env::temp_dir().join(format!("zeytun-proxy-rt-{}", uuid::Uuid::new_v4()));
     let db = Db::new(test_dir.join("zeytun.db"));
     db.load_profile(DEFAULT_PROFILE_ID)
         .expect("seed owner profile");
@@ -2160,7 +2160,7 @@ fn proxies_roundtrip_through_fresh_connection() {
 
 #[test]
 fn policies_roundtrip_members_weights_and_strategy() {
-    let test_dir = std::env::temp_dir().join(format!("castle-policy-rt-{}", uuid::Uuid::new_v4()));
+    let test_dir = std::env::temp_dir().join(format!("zeytun-policy-rt-{}", uuid::Uuid::new_v4()));
     let db = Db::new(test_dir.join("zeytun.db"));
 
     // normalize_policy_graph drops members that point at nothing real, so the
@@ -2222,7 +2222,7 @@ fn policies_roundtrip_members_weights_and_strategy() {
 
 #[test]
 fn sync_summary_roundtrips_and_mark_read_clears_only_the_flag() {
-    let test_dir = std::env::temp_dir().join(format!("castle-sync-rt-{}", uuid::Uuid::new_v4()));
+    let test_dir = std::env::temp_dir().join(format!("zeytun-sync-rt-{}", uuid::Uuid::new_v4()));
     let db = Db::new(test_dir.join("zeytun.db"));
 
     let meta = ProfileMeta {
