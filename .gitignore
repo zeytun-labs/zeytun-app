@@ -37,3 +37,4 @@ src-tauri/resources/fonts/*
 
 # Icon Composer scratch output; only src-tauri/Assets.car is bundled
 src-tauri/icons/compiled*/
+graphify-out

@@ -72,16 +72,17 @@ impl SubscriptionManager {
             }
         }
         for proxy in &profile.proxies {
-            if let Some(config) = &proxy.config {
+            if let Ok(server) = link_parser::proxy_to_proxy_server(proxy) {
                 let mut detours = HashSet::new();
-                Self::config_references(config, &mut detours);
-                let chains = config
-                    .get("proxies")
-                    .and_then(|v| v.as_array())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|v| v.as_str())
-                    .collect::<HashSet<_>>();
+                Self::server_references(&server, &mut detours);
+                let chains = match &server.protocol {
+                    crate::core::models::proxy::Protocol::Chain(chain) => chain
+                        .proxies
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<HashSet<_>>(),
+                    _ => HashSet::new(),
+                };
                 let mut sorted = detours.into_iter().collect::<Vec<_>>();
                 sorted.sort();
                 for tag in sorted {
@@ -457,9 +458,7 @@ impl SubscriptionManager {
         }
         for proxy in &profile.proxies {
             let mut refs = HashSet::new();
-            if let Some(config) = &proxy.config {
-                Self::config_references(config, &mut refs);
-            }
+            Self::proxy_references(proxy, &mut refs);
             if builtins.contains(&proxy.tag)
                 || proxy.tag == DEFAULT_SELECTOR_POLICY_TAG
                 || graph.insert(proxy.tag.clone(), refs).is_some()
@@ -547,15 +546,14 @@ impl SubscriptionManager {
             tags.extend(ruleset.download_policy.iter().cloned());
         }
         for proxy in &profile.proxies {
-            if let Some(config) = &proxy.config {
-                Self::config_references(config, &mut tags);
-            }
+            Self::proxy_references(proxy, &mut tags);
         }
         tags
     }
 
-    pub(crate) fn config_references(value: &serde_json::Value, tags: &mut HashSet<String>) {
-        if let Ok(server) = serde_json::from_value::<ProxyServer>(value.clone()) {
+    fn proxy_references(proxy: &Proxy, tags: &mut HashSet<String>) {
+        // Use the same config-or-share-link parse path as runtime conversion.
+        if let Ok(server) = link_parser::proxy_to_proxy_server(proxy) {
             Self::server_references(&server, tags);
         }
     }

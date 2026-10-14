@@ -9,6 +9,7 @@ use crate::core::{
     models::{
         policy::{ProxyPolicy, ProxyPolicyType},
         profile::Profile,
+        proxy::{Protocol, ProxyServer},
         rule::{RouteRule, RuleActionType},
         runtime::{IgnoredProxyServer, RuntimeOutbound, RuntimePolicy, RuntimeProfile},
     },
@@ -80,8 +81,18 @@ impl RuntimeProfileCompiler {
             }
         }
 
+        // Reserve authored identities before emitting any references or chain
+        // hops. Detours may point forward, and trimmed tags may collide.
+        for server in regular_servers.iter().chain(&chain_servers) {
+            tag_allocator.allocate_proxy_server_tag(server);
+        }
+        for id in &profile.blocked_proxy_tags {
+            tag_allocator.allocate_proxy_tag(id, id);
+        }
+
         for server in &regular_servers {
-            let (normalized_server, normalize_warning) = self.support_resolver.normalize(server);
+            let (mut normalized_server, normalize_warning) =
+                self.support_resolver.normalize(server);
 
             if let Some(warning) = normalize_warning {
                 warnings.push(CompileWarning::ProxyServerNormalized {
@@ -114,6 +125,7 @@ impl RuntimeProfileCompiler {
             }
 
             let tag = tag_allocator.allocate_proxy_server_tag(&normalized_server);
+            self.resolve_proxy_references(&mut normalized_server, &tag_allocator);
 
             let outbound = match self
                 .outbound_factory
@@ -190,6 +202,7 @@ impl RuntimeProfileCompiler {
                 };
 
                 let (mut cloned_server, _) = self.support_resolver.normalize(original_server);
+                self.resolve_proxy_references(&mut cloned_server, &tag_allocator);
 
                 if i == 0 && chain_proto.proxies.len() > 1 {
                     prev_allocated_tag =
@@ -586,6 +599,30 @@ impl RuntimeProfileCompiler {
         }
 
         runtime_rules
+    }
+
+    fn resolve_proxy_references(&self, server: &mut ProxyServer, tag_allocator: &TagAllocator) {
+        let resolve = |target: &mut String| {
+            *target = self
+                .resolve_target(target, tag_allocator)
+                .unwrap_or_else(|| "block".into());
+        };
+        if let Some(detour) = &mut server.detour {
+            resolve(detour);
+        }
+        let transport = match &mut server.protocol {
+            Protocol::Vless(v) => v.transport.as_mut(),
+            Protocol::Vmess(v) => v.transport.as_mut(),
+            Protocol::Trojan(v) => v.transport.as_mut(),
+            _ => None,
+        };
+        // Resolve only typed references; arbitrary header maps remain opaque.
+        if let Some(detour) = transport
+            .and_then(|transport| transport.download.as_mut())
+            .and_then(|download| download.detour.as_mut())
+        {
+            resolve(detour);
+        }
     }
 
     fn resolve_target(&self, target: &str, tag_allocator: &TagAllocator) -> Option<String> {
