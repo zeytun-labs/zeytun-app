@@ -50,6 +50,7 @@ export class GrpcWebSocketStream<
     );
     this.socket.binaryType = "arraybuffer";
     this.socket.onopen = () => {
+      if (this.ended) return;
       let headers =
         "content-type: application/grpc-web+proto\r\nx-grpc-web: 1\r\n";
       if (options.config.secret) {
@@ -99,10 +100,13 @@ export class GrpcWebSocketStream<
 
   close() {
     this.ended = true;
+    this.buffer = new Uint8Array(0);
+    this.pendingSends = [];
     this.socket.close();
   }
 
   private enqueue(frame: Uint8Array) {
+    if (this.ended) return;
     if (this.opened) {
       if (this.socket.readyState === WebSocket.OPEN) {
         this.socket.send(frame as any);
@@ -117,6 +121,8 @@ export class GrpcWebSocketStream<
       return;
     }
     this.ended = true;
+    this.buffer = new Uint8Array(0);
+    this.pendingSends = [];
     this.socket.close();
     this.options.onEnd(status, error);
   }
@@ -129,7 +135,7 @@ export class GrpcWebSocketStream<
     merged.set(this.buffer);
     merged.set(chunk, this.buffer.length);
     this.buffer = merged;
-    while (this.buffer.length >= 5) {
+    while (!this.ended && this.buffer.length >= 5) {
       const flag = this.buffer[0];
       const length =
         ((this.buffer[1] << 24) |

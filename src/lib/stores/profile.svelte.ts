@@ -47,7 +47,7 @@ class ProfileStore {
   get pendingRestart() { return this.runtime?.pending_apply ?? false; }
   set pendingRestart(_requested: boolean) {
     // Existing setters request a read-back, never invent applied/saved state.
-    void this.refresh();
+    void this.refresh().catch((error) => console.error("Profile refresh failed", error));
   }
   networkToggle = $state<"systemProxy" | "tun" | null>(null);
 
@@ -66,6 +66,12 @@ class ProfileStore {
   }
 
   isRunning = $derived(this.coreStatus === "running");
+
+  #requestGeneration = 0;
+  #statusGeneration = 0;
+  #listenerGeneration = 0;
+  #registration: Promise<void> | null = null;
+  #pendingCleanup: (() => void) | null = null;
 
   #unlistenProfile: UnlistenFn | null = null;
   #unlistenStatus: UnlistenFn | null = null;
@@ -91,32 +97,32 @@ class ProfileStore {
 
   async load() {
     this.loading = true;
+    await this.#readSnapshot(true);
+  }
+
+  async refresh() {
+    await this.#readSnapshot(false);
+  }
+
+  async #readSnapshot(bootstrap: boolean) {
+    const generation = ++this.#requestGeneration;
     try {
       const [nextProfile, nextRuntime, profiles] = await Promise.all([
         coreProfileGet(),
         coreStatus(),
         coreProfileList(),
       ]);
+      if (generation !== this.#requestGeneration) return;
       this.profile = nextProfile;
       this.runtime = nextRuntime;
       this.profiles = profiles;
-      // Bootstrap the indicator in case the daemon's status emit fired before
-      // the listener was registered; daemon events are authoritative afterwards.
-      if (nextRuntime.phase === "running") this.coreStatus = "running";
+      // A live daemon event received during this read takes precedence.
+      if (bootstrap && this.#statusGeneration === 0 && nextRuntime.phase === "running") {
+        this.coreStatus = "running";
+      }
     } finally {
-      this.loading = false;
+      if (generation === this.#requestGeneration) this.loading = false;
     }
-  }
-
-  async refresh() {
-    const [nextProfile, nextRuntime, profiles] = await Promise.all([
-      coreProfileGet(),
-      coreStatus(),
-      coreProfileList(),
-    ]);
-    this.profile = nextProfile;
-    this.runtime = nextRuntime;
-    this.profiles = profiles;
   }
 
   // --- Profile registry actions ---
@@ -165,24 +171,49 @@ class ProfileStore {
   /// stopListening() on teardown. `profile-updated` (tray/command mutations)
   /// re-syncs the profile; `core-status-changed` (daemon link) drives the
   /// status indicator.
-  async startListening() {
-    if (!this.#unlistenProfile) {
-      this.#unlistenProfile = await listen("profile-updated", () => {
-        void this.refresh();
+  startListening(): Promise<void> {
+    if (this.#registration) return this.#registration;
+    if (this.#unlistenProfile && this.#unlistenStatus) return Promise.resolve();
+    const generation = this.#listenerGeneration;
+    this.#registration = this.#registerListeners(generation)
+      .catch((error) => console.error("Profile listener setup failed", error))
+      .finally(() => {
+        if (generation === this.#listenerGeneration) this.#registration = null;
       });
-    }
-    if (!this.#unlistenStatus) {
-      this.#unlistenStatus = await listen<CoreStatus>(
-        "core-status-changed",
-        (event) => {
-          this.coreStatus = event.payload;
-        },
-      );
+    return this.#registration;
+  }
+
+  async #registerListeners(generation: number) {
+    const handles: UnlistenFn[] = [];
+    const cleanup = () => handles.splice(0).forEach((unlisten) => unlisten());
+    this.#pendingCleanup = cleanup;
+    let committed = false;
+    try {
+      handles.push(await listen("profile-updated", () => {
+        if (generation !== this.#listenerGeneration) return;
+        void this.refresh().catch((error) => console.error("Profile refresh failed", error));
+      }));
+      if (generation !== this.#listenerGeneration) return;
+      handles.push(await listen<CoreStatus>("core-status-changed", (event) => {
+        if (generation !== this.#listenerGeneration) return;
+        ++this.#statusGeneration;
+        this.coreStatus = event.payload;
+      }));
+      if (generation !== this.#listenerGeneration) return;
+      [this.#unlistenProfile, this.#unlistenStatus] = handles;
+      committed = true;
+    } finally {
+      if (!committed) cleanup();
+      if (this.#pendingCleanup === cleanup) this.#pendingCleanup = null;
     }
   }
 
-  /// Synchronous teardown of the event listeners.
+  /// Invalidate pending registrations; their late handles are released on arrival.
   stopListening() {
+    ++this.#listenerGeneration;
+    this.#pendingCleanup?.();
+    this.#pendingCleanup = null;
+    this.#registration = null;
     this.#unlistenProfile?.();
     this.#unlistenProfile = null;
     this.#unlistenStatus?.();

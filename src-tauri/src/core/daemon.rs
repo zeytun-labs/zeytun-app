@@ -129,6 +129,15 @@ const CUMULATIVE_TTL_SECS: i64 = 30 * 60;
 const MAX_TRACKED_PROCESSES: usize = 1000;
 /// Hard cap on the number of hosts tracked per process (we only surface the top one).
 const MAX_TRACKED_HOSTS: usize = 256;
+/// Counter baselines awaiting replay after reset; bounded even if the core never
+/// sends those connection IDs again.
+const MAX_CONNECTION_BASELINES: usize = 10_000;
+
+struct ConnectionBaseline {
+    upload: i64,
+    download: i64,
+    last_seen: i64,
+}
 
 #[derive(Clone, Default)]
 struct SubProcessCumulative {
@@ -160,14 +169,70 @@ const STATUS_CONNECTING: &str = "connecting";
 const STATUS_RUNNING: &str = "running";
 const STATUS_STOPPED: &str = "stopped";
 
-/// Emit `core-status-changed` only when the status actually transitions, so the
-/// frontend isn't spammed and the retry loop stays quiet while idle.
-fn emit_status(app: &AppHandle, last: &mut &'static str, next: &'static str) {
-    if *last == next {
-        return;
+/// All streams must accept their subscriptions before the link is ready.
+struct DaemonStreams {
+    connections: tonic::Streaming<pb::ConnectionEvents>,
+    logs: tonic::Streaming<pb::Log>,
+    events: tonic::Streaming<pb::CoreEvent>,
+}
+
+async fn subscribe_streams(mut client: AuthClient) -> Result<DaemonStreams, tonic::Status> {
+    let mut logs = client.clone();
+    let mut events = client.clone();
+    let (connections, logs, events) = tokio::try_join!(
+        client.subscribe_connections(SubscribeConnectionsRequest {
+            interval: 1_000_000_000
+        }),
+        logs.subscribe_log(()),
+        events.subscribe_event(pb::SubscribeEventRequest { scopes: vec![] }),
+    )?;
+    Ok(DaemonStreams {
+        connections: connections.into_inner(),
+        logs: logs.into_inner(),
+        events: events.into_inner(),
+    })
+}
+
+// Kept independent of Tauri so readiness, retry pacing and cancellation are
+// exercised by the same supervisor in regression tests.
+async fn run_reconnecting<Session, Error, Connect, Connected, Run, Running, Notify>(
+    mut connect: Connect,
+    mut run: Run,
+    mut notify: Notify,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    retry_delay: Duration,
+) where
+    Connect: FnMut() -> Connected,
+    Connected: std::future::Future<Output = Result<Session, Error>>,
+    Run: FnMut(Session) -> Running,
+    Running: std::future::Future<Output = ()>,
+    Notify: FnMut(&'static str),
+{
+    notify(STATUS_CONNECTING);
+    loop {
+        let connected = tokio::select! {
+            _ = &mut shutdown => break,
+            result = connect() => result,
+        };
+        match connected {
+            Ok(session) => {
+                notify(STATUS_RUNNING);
+                tokio::select! {
+                    _ = &mut shutdown => break,
+                    _ = run(session) => {}
+                }
+                notify(STATUS_CONNECTING);
+            }
+            Err(_) => notify(STATUS_STOPPED),
+        }
+        // Both transport failures and accepted channels with rejected/ended RPCs
+        // are paced. Shutdown interrupts setup, stream reads, and this backoff.
+        tokio::select! {
+            _ = &mut shutdown => break,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
     }
-    *last = next;
-    let _ = app.emit("core-status-changed", next);
+    notify(STATUS_STOPPED);
 }
 
 pub fn start_daemon_listener(
@@ -176,9 +241,7 @@ pub fn start_daemon_listener(
     tauri::async_runtime::JoinHandle<()>,
     tokio::sync::oneshot::Sender<()>,
 ) {
-    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
-    let app_clone = app.clone();
-
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tauri::async_runtime::spawn(async move {
         let endpoint =
             tonic::transport::Channel::from_static(crate::core::constants::GRPC_API_ENDPOINT)
@@ -186,78 +249,130 @@ pub fn start_daemon_listener(
                 .http2_keep_alive_interval(Duration::from_secs(15))
                 .keep_alive_timeout(Duration::from_secs(5))
                 .keep_alive_while_idle(true);
-        let mut status: &'static str = STATUS_STOPPED;
-        emit_status(&app_clone, &mut status, STATUS_CONNECTING);
-        loop {
-            tokio::select! {
-                _ = &mut rx => {
-                    println!("[Daemon] Shutdown signal received, exiting loop");
-                    emit_status(&app_clone, &mut status, STATUS_STOPPED);
+        // These owners live for the app listener, across every stream session.
+        let traffic = Arc::new(Mutex::new(TrafficState::default()));
+        let analytics = Arc::new(AnalyticsBuffer::default());
+        let emit_task = tauri::async_runtime::spawn(emit_traffic(app.clone(), traffic.clone()));
+        let (flush_tx, mut flush_rx) = tokio::sync::oneshot::channel::<()>();
+        let flush_trigger = Arc::new(tokio::sync::Notify::new());
+        let worker_trigger = flush_trigger.clone();
+        let flush_app = app.clone();
+        let flush_buf = analytics.clone();
+        let flush_task = tauri::async_runtime::spawn(async move {
+            let mut timer = interval(Duration::from_secs(ANALYTICS_FLUSH_SECS));
+            loop {
+                let stopping = tokio::select! {
+                    _ = &mut flush_rx => true,
+                    _ = timer.tick() => false,
+                    _ = worker_trigger.notified() => false,
+                };
+                flush_analytics(&flush_app, &flush_buf).await;
+                if stopping {
                     break;
                 }
-                connect_result = endpoint.connect() => {
-                    match connect_result {
-                        Ok(channel) => {
-                            let client = StartedServiceClient::with_interceptor(channel, AuthInterceptor)
-                                .max_decoding_message_size(256 * 1024 * 1024);
-                            println!("[Daemon] Connected to zeytun-core gRPC (connections)");
-                            emit_status(&app_clone, &mut status, STATUS_RUNNING);
-
-                            tokio::select! {
-                                _ = &mut rx => {
-                                    println!("[Daemon] Shutdown signal received while connected, exiting");
-                                    emit_status(&app_clone, &mut status, STATUS_STOPPED);
-                                    break;
-                                }
-                                res = handle_connections(client.clone(), app_clone.clone()) => {
-                                    if let Err(e) = res {
-                                        println!("[Daemon] handle_connections error: {:?}", e);
-                                    }
-                                }
-                                res2 = handle_logs(client.clone(), app_clone.clone()) => {
-                                    if let Err(e) = res2 {
-                                        println!("[Daemon] handle_logs error: {:?}", e);
-                                    }
-                                }
-                                res3 = handle_core_events(client.clone(), app_clone.clone()) => {
-                                    if let Err(e) = res3 {
-                                        println!("[Daemon] handle_core_events error: {:?}", e);
-                                    }
-                                }
-                            }
-
-                            println!("[Daemon] Disconnected from zeytun-core gRPC, retrying...");
-                            // Link dropped — show reconnecting; if the core is truly down the
-                            // next connect attempt fails and flips us to stopped.
-                            emit_status(&app_clone, &mut status, STATUS_CONNECTING);
-                        }
-                        Err(_) => {
-                            emit_status(&app_clone, &mut status, STATUS_STOPPED);
-                            // Silent retry
-                            tokio::select! {
-                                _ = &mut rx => {
-                                    println!("[Daemon] Shutdown signal received during retry sleep, exiting");
-                                    break;
-                                }
-                                _ = tokio::time::sleep(Duration::from_secs(crate::core::constants::DAEMON_RECONNECT_INTERVAL_SECS)) => {}
-                            }
-                        }
-                    }
-                }
             }
-        }
+        });
+        let mut last_status = STATUS_STOPPED;
+        run_reconnecting(
+            || async {
+                let channel = endpoint.connect().await.map_err(|e| e.to_string())?;
+                let client = StartedServiceClient::with_interceptor(channel, AuthInterceptor)
+                    .max_decoding_message_size(256 * 1024 * 1024);
+                tokio::time::timeout(Duration::from_secs(10), subscribe_streams(client))
+                    .await.map_err(|e| e.to_string())?
+                    .map_err(|e| e.to_string())
+            },
+            |streams: DaemonStreams| {
+                let app = app.clone();
+                let traffic = traffic.clone();
+                let analytics = analytics.clone();
+                let flush_trigger = flush_trigger.clone();
+                async move {
+                    tokio::select! {
+                        _ = handle_connections(streams.connections, app.clone(), traffic.clone(), analytics.clone()) => {},
+                        _ = handle_logs(streams.logs, app.clone()) => {},
+                        _ = handle_core_events(streams.events, app.clone()) => {},
+                    }
+                    // Keep the periodic worker alive, and also persist promptly
+                    // when a stream ends (well before the 30-second timer).
+                    traffic.lock().await.disconnect();
+                    flush_trigger.notify_one();
+                }
+            },
+            |next| {
+                if last_status != next {
+                    last_status = next;
+                    let _ = app.emit("core-status-changed", next);
+                }
+            },
+            rx,
+            Duration::from_secs(crate::core::constants::DAEMON_RECONNECT_INTERVAL_SECS),
+        ).await;
+        emit_task.abort();
+        // Gracefully join the worker: never abort a batch while it is being
+        // persisted, and always drain the final partial interval on shutdown.
+        let _ = flush_tx.send(());
+        let _ = flush_task.await;
     });
-
     (handle, tx)
 }
 
-async fn handle_logs(
-    mut client: AuthClient,
-    app: AppHandle,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let request = tonic::Request::new(());
-    let mut stream = client.subscribe_log(request).await?.into_inner();
+/// Drain atomically, and merge back on failure alongside any newer deltas.
+async fn flush_analytics_with<F, Fut>(buffer: &AnalyticsBuffer, persist: F)
+where
+    F: FnOnce(Vec<crate::core::dto::TrafficDelta>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let drained = {
+        let mut buffer = buffer.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *buffer)
+    };
+    if drained.is_empty() {
+        return;
+    }
+    let batch = drained
+        .iter()
+        .map(|(k, (up, down))| crate::core::dto::TrafficDelta {
+            ts_minute: k.ts_minute,
+            domain: k.domain.clone(),
+            policy: k.policy.clone(),
+            process: k.process.clone(),
+            is_proxy: k.is_proxy,
+            up_bytes: *up,
+            down_bytes: *down,
+        })
+        .collect();
+    if let Err(error) = persist(batch).await {
+        crate::clog!("[Daemon] traffic flush failed: {error}");
+        let mut buffer = buffer.lock().unwrap_or_else(|e| e.into_inner());
+        for (key, (up, down)) in drained {
+            let entry = buffer.entry(key).or_default();
+            entry.0 += up;
+            entry.1 += down;
+        }
+    }
+}
 
+async fn flush_analytics(app: &AppHandle, buffer: &AnalyticsBuffer) {
+    // Each drain owns a disjoint batch. CoreManager serializes SQLite writes.
+    // The buffer retains ownership of deltas until a worker can accept them.
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return;
+    };
+    let core = state.core_arc();
+    flush_analytics_with(buffer, |batch| async move {
+        tauri::async_runtime::spawn_blocking(move || {
+            core.blocking_lock()
+                .record_traffic_batch(&batch)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    })
+    .await;
+}
+
+async fn handle_logs(mut stream: tonic::Streaming<pb::Log>, app: AppHandle) {
     while let Some(message) = stream.next().await {
         match message {
             Ok(log_msg) => {
@@ -283,16 +398,9 @@ async fn handle_logs(
             }
         }
     }
-    Ok(())
 }
 
-async fn handle_core_events(
-    mut client: AuthClient,
-    app: AppHandle,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let request = tonic::Request::new(pb::SubscribeEventRequest { scopes: vec![] });
-    let mut stream = client.subscribe_event(request).await?.into_inner();
-
+async fn handle_core_events(mut stream: tonic::Streaming<pb::CoreEvent>, app: AppHandle) {
     while let Some(message) = stream.next().await {
         match message {
             Ok(ev) => {
@@ -365,295 +473,302 @@ async fn handle_core_events(
             }
         }
     }
-    Ok(())
 }
 
-async fn handle_connections(
-    mut client: AuthClient,
-    app: AppHandle,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let request = tonic::Request::new(SubscribeConnectionsRequest {
-        interval: 1_000_000_000,
-    }); // 1 second
-    let mut stream = client.subscribe_connections(request).await?.into_inner();
+#[derive(Default)]
+struct TrafficState {
+    rows: HashMap<String, ConnectionRow>,
+    baselines: HashMap<String, ConnectionBaseline>,
+    cumulative: HashMap<String, ProcessCumulative>,
+    day: u64,
+}
 
-    let rows = Arc::new(Mutex::new(HashMap::<String, ConnectionRow>::new()));
-    let analytics_buf: Arc<AnalyticsBuffer> = Arc::new(std::sync::Mutex::new(HashMap::new()));
-
-    // Spawn updater
-    let rows_for_emit = rows.clone();
-    let app_for_emit = app.clone();
-
-    struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
-    impl Drop for AbortOnDrop {
-        fn drop(&mut self) {
-            self.0.abort();
+impl TrafficState {
+    fn roll_day(&mut self, day: u64) {
+        if self.day != day {
+            for cum in self.cumulative.values_mut() {
+                cum.today_upload = 0;
+                cum.today_download = 0;
+            }
+            self.day = day;
         }
     }
 
-    // Periodic flush of the analytics buffer to SQLite. Drains the buffer, then
-    // persists via spawn_blocking + blocking_lock (no guard across await).
-    let buf_for_flush = analytics_buf.clone();
-    let app_for_flush = app.clone();
-    let flush_task = tauri::async_runtime::spawn(async move {
-        let mut timer = interval(Duration::from_secs(ANALYTICS_FLUSH_SECS));
-        loop {
-            timer.tick().await;
-            let batch: Vec<crate::core::dto::TrafficDelta> = {
-                let mut buf = match buf_for_flush.lock() {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                if buf.is_empty() {
-                    continue;
-                }
-                std::mem::take(&mut *buf)
-                    .into_iter()
-                    .map(|(k, (up, down))| crate::core::dto::TrafficDelta {
-                        ts_minute: k.ts_minute,
-                        domain: k.domain,
-                        policy: k.policy,
-                        process: k.process,
-                        is_proxy: k.is_proxy,
-                        up_bytes: up,
-                        down_bytes: down,
-                    })
-                    .collect()
-            };
+    fn record(&mut self, id: &str, up: i64, down: i64) {
+        self.roll_day(get_current_day());
+        let Some(row) = self.rows.get(id) else {
+            return;
+        };
+        let cum = self.cumulative.entry(row.process_name.clone()).or_default();
+        cum.upload += up;
+        cum.download += down;
+        cum.today_upload += up;
+        cum.today_download += down;
+        cum.last_seen = get_current_epoch();
+        cum.path = row.process_path.clone();
+        record_host_traffic(&mut cum.host_traffic, &row.host, up + down);
+        let sub = cum
+            .sub_processes
+            .entry(row.executable_name.clone())
+            .or_default();
+        sub.upload += up;
+        sub.download += down;
+        sub.path = row.process_path.clone();
+    }
 
-            let Some(state) = app_for_flush.try_state::<crate::AppState>() else {
-                continue;
-            };
-            let core = state.core_arc();
-            let _ = tauri::async_runtime::spawn_blocking(move || {
-                let guard = core.blocking_lock();
-                if let Err(e) = guard.record_traffic_batch(&batch) {
-                    crate::clog!("[Daemon] traffic flush failed: {e}");
-                }
-            })
-            .await;
+    fn disconnect(&mut self) {
+        for row in self.rows.values_mut() {
+            row.uplink_rate = 0;
+            row.downlink_rate = 0;
         }
-    });
-    let _flush_task_guard = AbortOnDrop(flush_task);
+    }
 
-    let emit_task = tauri::async_runtime::spawn(async move {
-        let mut interval_timer = interval(Duration::from_secs(1));
-
-        let mut process_cumulative: HashMap<String, ProcessCumulative> = HashMap::new();
-        let mut last_day = get_current_day();
-
-        loop {
-            interval_timer.tick().await;
-
-            let now = get_current_epoch();
-            let current_day = get_current_day();
-            if current_day != last_day {
-                for cum in process_cumulative.values_mut() {
-                    cum.today_upload = 0;
-                    cum.today_download = 0;
-                }
-                last_day = current_day;
-            }
-
-            let mut current_rows = rows_for_emit.lock().await;
-
-            // Build ProcessStat
-            let mut process_map: HashMap<String, ProcessStat> = HashMap::new();
-            // Temporary per-executable live stats, keyed by (process_name, executable_name)
-            let mut sub_live: HashMap<(String, String), SubProcessStat> = HashMap::new();
-
-            for row in current_rows.values() {
-                // If it's closed, we add its totals to cumulative and then we will remove it.
-                if row.closed_at.is_some() {
-                    let cum = process_cumulative
-                        .entry(row.process_name.clone())
-                        .or_default();
-                    cum.upload += row.uplink_total;
-                    cum.download += row.downlink_total;
-                    cum.today_upload += row.uplink_total;
-                    cum.today_download += row.downlink_total;
-                    cum.closed_connections += 1;
-                    cum.last_seen = now;
-                    // Track per-executable cumulative
-                    let sub_cum = cum
-                        .sub_processes
-                        .entry(row.executable_name.clone())
-                        .or_default();
-                    sub_cum.upload += row.uplink_total;
-                    sub_cum.download += row.downlink_total;
-                    sub_cum.closed_connections += 1;
-                    if sub_cum.path.is_empty() {
-                        sub_cum.path = row.process_path.clone();
-                    }
-                    continue;
-                }
-
-                let stat = process_map
-                    .entry(row.process_name.clone())
-                    .or_insert_with(|| ProcessStat {
-                        name: row.process_name.clone(),
-                        path: row.process_path.clone(),
-                        connection_ids: Vec::new(),
-                        upload_speed: 0,
-                        download_speed: 0,
-                        active_connections: 0,
-                        closed_connections: 0,
-                        total_upload: 0,
-                        total_download: 0,
-                        today_upload: 0,
-                        today_download: 0,
-                        top_host: "None".to_string(),
-                        sub_processes: Vec::new(),
-                    });
-
-                stat.upload_speed += row.uplink_rate;
-                stat.download_speed += row.downlink_rate;
-                stat.active_connections += 1;
-                stat.connection_ids.push(row.id.clone());
-
-                // Keep track of current active total to add to cumulative when displaying
-                stat.total_upload += row.uplink_total;
-                stat.total_download += row.downlink_total;
-                stat.today_upload += row.uplink_total;
-                stat.today_download += row.downlink_total;
-
-                // Track per-executable live stats
-                let sub_key = (row.process_name.clone(), row.executable_name.clone());
-                let sub = sub_live.entry(sub_key).or_insert_with(|| SubProcessStat {
-                    name: row.executable_name.clone(),
-                    path: row.process_path.clone(),
-                    ..Default::default()
-                });
-                sub.upload_speed += row.uplink_rate;
-                sub.download_speed += row.downlink_rate;
-                sub.active_connections += 1;
-                sub.connection_ids.push(row.id.clone());
-                sub.total_upload += row.uplink_total;
-                sub.total_download += row.downlink_total;
-
-                let cum = process_cumulative
-                    .entry(row.process_name.clone())
-                    .or_default();
-                cum.last_seen = now;
-                if cum.path.is_empty() {
-                    cum.path = stat.path.clone();
-                }
-                record_host_traffic(
-                    &mut cum.host_traffic,
-                    &row.host,
-                    row.uplink_rate + row.downlink_rate,
-                );
-            }
-
-            // Remove closed
-            current_rows.retain(|_, row| row.closed_at.is_none());
-
-            // Evict stale cumulative entries so the map can't grow without bound.
-            evict_stale_processes(&mut process_cumulative, now);
-
-            // Add cumulative to stats
-            for (pname, cum) in process_cumulative.iter_mut() {
-                let stat = process_map
-                    .entry(pname.clone())
-                    .or_insert_with(|| ProcessStat {
-                        name: pname.clone(),
-                        path: cum.path.clone(),
-                        connection_ids: Vec::new(),
-                        upload_speed: 0,
-                        download_speed: 0,
-                        active_connections: 0,
-                        closed_connections: 0,
-                        total_upload: 0,
-                        total_download: 0,
-                        today_upload: 0,
-                        today_download: 0,
-                        top_host: "None".to_string(),
-                        sub_processes: Vec::new(),
-                    });
-
-                stat.total_upload += cum.upload;
-                stat.total_download += cum.download;
-                stat.today_upload += cum.today_upload;
-                stat.today_download += cum.today_download;
-                stat.closed_connections += cum.closed_connections;
-
-                // calculate top host
-                let mut max_t = -1;
-                let mut top_h = "None".to_string();
-                for (h, t) in cum.host_traffic.iter() {
-                    if *t > max_t {
-                        max_t = *t;
-                        top_h = h.clone();
-                    }
-                }
-                stat.top_host = top_h;
-
-                // Merge per-executable cumulative into live sub-process stats
-                for (exec_name, sub_cum) in cum.sub_processes.iter() {
-                    let sub_key = (pname.clone(), exec_name.clone());
-                    let sub = sub_live.entry(sub_key).or_insert_with(|| SubProcessStat {
-                        name: exec_name.clone(),
-                        path: sub_cum.path.clone(),
-                        ..Default::default()
-                    });
-                    sub.total_upload += sub_cum.upload;
-                    sub.total_download += sub_cum.download;
-                    sub.closed_connections += sub_cum.closed_connections;
-                }
-            }
-
-            // Attach sub-process stats to their parent ProcessStat
-            for ((pname, _), sub) in sub_live.drain() {
-                if let Some(stat) = process_map.get_mut(&pname) {
-                    stat.sub_processes.push(sub);
-                }
-            }
-            // Sort sub-processes by total traffic desc for consistent display
-            for stat in process_map.values_mut() {
-                stat.sub_processes.sort_by(|a, b| {
-                    (b.total_upload + b.total_download).cmp(&(a.total_upload + a.total_download))
-                });
-                // Only keep sub_processes populated when there are 2+ distinct executables
-                // (single-executable apps don't need the breakdown)
-                if stat.sub_processes.len() <= 1 {
-                    stat.sub_processes.clear();
-                }
-            }
-
-            let stats_vec: Vec<ProcessStat> = process_map.into_values().collect();
-
-            // Aggregate live up/down rate for the tray title (single pass, no clones).
-            let (mut up, mut down) = (0i64, 0i64);
-            for stat in &stats_vec {
-                up += stat.upload_speed;
-                down += stat.download_speed;
-            }
-            crate::tray::set_traffic_title(&app_for_emit, up, down);
-
-            let _ = app_for_emit.emit("traffic-update", &stats_vec);
-
-            // Push the Inspector snapshot to the frontend, but only while the
-            // Inspector route is mounted (listener_active) AND the connection
-            // set changed since the last tick — idle pages cost nothing.
-            if let Some(ins) = app_for_emit.try_state::<crate::InspectorState>() {
-                if ins
-                    .listener_active
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    && ins.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
-                {
-                    match ins.snapshot() {
-                        Ok(snap) => {
-                            let _ = app_for_emit.emit("inspector-snapshot", &snap);
-                        }
-                        Err(e) => crate::clog!("[Daemon] inspector snapshot failed: {e}"),
-                    }
-                }
+    fn reset(&mut self) {
+        let now = get_current_epoch();
+        self.baselines
+            .retain(|_, baseline| now - baseline.last_seen <= CUMULATIVE_TTL_SECS);
+        // Reset can be its own message, with NEW snapshots arriving later.
+        // Retire live rows immediately but keep their counters for replay.
+        self.baselines.extend(self.rows.drain().map(|(id, row)| {
+            (
+                id,
+                ConnectionBaseline {
+                    upload: row.uplink_total,
+                    download: row.downlink_total,
+                    last_seen: now,
+                },
+            )
+        }));
+        if self.baselines.len() > MAX_CONNECTION_BASELINES {
+            let mut oldest: Vec<_> = self
+                .baselines
+                .iter()
+                .map(|(id, baseline)| (id.clone(), baseline.last_seen))
+                .collect();
+            oldest.sort_by_key(|(_, last_seen)| *last_seen);
+            let remove = self.baselines.len() - MAX_CONNECTION_BASELINES;
+            for (id, _) in oldest.into_iter().take(remove) {
+                self.baselines.remove(&id);
             }
         }
-    });
+    }
 
-    let _emit_task_guard = AbortOnDrop(emit_task);
+    fn insert(&mut self, row: ConnectionRow) {
+        // Replayed NEW snapshots contain absolute counters. Only count the
+        // unobserved difference, preserving totals across reconnect/reset.
+        let baseline = self.baselines.remove(&row.id);
+        let previous = self
+            .rows
+            .get(&row.id)
+            .map(|r| (r.uplink_total, r.downlink_total))
+            .or_else(|| baseline.map(|b| (b.upload, b.download)))
+            .unwrap_or_default();
+        let up = (row.uplink_total - previous.0).max(0);
+        let down = (row.downlink_total - previous.1).max(0);
+        let id = row.id.clone();
+        self.rows.insert(id.clone(), row);
+        self.record(&id, up, down);
+    }
+}
 
+fn build_process_stats(traffic: &mut TrafficState) -> Vec<ProcessStat> {
+    let now = get_current_epoch();
+    traffic.roll_day(get_current_day());
+    let TrafficState {
+        rows: current_rows,
+        cumulative: process_cumulative,
+        ..
+    } = traffic;
+
+    // Build ProcessStat
+    let mut process_map: HashMap<String, ProcessStat> = HashMap::new();
+    // Temporary per-executable live stats, keyed by (process_name, executable_name)
+    let mut sub_live: HashMap<(String, String), SubProcessStat> = HashMap::new();
+
+    for row in current_rows.values() {
+        // Traffic is already accounted as deltas. Retire the connection once.
+        if row.closed_at.is_some() {
+            let cum = process_cumulative
+                .entry(row.process_name.clone())
+                .or_default();
+
+            cum.closed_connections += 1;
+            cum.last_seen = now;
+            // Track per-executable cumulative
+            let sub_cum = cum
+                .sub_processes
+                .entry(row.executable_name.clone())
+                .or_default();
+            sub_cum.closed_connections += 1;
+            if sub_cum.path.is_empty() {
+                sub_cum.path = row.process_path.clone();
+            }
+            continue;
+        }
+
+        let stat = process_map
+            .entry(row.process_name.clone())
+            .or_insert_with(|| ProcessStat {
+                name: row.process_name.clone(),
+                path: row.process_path.clone(),
+                connection_ids: Vec::new(),
+                upload_speed: 0,
+                download_speed: 0,
+                active_connections: 0,
+                closed_connections: 0,
+                total_upload: 0,
+                total_download: 0,
+                today_upload: 0,
+                today_download: 0,
+                top_host: "None".to_string(),
+                sub_processes: Vec::new(),
+            });
+
+        stat.upload_speed += row.uplink_rate;
+        stat.download_speed += row.downlink_rate;
+        stat.active_connections += 1;
+        stat.connection_ids.push(row.id.clone());
+
+        // Track per-executable live stats
+        let sub_key = (row.process_name.clone(), row.executable_name.clone());
+        let sub = sub_live.entry(sub_key).or_insert_with(|| SubProcessStat {
+            name: row.executable_name.clone(),
+            path: row.process_path.clone(),
+            ..Default::default()
+        });
+        sub.upload_speed += row.uplink_rate;
+        sub.download_speed += row.downlink_rate;
+        sub.active_connections += 1;
+        sub.connection_ids.push(row.id.clone());
+
+        let cum = process_cumulative
+            .entry(row.process_name.clone())
+            .or_default();
+        cum.last_seen = now;
+        if cum.path.is_empty() {
+            cum.path = stat.path.clone();
+        }
+    }
+
+    // Remove closed
+    current_rows.retain(|_, row| row.closed_at.is_none());
+
+    // Evict stale cumulative entries so the map can't grow without bound.
+    evict_stale_processes(process_cumulative, now);
+
+    // Add cumulative to stats
+    for (pname, cum) in process_cumulative.iter_mut() {
+        let stat = process_map
+            .entry(pname.clone())
+            .or_insert_with(|| ProcessStat {
+                name: pname.clone(),
+                path: cum.path.clone(),
+                connection_ids: Vec::new(),
+                upload_speed: 0,
+                download_speed: 0,
+                active_connections: 0,
+                closed_connections: 0,
+                total_upload: 0,
+                total_download: 0,
+                today_upload: 0,
+                today_download: 0,
+                top_host: "None".to_string(),
+                sub_processes: Vec::new(),
+            });
+
+        stat.total_upload += cum.upload;
+        stat.total_download += cum.download;
+        stat.today_upload += cum.today_upload;
+        stat.today_download += cum.today_download;
+        stat.closed_connections += cum.closed_connections;
+
+        // calculate top host
+        let mut max_t = -1;
+        let mut top_h = "None".to_string();
+        for (h, t) in cum.host_traffic.iter() {
+            if *t > max_t {
+                max_t = *t;
+                top_h = h.clone();
+            }
+        }
+        stat.top_host = top_h;
+
+        // Merge per-executable cumulative into live sub-process stats
+        for (exec_name, sub_cum) in cum.sub_processes.iter() {
+            let sub_key = (pname.clone(), exec_name.clone());
+            let sub = sub_live.entry(sub_key).or_insert_with(|| SubProcessStat {
+                name: exec_name.clone(),
+                path: sub_cum.path.clone(),
+                ..Default::default()
+            });
+            sub.total_upload += sub_cum.upload;
+            sub.total_download += sub_cum.download;
+            sub.closed_connections += sub_cum.closed_connections;
+        }
+    }
+
+    // Attach sub-process stats to their parent ProcessStat
+    for ((pname, _), sub) in sub_live.drain() {
+        if let Some(stat) = process_map.get_mut(&pname) {
+            stat.sub_processes.push(sub);
+        }
+    }
+    // Sort sub-processes by total traffic desc for consistent display
+    for stat in process_map.values_mut() {
+        stat.sub_processes.sort_by(|a, b| {
+            (b.total_upload + b.total_download).cmp(&(a.total_upload + a.total_download))
+        });
+        // Only keep sub_processes populated when there are 2+ distinct executables
+        // (single-executable apps don't need the breakdown)
+        if stat.sub_processes.len() <= 1 {
+            stat.sub_processes.clear();
+        }
+    }
+
+    process_map.into_values().collect()
+}
+
+async fn emit_traffic(app_for_emit: AppHandle, traffic: Arc<Mutex<TrafficState>>) {
+    let mut timer = interval(Duration::from_secs(1));
+    loop {
+        timer.tick().await;
+        let stats_vec = build_process_stats(&mut *traffic.lock().await);
+        // Aggregate live up/down rate for the tray title (single pass, no clones).
+        let (mut up, mut down) = (0i64, 0i64);
+        for stat in &stats_vec {
+            up += stat.upload_speed;
+            down += stat.download_speed;
+        }
+        crate::tray::set_traffic_title(&app_for_emit, up, down);
+
+        let _ = app_for_emit.emit("traffic-update", &stats_vec);
+
+        // Push the Inspector snapshot to the frontend, but only while the
+        // Inspector route is mounted (listener_active) AND the connection
+        // set changed since the last tick — idle pages cost nothing.
+        if let Some(ins) = app_for_emit.try_state::<crate::InspectorState>() {
+            if ins
+                .listener_active
+                .load(std::sync::atomic::Ordering::Relaxed)
+                && ins.dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                match ins.snapshot() {
+                    Ok(snap) => {
+                        let _ = app_for_emit.emit("inspector-snapshot", &snap);
+                    }
+                    Err(e) => crate::clog!("[Daemon] inspector snapshot failed: {e}"),
+                }
+            }
+        }
+    }
+}
+
+async fn handle_connections(
+    mut stream: tonic::Streaming<pb::ConnectionEvents>,
+    app: AppHandle,
+    traffic: Arc<Mutex<TrafficState>>,
+    analytics_buf: Arc<AnalyticsBuffer>,
+) {
     // Per-connection Inspector tracking (independent of the ProcessStat aggregation).
     let inspector = app.try_state::<crate::InspectorState>();
 
@@ -666,10 +781,12 @@ async fn handle_connections(
             }
         };
 
-        let mut current_rows = rows.lock().await;
+        let mut traffic = traffic.lock().await;
 
         if events_msg.reset {
-            current_rows.clear();
+            // Preserve counters even when reset and NEW snapshots arrive in
+            // different batches, so reconnects never count the snapshot twice.
+            traffic.reset();
             // A reset means the previous connection set is stale; retire any still
             // "active" Inspector rows into the recent buffer so `active` can't leak.
             if let Some(ins) = &inspector {
@@ -747,27 +864,24 @@ async fn handle_connections(
                             ins.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
 
-                        current_rows.insert(
-                            event.id.clone(),
-                            ConnectionRow {
-                                id: event.id,
-                                process_path,
-                                process_name,
-                                executable_name,
-                                host,
-                                policy,
-                                is_proxy,
-                                uplink_rate: 0,
-                                downlink_rate: 0,
-                                uplink_total: conn.uplink_total,
-                                downlink_total: conn.downlink_total,
-                                closed_at: None,
-                            },
-                        );
+                        traffic.insert(ConnectionRow {
+                            id: event.id,
+                            process_path,
+                            process_name,
+                            executable_name,
+                            host,
+                            policy,
+                            is_proxy,
+                            uplink_rate: 0,
+                            downlink_rate: 0,
+                            uplink_total: conn.uplink_total,
+                            downlink_total: conn.downlink_total,
+                            closed_at: None,
+                        });
                     }
                 }
                 ConnectionEventType::ConnectionEventUpdate => {
-                    if let Some(row) = current_rows.get_mut(&event.id) {
+                    if let Some(row) = traffic.rows.get_mut(&event.id) {
                         row.uplink_rate = event.uplink_delta;
                         row.downlink_rate = event.downlink_delta;
                         row.uplink_total += event.uplink_delta;
@@ -790,6 +904,8 @@ async fn handle_connections(
                         }
                     }
 
+                    traffic.record(&event.id, event.uplink_delta, event.downlink_delta);
+
                     // Mirror the byte deltas into the Inspector record.
                     if let Some(ins) = &inspector {
                         if let Ok(mut active) = ins.active.lock() {
@@ -802,7 +918,7 @@ async fn handle_connections(
                     }
                 }
                 ConnectionEventType::ConnectionEventClosed => {
-                    if let Some(row) = current_rows.get_mut(&event.id) {
+                    if let Some(row) = traffic.rows.get_mut(&event.id) {
                         row.closed_at = Some(get_current_epoch());
                     }
 
@@ -826,8 +942,6 @@ async fn handle_connections(
             }
         }
     }
-
-    Ok(())
 }
 
 /// Push a closed connection into the recent ring buffer, evicting the oldest
@@ -933,3 +1047,7 @@ fn extract_executable_name(path: &str) -> String {
     }
     path.to_string()
 }
+
+#[cfg(test)]
+#[path = "daemon_tests.rs"]
+mod tests;

@@ -25,15 +25,20 @@ class SubscriptionsStore {
   error = $state<string | null>(null);
   activeProfileId = $state<string | null>(null);
 
+  #requestGeneration = 0;
+
   isRefreshing(sourceId: string): boolean {
     return Boolean(this.refreshingSourceIds[sourceId]) || this.refreshingAll;
   }
 
   async load(profileId?: string): Promise<void> {
+    const generation = ++this.#requestGeneration;
     const targetId = profileId ?? profileStore.activeProfileId;
     if (!targetId) {
       this.sources = [];
       this.activeProfileId = null;
+      this.loading = false;
+      this.error = null;
       return;
     }
 
@@ -43,15 +48,15 @@ class SubscriptionsStore {
     try {
       const list = await coreSubscriptionList(targetId);
       // Defensive check against stale profile response
-      if (this.activeProfileId === targetId) {
+      if (generation === this.#requestGeneration) {
         this.sources = list;
       }
     } catch (e: any) {
-      if (this.activeProfileId === targetId) {
+      if (generation === this.#requestGeneration) {
         this.error = e?.message ?? String(e);
       }
     } finally {
-      if (this.activeProfileId === targetId) {
+      if (generation === this.#requestGeneration) {
         this.loading = false;
       }
     }

@@ -17,16 +17,18 @@ class StunTestStore {
   testState = $state<TestState>("Idle");
   testProgress = $state<StunTestProgressEvent | null>(null);
 
+  #generation = 0;
   #unlisten: UnlistenFn | null = null;
   #setupPromise: Promise<void> | null = null;
   #watchdog: ReturnType<typeof setTimeout> | null = null;
 
-  async #setupListener() {
+  async #setupListener(generation: number) {
     if (this.#unlisten) return;
 
-    this.#unlisten = await listen<StunTestProgressEvent>(
+    const unlisten = await listen<StunTestProgressEvent>(
       "stun-test-update",
       (event) => {
+        if (generation !== this.#generation) return;
         this.testProgress = event.payload;
 
         if (event.payload.isFinal) {
@@ -38,9 +40,12 @@ class StunTestStore {
         }
       },
     );
+    if (generation !== this.#generation) unlisten();
+    else this.#unlisten = unlisten;
   }
 
   #cleanup() {
+    ++this.#generation;
     if (this.#watchdog !== null) {
       clearTimeout(this.#watchdog);
       this.#watchdog = null;
@@ -56,16 +61,17 @@ class StunTestStore {
     const server = opts?.server || settingsStore.settings.stunServer || DEFAULT_SERVER;
     const outboundTag = opts?.outboundTag || DEFAULT_OUTBOUND_TAG;
 
+    const generation = ++this.#generation;
     this.testState = "Testing";
     this.testProgress = null;
 
-    if (!this.#setupPromise) {
-      this.#setupPromise = this.#setupListener();
-    }
-    await this.#setupPromise;
-
     try {
+      this.#setupPromise ??= this.#setupListener(generation);
+      await this.#setupPromise;
+      if (generation !== this.#generation) return;
       await coreStunTestStart(server, outboundTag);
+
+      if (generation !== this.#generation || this.testState !== "Testing") return;
 
       this.#watchdog = setTimeout(() => {
         if (this.testState === "Testing") {
@@ -84,6 +90,7 @@ class StunTestStore {
         this.#cleanup();
       }, WATCHDOG_MS);
     } catch (e) {
+      if (generation !== this.#generation) return;
       console.error("STUN test failed to start", e);
       this.testState = "Error";
       this.testProgress = {

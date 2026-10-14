@@ -37,20 +37,22 @@ class NetworkQualityTestStore {
   testState = $state<TestState>("Idle");
   testProgress = $state<NetworkQualityTestProgressEvent | null>(null);
 
+  #generation = 0;
   #unlisten: UnlistenFn | null = null;
   #setupPromise: Promise<void> | null = null;
   #watchdog: ReturnType<typeof setTimeout> | null = null;
 
-  async #setupListener() {
+  async #setupListener(generation: number) {
     if (this.#unlisten) return; // Already setup
 
-    this.#unlisten = await listen<NetworkQualityTestProgressEvent>(
+    const unlisten = await listen<NetworkQualityTestProgressEvent>(
       "network-test-update",
       (event) => {
+        if (generation !== this.#generation) return;
         this.testProgress = event.payload;
 
         if (event.payload.isFinal) {
-          this.testState = "Completed";
+          this.testState = event.payload.error ? "Error" : "Completed";
           this.#cleanup();
         } else if (event.payload.error) {
           this.testState = "Error";
@@ -58,9 +60,12 @@ class NetworkQualityTestStore {
         }
       },
     );
+    if (generation !== this.#generation) unlisten();
+    else this.#unlisten = unlisten;
   }
 
   #cleanup() {
+    ++this.#generation;
     if (this.#watchdog !== null) {
       clearTimeout(this.#watchdog);
       this.#watchdog = null;
@@ -88,16 +93,14 @@ class NetworkQualityTestStore {
       opts?.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS;
     const http3 = opts?.http3 ?? false;
 
+    const generation = ++this.#generation;
     this.testState = "Testing";
     this.testProgress = null;
 
-    // Setup listener first
-    if (!this.#setupPromise) {
-      this.#setupPromise = this.#setupListener();
-    }
-    await this.#setupPromise;
-
     try {
+      this.#setupPromise ??= this.#setupListener(generation);
+      await this.#setupPromise;
+      if (generation !== this.#generation) return;
       await coreNetworkQualityTestStart(
         configUrl,
         outboundTag,
@@ -105,6 +108,8 @@ class NetworkQualityTestStore {
         maxRuntimeSeconds,
         http3,
       );
+
+      if (generation !== this.#generation || this.testState !== "Testing") return;
 
       // Arm the watchdog only once the backend confirmed it started.
       this.#watchdog = setTimeout(
@@ -122,6 +127,7 @@ class NetworkQualityTestStore {
         (maxRuntimeSeconds + WATCHDOG_GRACE_SECONDS) * 1000,
       );
     } catch (e) {
+      if (generation !== this.#generation) return;
       console.error("Test failed to start", e);
       this.testState = "Error";
       this.testProgress = {
