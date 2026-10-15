@@ -175,3 +175,68 @@ fn selecting_proxy_member_or_mode_does_not_advance_saved_revision() {
         "switching outbound mode to rule must not advance saved revision"
     );
 }
+
+#[test]
+fn unchanged_background_refresh_preserves_registry_order_and_revision() {
+    let f = Fixture::new();
+    let source = |id: &str| -> SubscriptionSource {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "generation": 0, "position": 0,
+            "settings": {"name": id, "url": "https://example.test/sub",
+                "enabled": true, "auto_update": true, "update_interval_hours": 24}
+        }))
+        .unwrap()
+    };
+    let a = source("a");
+    let b = source("b");
+    for s in [&a, &b] {
+        f.db.create_subscription("default", s).unwrap();
+    }
+    let refresh = |s: &SubscriptionSource, body: &str| {
+        let staged =
+            zeytun_lib::core::subscription::SubscriptionManager::stage(body, SubHeaders::default())
+                .unwrap();
+        f.db.apply_subscription("default", s, staged, true, &[])
+            .unwrap()
+    };
+    refresh(&a, "socks5://a1.test:1080#A1\nsocks5://a2.test:1080#A2");
+    refresh(&b, "socks5://b.test:1080#B");
+    let before = f.db.load_profile("default").unwrap();
+    let revision = f.db.config_revision("default").unwrap();
+
+    // Repeated source refreshes must not move one source behind another, even
+    // when identical endpoints arrive in a different order or with new titles.
+    for (s, body, kept) in [
+        (&a, "socks5://a1.test:1080#A1\nsocks5://a2.test:1080#A2", 2),
+        (
+            &a,
+            "socks5://a2.test:1080#Renamed A2\nsocks5://a1.test:1080#A1",
+            2,
+        ),
+        (&b, "socks5://b.test:1080#B", 1),
+    ] {
+        let (after, result) = refresh(s, body);
+        assert_eq!(result.summary.proxies_added, 0);
+        assert_eq!(result.summary.proxies_removed, 0);
+        assert_eq!(result.summary.proxies_kept, kept);
+        assert_eq!(f.db.config_revision("default").unwrap(), revision);
+        assert_eq!(
+            after.proxies.iter().map(|p| &p.tag).collect::<Vec<_>>(),
+            before.proxies.iter().map(|p| &p.tag).collect::<Vec<_>>(),
+            "a no-op source refresh must not reshuffle the unified registry"
+        );
+        assert_eq!(
+            serde_json::to_value(&after.policies).unwrap(),
+            serde_json::to_value(&before.policies).unwrap()
+        );
+    }
+
+    refresh(
+        &a,
+        "socks5://a1.test:1080#A1\nsocks5://a2.test:1080#A2\nsocks5://new.test:1080#New",
+    );
+    assert!(
+        f.db.config_revision("default").unwrap() > revision,
+        "a new endpoint still requires applying the saved graph"
+    );
+}

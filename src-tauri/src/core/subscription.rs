@@ -327,10 +327,11 @@ impl SubscriptionManager {
             incoming.push(node);
         }
         let referenced = Self::referenced_proxy_tags(profile);
-        let retained_tags = incoming
-            .iter()
-            .map(|n| n.tag.clone())
-            .collect::<HashSet<_>>();
+        let incoming_order = incoming.iter().map(|n| n.tag.clone()).collect::<Vec<_>>();
+        let mut incoming_by_tag = incoming
+            .into_iter()
+            .map(|node| (node.tag.clone(), node))
+            .collect::<HashMap<_, _>>();
         let mut proxies_removed = 0;
         let mut candidate = profile.clone();
         candidate.proxies.retain_mut(|node| {
@@ -339,10 +340,12 @@ impl SubscriptionManager {
             {
                 return true;
             }
-            // Existing duplicate identities may have distinct authored tags.
-            // Only the deterministic retained tag is replaced by incoming data.
-            if retained_tags.contains(&node.tag) {
-                return false;
+            // Update retained identities in place. Moving them to the end on
+            // every refresh reshuffles the root selector and advances the saved
+            // revision even when the provider returned the same endpoints.
+            if let Some(updated) = incoming_by_tag.remove(&node.tag) {
+                *node = updated;
+                return true;
             }
             if node.available {
                 proxies_removed += 1;
@@ -354,7 +357,12 @@ impl SubscriptionManager {
                 false
             }
         });
-        candidate.proxies.extend(incoming);
+        // Only genuinely new identities are appended, in provider order.
+        candidate.proxies.extend(
+            incoming_order
+                .iter()
+                .filter_map(|tag| incoming_by_tag.remove(tag)),
+        );
         // The synthetic root follows the unified registry, never a source.
         // Do not normalize authored policies: their selection/order/weights
         // must survive unavailability untouched.
