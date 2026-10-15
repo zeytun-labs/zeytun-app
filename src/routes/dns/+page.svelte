@@ -14,8 +14,6 @@
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
     InformationCircleIcon,
-    GlobalSearchIcon,
-    CleanIcon,
     Add01Icon,
     Search01Icon,
     Delete01Icon,

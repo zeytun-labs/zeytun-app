@@ -4,7 +4,6 @@
   import { OUTBOUND_MODE_CONFIG } from "$lib/core/constants";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
-    CurvyLeftRightDirectionIcon,
     TrendingUpDownIcon,
     CurvyRightDirectionIcon,
     ChevronsLeftRightEllipsisIcon,

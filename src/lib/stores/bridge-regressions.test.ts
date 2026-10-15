@@ -93,15 +93,22 @@ test("a late same-profile subscription list must not overwrite newer sources", a
 });
 
 test.each([
-  ["network quality", "./network-quality-test.svelte", "networkQualityTestStore"],
-  ["STUN", "./stun-test.svelte", "stunTestStore"],
-])("%s listener rejection must clear the Testing state", async (_, path, name) => {
-  mocks.listen.mockRejectedValueOnce(new Error("event IPC rejected"));
-  const module = await import(path);
-  const store = module[name];
-  await expect(store.startTest()).resolves.toBeUndefined();
-  expect(store.testProgress.error).toBe("event IPC rejected");
-  expect(store.testState).toBe("Error");
+  ["network quality", "./network-quality-test.svelte", "networkQualityTestStore", "Test failed to start"],
+  ["STUN", "./stun-test.svelte", "stunTestStore", "STUN test failed to start"],
+])("%s listener rejection must clear the Testing state", async (_, path, name, message) => {
+  const failure = new Error("event IPC rejected");
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    mocks.listen.mockRejectedValueOnce(failure);
+    const module = await import(path);
+    const store = module[name];
+    await expect(store.startTest()).resolves.toBeUndefined();
+    expect(store.testProgress.error).toBe("event IPC rejected");
+    expect(store.testState).toBe("Error");
+    expect(error).toHaveBeenCalledExactlyOnceWith(message, failure);
+  } finally {
+    error.mockRestore();
+  }
 });
 
 test("a final network quality error must remain an Error state", async () => {

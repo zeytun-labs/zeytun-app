@@ -184,7 +184,7 @@ pub fn list_unseen_dumps() -> Vec<PathBuf> {
         })
         .collect();
 
-    dumps.sort_by(|a, b| b.0.cmp(&a.0));
+    dumps.sort_by_key(|a| std::cmp::Reverse(a.0));
     dumps.into_iter().map(|(_, p)| p).collect()
 }
 
@@ -231,7 +231,7 @@ pub fn prune_old_dumps() {
         return;
     }
 
-    dumps.sort_by(|a, b| b.0.cmp(&a.0));
+    dumps.sort_by_key(|a| std::cmp::Reverse(a.0));
     for (_, path) in dumps.drain(MAX_DUMP_FILES..) {
         let _ = fs::remove_file(path);
     }

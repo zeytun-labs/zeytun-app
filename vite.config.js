@@ -1,13 +1,30 @@
 import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from "vite";
+import { defineConfig, normalizePath } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import { createRequire } from "node:module";
 import path from "path";
 
 const host = process.env.TAURI_DEV_HOST;
+const superformsAdapters = normalizePath(
+  createRequire(import.meta.url).resolve("sveltekit-superforms/adapters"),
+);
+// This app uses only Zod 4. The upstream adapter barrel also discovers
+// optional server validators (Vine imports node:dns/promises). Keep those
+// modules out of the graph while retaining the upstream Zod implementation.
+/** @type {import("vite").Plugin} */
+const superformsZod4Entry = {
+  name: "superforms-zod4-entry",
+  enforce: "pre",
+  load(id) {
+    if (id === superformsAdapters) {
+      return 'export { zod as zod4, zodClient as zod4Client } from "./zod4.js";';
+    }
+  },
+};
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
-  plugins: [tailwindcss(), sveltekit()],
+  plugins: [superformsZod4Entry, tailwindcss(), sveltekit()],
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent vite from obscuring rust errors
