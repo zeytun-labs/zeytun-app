@@ -1,9 +1,8 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { logsStore } from "$lib/stores/logs.svelte";
-  import { Button } from "$lib/components/ui/button";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { Delete01Icon, CommandLineIcon } from "@hugeicons/core-free-icons";
+  import { CommandLineIcon } from "@hugeicons/core-free-icons";
   import ScrollArea from "$lib/components/ui/scroll-area/scroll-area.svelte";
 
   let viewportRef = $state<HTMLElement | null>(null);
@@ -66,10 +65,10 @@
   }
 </script>
 
-<div class="flex flex-col h-full gap-4">
+<div class="flex h-[calc(100dvh-6.5rem)] min-h-0 min-w-0 flex-col gap-4 overflow-hidden">
   <ScrollArea
     bind:viewportRef
-    class="h-[calc(100vh-6.5rem)] flex flex-1 bg-olive-100 dark:bg-card/30 border border-border/40 rounded-4xl flex-col"
+    class="h-0 min-h-0 min-w-0 flex flex-1 overflow-hidden bg-olive-100 dark:bg-card/30 border border-border/40 rounded-4xl flex-col"
   >
     {#if logsStore.logs.length === 0}
       <div
@@ -81,16 +80,16 @@
     {/if}
 
     <div
-      class="p-4 text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-all flex flex-col gap-1"
+      class="min-w-0 p-4 text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-all flex flex-col gap-1"
     >
       {#each logsStore.logs as log (log.id)}
-        <div class="flex gap-3 py-px px-1">
+        <div class="flex min-w-0 gap-3 py-px px-1">
           <span class="text-olive-500 shrink-0 select-none">[{log.time}]</span>
           <span
             class="{levelColor(log.level)} shrink-0 select-none font-medium w-12"
             >[{levelLabel(log.level)}]</span
           >
-          <span class="text-foreground dark:text-olive-300 flex-1"
+          <span class="min-w-0 flex-1 whitespace-pre-wrap break-all text-foreground dark:text-olive-300"
             >{log.message}</span
           >
         </div>

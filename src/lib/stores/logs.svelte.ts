@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { settingsStore } from "./settings.svelte";
+import { stripTerminalControls } from "$lib/core/log-message";
 
 export interface LogEvent {
   level: number;
@@ -49,7 +50,7 @@ class LogsStore {
       this.logs.push({
         id: this.#idCounter++,
         level: event.payload.level,
-        message: event.payload.message,
+        message: stripTerminalControls(event.payload.message),
         time,
       });
 
