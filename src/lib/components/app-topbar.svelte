@@ -7,6 +7,8 @@
     coreSetInboundMode,
     coreSetSystemProxy,
     coreRestart,
+    appIsElevated,
+    appRequestElevation,
   } from "$lib/core/api";
   import { onMount } from "svelte";
   import { Spinner } from "$lib/components/ui/spinner/index.js";
@@ -65,6 +67,22 @@
 
   async function toggleTunMode() {
     try {
+      const willEnable = !isTunModeOn;
+      if (willEnable) {
+        const elevated = await appIsElevated();
+        if (!elevated) {
+          try {
+            await appRequestElevation();
+            return;
+          } catch (elevErr) {
+            console.warn("Elevation request cancelled or failed:", elevErr);
+            toast.error("Administrator privileges required for TUN mode", {
+              description: errorMessage(elevErr),
+            });
+            return;
+          }
+        }
+      }
       await profileStore.toggleNetwork("tun", () =>
         coreSetInboundMode(isTunModeOn ? "mixed" : "tun"),
       );

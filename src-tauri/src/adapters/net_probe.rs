@@ -90,7 +90,30 @@ pub fn local_network_info() -> Result<LocalNetworkInfo, crate::error::CommandErr
             local_ip,
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let mut interface_ip = String::new();
+        if let Ok(out) = std::process::Command::new("route").args(["print", "0.0.0.0"]).output() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 && parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0" {
+                    if parts[2] != "On-link" && parts[2] != "127.0.0.1" {
+                        interface_ip = parts[3].to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(LocalNetworkInfo {
+            id: interface_ip.clone(),
+            name: "Ethernet".to_string(),
+            network_type: "ethernet".to_string(),
+            local_ip: interface_ip,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(crate::error::CommandError::Internal(
             "Not supported on this OS".into(),
@@ -99,21 +122,23 @@ pub fn local_network_info() -> Result<LocalNetworkInfo, crate::error::CommandErr
 }
 
 /// Parse the round-trip time (ms) out of a `ping` command's stdout.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn parse_ping_time(output: &str) -> u64 {
-    output
-        .lines()
-        .find(|l| l.contains("time="))
-        .and_then(|l| {
-            let after = l.split("time=").nth(1)?;
-            let num_str: String = after
+    for line in output.lines() {
+        if let Some(pos) = line.find("time=") {
+            let after = &line[pos + 5..];
+            let num: String = after
                 .chars()
                 .take_while(|c| c.is_ascii_digit() || *c == '.')
                 .collect();
-            num_str.parse::<f64>().ok()
-        })
-        .map(|v| v.round() as u64)
-        .unwrap_or(0)
+            if let Ok(v) = num.parse::<f64>() {
+                return v.round() as u64;
+            }
+        } else if line.contains("time<1ms") || line.contains("time<1 ms") {
+            return 1;
+        }
+    }
+    0
 }
 
 /// Measure latency to the default gateway and the configured DNS server.
@@ -164,6 +189,49 @@ pub fn local_latencies() -> Result<serde_json::Value, crate::error::CommandError
                     dns_ms = parse_ping_time(&ping_out);
                 }
             }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut gw = String::new();
+        if let Ok(out) = std::process::Command::new("route").args(["print", "0.0.0.0"]).output() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 5 && parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0" {
+                    if parts[2] != "On-link" && parts[2] != "127.0.0.1" {
+                        gw = parts[2].to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !gw.is_empty() {
+            if let Ok(po) = std::process::Command::new("ping").args(["-n", "1", "-w", "1000", &gw]).output() {
+                let ping_out = String::from_utf8_lossy(&po.stdout);
+                router_ms = parse_ping_time(&ping_out);
+            }
+        }
+
+        let mut dns_server = "8.8.8.8".to_string();
+        if let Ok(out) = std::process::Command::new("netsh").args(["interface", "ip", "show", "dns"]).output() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if let Some((_, ip_part)) = line.split_once(':') {
+                    let ip = ip_part.trim();
+                    if !ip.is_empty() && ip != "None" && ip.contains('.') {
+                        dns_server = ip.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Ok(po) = std::process::Command::new("ping").args(["-n", "1", "-w", "1000", &dns_server]).output() {
+            let ping_out = String::from_utf8_lossy(&po.stdout);
+            dns_ms = parse_ping_time(&ping_out);
         }
     }
 
@@ -220,7 +288,11 @@ pub fn active_interface() -> Result<String, crate::error::CommandError> {
 
         Ok(interface.to_string())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Ok("Ethernet".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Ok("Unknown".to_string())
     }

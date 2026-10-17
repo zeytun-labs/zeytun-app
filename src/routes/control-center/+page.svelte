@@ -12,6 +12,8 @@
     coreSetSystemProxy,
     coreSetInboundMode,
     coreSetAllowLan,
+    appIsElevated,
+    appRequestElevation,
   } from "$lib/core/api";
 
   const isSystemProxyOn = $derived(
@@ -41,6 +43,21 @@
 
   async function toggleTunMode(checked: boolean) {
     try {
+      if (checked) {
+        const elevated = await appIsElevated();
+        if (!elevated) {
+          try {
+            await appRequestElevation();
+            return;
+          } catch (elevErr) {
+            console.warn("Elevation request cancelled or failed:", elevErr);
+            toast.error("Administrator privileges required for TUN mode", {
+              description: errorMessage(elevErr),
+            });
+            return;
+          }
+        }
+      }
       await profileStore.toggleNetwork("tun", () =>
         coreSetInboundMode(checked ? "tun" : "mixed"),
       );
@@ -54,11 +71,32 @@
 
   async function toggleLanAccess(checked: boolean) {
     try {
+      if (checked) {
+        const elevated = await appIsElevated();
+        if (!elevated) {
+          try {
+            await appRequestElevation();
+            return;
+          } catch (elevErr) {
+            console.warn("Elevation request cancelled or failed:", elevErr);
+            toast.error(
+              "Administrator privileges required for HTTP/SOCKS LAN proxy",
+              {
+                description: errorMessage(elevErr),
+              },
+            );
+            return;
+          }
+        }
+      }
       await coreSetAllowLan(checked);
       // Set pending restart flag instead of auto-refreshing
       profileStore.pendingRestart = true;
     } catch (e) {
       console.error("Failed to toggle LAN access:", e);
+      toast.error("Failed to toggle LAN access", {
+        description: errorMessage(e),
+      });
     }
   }
 </script>
@@ -80,7 +118,7 @@
             </Tooltip.Trigger>
             <Tooltip.Content side="bottom">
               <p class="max-w-xs">
-                Handles traffic for applications that respect macOS proxy
+                Handles traffic for applications that respect system proxy
                 settings. It provides excellent compatibility and performance
                 for most standard apps.
               </p>

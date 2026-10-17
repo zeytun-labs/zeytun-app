@@ -101,8 +101,21 @@ impl std::fmt::Display for ClashApiError {
 
 impl std::error::Error for ClashApiError {}
 
+fn normalize_client_controller(controller: &str) -> String {
+    if let Some(port) = controller.strip_prefix("0.0.0.0:") {
+        format!("127.0.0.1:{port}")
+    } else if let Some(port) = controller.strip_prefix("[::]:") {
+        format!("127.0.0.1:{port}")
+    } else if controller == "0.0.0.0" || controller == "[::]" {
+        "127.0.0.1".to_string()
+    } else {
+        controller.to_string()
+    }
+}
+
 impl ClashApiClient {
     pub fn new(controller: String, secret: Option<String>) -> Self {
+        let controller = normalize_client_controller(&controller);
         Self { controller, secret }
     }
 
@@ -544,5 +557,18 @@ mod tests {
             ClashApiError::NotRunning.to_string(),
             "the core is not running"
         );
+    }
+
+    #[test]
+    fn controller_normalizes_wildcards_to_loopback() {
+        assert_eq!(normalize_client_controller("0.0.0.0:19090"), "127.0.0.1:19090");
+        assert_eq!(normalize_client_controller("[::]:19090"), "127.0.0.1:19090");
+        assert_eq!(normalize_client_controller("0.0.0.0"), "127.0.0.1");
+        assert_eq!(normalize_client_controller("[::]"), "127.0.0.1");
+        assert_eq!(normalize_client_controller("127.0.0.1:19090"), "127.0.0.1:19090");
+        assert_eq!(normalize_client_controller("192.168.1.5:19090"), "192.168.1.5:19090");
+
+        let client = ClashApiClient::new("0.0.0.0:19090".to_string(), None);
+        assert_eq!(client.controller(), "127.0.0.1:19090");
     }
 }

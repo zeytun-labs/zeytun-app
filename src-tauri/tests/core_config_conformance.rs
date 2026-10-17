@@ -106,10 +106,12 @@ fn fixture_links() -> Vec<(&'static str, String)> {
 
 fn core_binary() -> Option<PathBuf> {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/bin");
-    for arch in ["macos-aarch64", "macos-x86_64"] {
-        let candidate = base.join(arch).join("zeytun-core");
-        if candidate.is_file() {
-            return Some(candidate);
+    for arch in ["macos-aarch64", "macos-x86_64", "windows-x86_64", "windows-aarch64"] {
+        for name in ["zeytun-core.exe", "zeytun-core"] {
+            let candidate = base.join(arch).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
     None
@@ -211,7 +213,7 @@ fn core_accepts_compiled_dns_transports_and_fakeip_rules() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Build one server per protocol through the real parse path.
@@ -452,5 +454,5 @@ fn core_accepts_fail_closed_references_from_real_compiler() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }

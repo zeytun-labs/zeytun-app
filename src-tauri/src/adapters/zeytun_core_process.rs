@@ -30,12 +30,37 @@ use sysinfo::{ProcessesToUpdate, System};
 
 /// The exact process name we hunt for in Tier 1. Matches the on-disk binary
 /// name resolved in `manager.rs`.
-const CORE_PROCESS_NAME: &str = "zeytun-core";
+const CORE_PROCESS_NAME: &str = if cfg!(target_os = "windows") {
+    "zeytun-core.exe"
+} else {
+    "zeytun-core"
+};
+
+#[cfg(target_os = "windows")]
+struct JobWrapper(windows::Win32::Foundation::HANDLE);
+
+#[cfg(target_os = "windows")]
+unsafe impl Send for JobWrapper {}
+
+#[cfg(target_os = "windows")]
+unsafe impl Sync for JobWrapper {}
+
+#[cfg(target_os = "windows")]
+impl Drop for JobWrapper {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::CloseHandle;
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
+}
 
 pub struct ZeytunCoreProcessManager {
     child: Mutex<Option<Child>>,
-    /// Tier 3: handle to the detached `sh` watchdog guarding the current core.
+    /// Tier 3: handle to the detached `sh` watchdog guarding the current core (Unix).
     watchdog: Mutex<Option<Child>>,
+    #[cfg(target_os = "windows")]
+    job: Mutex<Option<JobWrapper>>,
     binary_path: PathBuf,
 }
 
@@ -44,20 +69,24 @@ impl ZeytunCoreProcessManager {
         Self {
             child: Mutex::new(None),
             watchdog: Mutex::new(None),
+            #[cfg(target_os = "windows")]
+            job: Mutex::new(None),
             binary_path,
         }
     }
 
     pub fn start(&self, config_path: &str) -> Result<(), String> {
-        self.ensure_setuid()?;
+        self.ensure_setuid(config_path)?;
         self.start_internal(config_path)
     }
 
-    /// Ensure the core binary has setuid-root permissions before spawning.
-    /// Prompts the user via the native macOS password dialog if needed.
-    fn ensure_setuid(&self) -> Result<(), String> {
+    /// Ensure the core binary has sufficient permissions before spawning.
+    /// On macOS: verifies/prompts for setuid-root permissions.
+    /// On Windows: verifies process elevation if TUN inbound is configured.
+    fn ensure_setuid(&self, config_path: &str) -> Result<(), String> {
         #[cfg(unix)]
         {
+            let _ = config_path;
             use std::os::unix::fs::MetadataExt;
 
             let meta = std::fs::metadata(&self.binary_path)
@@ -90,8 +119,23 @@ impl ZeytunCoreProcessManager {
                 )
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(target_os = "windows")]
         {
+            let config_content = std::fs::read_to_string(config_path).unwrap_or_default();
+            let is_tun = config_content.contains("\"type\": \"tun\"")
+                || config_content.contains("\"type\":\"tun\"");
+
+            if is_tun && !is_elevated() {
+                return Err(
+                    "TUN mode requires Administrator privileges on Windows. Please relaunch Zeytun as Administrator."
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, target_os = "windows")))]
+        {
+            let _ = config_path;
             Ok(())
         }
     }
@@ -154,7 +198,16 @@ impl ZeytunCoreProcessManager {
         drain_pipe(child.stdout.take());
         drain_pipe(child.stderr.take());
 
-        // ---- Tier 3: launch the watchdog -----------------------------------
+        // ---- Tier 3: launch the watchdog / job object ---------------------
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(job_handle) = attach_to_job_object(&child) {
+                if let Ok(mut jg) = self.job.lock() {
+                    *jg = Some(JobWrapper(job_handle));
+                }
+            }
+        }
+
         // Capture the child PID before moving the handle into managed state,
         // then guard it with a detached watchdog keyed to *this* app's PID.
         let child_pid = child.id();
@@ -197,13 +250,23 @@ impl ZeytunCoreProcessManager {
                 let name_matches = process
                     .name()
                     .to_str()
-                    .map(|n| n == CORE_PROCESS_NAME || n == expected_name)
+                    .map(|n| {
+                        n == CORE_PROCESS_NAME
+                            || n == "zeytun-core"
+                            || n == "zeytun-core.exe"
+                            || n == expected_name
+                    })
                     .unwrap_or(false);
                 let exe_matches = process
                     .exe()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
-                    .map(|n| n == CORE_PROCESS_NAME || n == expected_name)
+                    .map(|n| {
+                        n == CORE_PROCESS_NAME
+                            || n == "zeytun-core"
+                            || n == "zeytun-core.exe"
+                            || n == expected_name
+                    })
                     .unwrap_or(false);
                 name_matches || exe_matches
             };
@@ -218,6 +281,7 @@ impl ZeytunCoreProcessManager {
     /// soon as this app's PID disappears. Survives the app being SIGKILLed /
     /// Force-Quit because it is reparented to launchd. The old watchdog (if any)
     /// is reaped first so only one guards the live core.
+    #[cfg(unix)]
     fn spawn_watchdog(&self, child_pid: u32) {
         let parent_pid = std::process::id();
         let watchdog_script = format!(
@@ -244,6 +308,12 @@ impl ZeytunCoreProcessManager {
         }
     }
 
+    #[cfg(not(unix))]
+    fn spawn_watchdog(&self, _child_pid: u32) {
+        // On Windows, Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        // kernel-enforces child termination when this parent process dies.
+    }
+
     /// Kill + reap the current watchdog (Tier 2 cleanup companion to `stop`).
     fn stop_watchdog(&self) {
         if let Ok(mut guard) = self.watchdog.lock() {
@@ -258,6 +328,11 @@ impl ZeytunCoreProcessManager {
         // Tier 2: tear the watchdog down first so it can't `kill -9` a PID that
         // may be reused after we reap the core.
         self.stop_watchdog();
+
+        #[cfg(target_os = "windows")]
+        if let Ok(mut jg) = self.job.lock() {
+            *jg = None;
+        }
 
         let mut guard = self.child.lock().map_err(|e| e.to_string())?;
 
@@ -274,13 +349,13 @@ impl ZeytunCoreProcessManager {
 
         let guard = self.child.lock().map_err(|e| e.to_string())?;
         if let Some(child) = guard.as_ref() {
-            let pid = child.id();
+            let _pid = child.id();
 
             // Send SIGHUP to the core process
             #[cfg(unix)]
             {
                 unsafe {
-                    libc::kill(pid as i32, libc::SIGHUP);
+                    libc::kill(_pid as i32, libc::SIGHUP);
                 }
             }
             #[cfg(windows)]
@@ -391,3 +466,197 @@ where
         });
     }
 }
+
+#[cfg(target_os = "windows")]
+fn attach_to_job_object(child: &Child) -> Result<windows::Win32::Foundation::HANDLE, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    unsafe {
+        let job = CreateJobObjectW(None, None)
+            .map_err(|e| format!("CreateJobObjectW failed: {e}"))?;
+
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        if let Err(e) = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) {
+            let _ = CloseHandle(job);
+            return Err(format!("SetInformationJobObject failed: {e}"));
+        }
+
+        let raw_handle = child.as_raw_handle();
+        let target_handle = HANDLE(raw_handle as *mut _);
+
+        if let Err(e) = AssignProcessToJobObject(job, target_handle) {
+            let _ = CloseHandle(job);
+            return Err(format!("AssignProcessToJobObject failed: {e}"));
+        }
+
+        Ok(job)
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_ok() {
+            let mut elevation = TOKEN_ELEVATION::default();
+            let mut size = std::mem::size_of::<TOKEN_ELEVATION>() as u32;
+            let res = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elevation as *mut _ as *mut _),
+                size,
+                &mut size,
+            );
+            let _ = CloseHandle(token);
+            if res.is_ok() {
+                return elevation.TokenIsElevated != 0;
+            }
+        }
+        false
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_elevated() -> bool {
+    true
+}
+
+#[cfg(target_os = "windows")]
+pub fn relaunch_as_admin() -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current executable path: {e}"))?;
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args_string = args
+        .iter()
+        .map(|a| {
+            if a.contains(' ') {
+                format!("\"{}\"", a)
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let file_wide: Vec<u16> = current_exe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let args_wide: Vec<u16> = std::ffi::OsStr::new(&args_string)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let verb_wide: Vec<u16> = std::ffi::OsStr::new("runas")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let cwd_wide: Option<Vec<u16>> = std::env::current_dir().ok().map(|cwd| {
+        cwd.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    });
+
+    unsafe {
+        let h_instance = ShellExecuteW(
+            None,
+            PCWSTR(verb_wide.as_ptr()),
+            PCWSTR(file_wide.as_ptr()),
+            if args.is_empty() {
+                PCWSTR::null()
+            } else {
+                PCWSTR(args_wide.as_ptr())
+            },
+            cwd_wide
+                .as_ref()
+                .map(|d| PCWSTR(d.as_ptr()))
+                .unwrap_or(PCWSTR::null()),
+            SW_SHOW,
+        );
+
+        let code = h_instance.0 as isize;
+        if code > 32 {
+            Ok(())
+        } else if code == 5 || code == 1223 {
+            Err("Administrator privileges request was cancelled by user.".to_string())
+        } else {
+            Err(format!("UAC elevation failed (error code {code})."))
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn relaunch_as_admin() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_is_elevated_callable() {
+        // Function executes without panic and returns a boolean
+        let _ = super::is_elevated();
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_job_object_kills_child_on_close() {
+        use std::process::Command;
+        use windows::Win32::Foundation::CloseHandle;
+
+        let child = Command::new("powershell.exe")
+            .args(["-Command", "Start-Sleep -Seconds 30"])
+            .spawn()
+            .expect("spawn powershell");
+
+        let child_pid = child.id();
+        let job = super::attach_to_job_object(&child).expect("attach job object");
+
+        // Closing the job object handle must trigger JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        unsafe {
+            let _ = CloseHandle(job);
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(600));
+
+        // Verify child process was terminated
+        let check = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {child_pid}"), "/FO", "CSV"])
+            .output()
+            .expect("run tasklist");
+        let out = String::from_utf8_lossy(&check.stdout);
+        assert!(
+            !out.contains(&format!("\"{child_pid}\"")),
+            "Child process PID {child_pid} was not terminated by Job Object"
+        );
+    }
+}
+

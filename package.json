@@ -2,7 +2,7 @@
   "name": "zeytun",
   "version": "0.1.1-alpha",
   "packageManager": "pnpm@10.27.0",
-  "description": "Zeytun macOS desktop client for application-aware network routing",
+  "description": "Zeytun desktop client for application-aware network routing",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -11,6 +11,7 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "gen:proto": "buf generate ./proto --path ./proto/started_service.proto",
+    "setup:windows": "powershell -ExecutionPolicy Bypass -File scripts/native-resources.ps1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev -c src-tauri/tauri.dev.json",
     "test": "vitest run"

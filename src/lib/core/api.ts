@@ -261,6 +261,14 @@ export function coreSetAllowLan(enabled: boolean): Promise<void> {
   return invoke<void>("core_set_allow_lan", { enabled });
 }
 
+export function appIsElevated(): Promise<boolean> {
+  return invoke<boolean>("app_is_elevated");
+}
+
+export function appRequestElevation(): Promise<void> {
+  return invoke<void>("app_request_elevation");
+}
+
 export function coreUpdateProxy(input: UpdateProxyInput) {
   return invoke<Proxy>("core_update_proxy", { input });
 }

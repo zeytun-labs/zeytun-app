@@ -16,7 +16,7 @@
   let iconSrc = $state<string | null>(null);
 
   $effect(() => {
-    const procName = name || (path ? path.split('/').pop() : null);
+    const procName = name || (path ? path.split(/[/\\]/).pop() : null);
     if (!procName) return;
     
     if (iconCache.has(procName)) {

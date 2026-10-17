@@ -169,7 +169,55 @@ fn read_net_config() -> NetConfig {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn read_net_config() -> NetConfig {
+    use std::process::Command;
+
+    let mut ipv4_router = None;
+    let mut ipv4_address = None;
+
+    if let Ok(out) = Command::new("route").args(["print", "0.0.0.0"]).output() {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 5 && parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0" {
+                if parts[2] != "On-link" && parts[2] != "127.0.0.1" {
+                    ipv4_router = Some(parts[2].to_string());
+                    ipv4_address = Some(parts[3].to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    let dns_server = Command::new("netsh")
+        .args(["interface", "ip", "show", "dns"])
+        .output()
+        .ok()
+        .and_then(|out| {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                if let Some((_, ip_part)) = line.split_once(':') {
+                    let ip = ip_part.trim();
+                    if !ip.is_empty() && ip != "None" && ip.contains('.') {
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+            None
+        });
+
+    NetConfig {
+        ipv4_interface: ipv4_address.clone(),
+        ipv4_address,
+        ipv4_router,
+        ipv6_interface: None,
+        ipv6_address: None,
+        dns_server,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn read_net_config() -> NetConfig {
     NetConfig {
         ipv4_interface: None,
@@ -222,26 +270,47 @@ fn ping_host(host: &str, local_ip: Option<&str>) -> Option<u64> {
     parse_ping_time(&stdout)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn ping_host(host: &str, local_ip: Option<&str>) -> Option<u64> {
+    use std::process::Command;
+
+    let mut cmd = Command::new("ping");
+    cmd.args(["-n", "1", "-w", "2000"]);
+
+    if let Some(ip) = local_ip {
+        cmd.args(["-S", ip]);
+    }
+
+    cmd.arg(host);
+
+    let out = cmd.output().ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_ping_time(&stdout)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn ping_host(_host: &str, _local_ip: Option<&str>) -> Option<u64> {
     None
 }
 
 /// Extract the `time=<n> ms` value from `ping` stdout.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn parse_ping_time(output: &str) -> Option<u64> {
-    output
-        .lines()
-        .find(|l| l.contains("time="))
-        .and_then(|l| l.split("time=").nth(1))
-        .map(|after| {
-            after
+    for line in output.lines() {
+        if let Some(pos) = line.find("time=") {
+            let after = &line[pos + 5..];
+            let num: String = after
                 .chars()
                 .take_while(|c| c.is_ascii_digit() || *c == '.')
-                .collect::<String>()
-        })
-        .and_then(|s| s.parse::<f64>().ok())
-        .map(|v| v.round() as u64)
+                .collect();
+            if let Ok(v) = num.parse::<f64>() {
+                return Some(v.round() as u64);
+            }
+        } else if line.contains("time<1ms") || line.contains("time<1 ms") {
+            return Some(1);
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -313,11 +382,13 @@ fn http_probe_direct(local_ip: Option<&str>) -> Option<HttpProbe> {
 
     let mut cmd = Command::new("curl");
 
+    let dev_null = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+
     // -I: HEAD request
     // -s: silent
     // --noproxy "*": explicitly ignore macOS system proxies
     // -w "%{time_total}": print total time in seconds
-    // -o /dev/null: discard headers output
+    // -o: discard headers output
     cmd.args([
         "-I",
         "-s",
@@ -327,7 +398,7 @@ fn http_probe_direct(local_ip: Option<&str>) -> Option<HttpProbe> {
         "-w",
         "%{time_total}",
         "-o",
-        "/dev/null",
+        dev_null,
     ]);
 
     // Enforce 10s timeout overall, 5s connect timeout
@@ -379,12 +450,14 @@ fn http_probe_proxy(proxy_port: u16) -> Option<HttpProbe> {
     let mut cmd = Command::new("curl");
     let proxy_str = format!("http://127.0.0.1:{}", proxy_port);
 
+    let dev_null = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+
     // -I: HEAD request
     // -s: silent stdout (stderr stays open)
     // -L: follow redirects (vital for google 301)
     // -x: explicitly route through our proxy port
     // -w "%{time_total}": print total time in seconds
-    // -o /dev/null: discard headers output
+    // -o: discard headers output
     cmd.args([
         "-I",
         "-s",
@@ -396,7 +469,7 @@ fn http_probe_proxy(proxy_port: u16) -> Option<HttpProbe> {
         "-w",
         "%{time_total}",
         "-o",
-        "/dev/null",
+        dev_null,
         PROBE_URL,
     ]);
 

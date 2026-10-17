@@ -73,10 +73,10 @@
 
   /** Derive the rule kind + value from context.
    *  Process tab = broad: if path is inside a .app bundle, match the whole bundle
-   *  via PROCESS-PATH-REGEX; otherwise exact path via PROCESS-PATH. */
+   *  via PROCESS-PATH-REGEX; on Windows / Linux, match exact binary via PROCESS-PATH. */
   function buildProcessRule(path: string): { kind: Rule["kind"]; value: string } {
     if (!path) return { kind: "PROCESS-NAME", value: processName };
-    const bundleMatch = path.match(/^(.*\.app)\//);
+    const bundleMatch = path.match(/^(.*\.app)[/\\]/);
     if (bundleMatch) {
       const escaped = bundleMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       return { kind: "PROCESS-PATH-REGEX", value: `^${escaped}/` };

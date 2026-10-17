@@ -6,22 +6,28 @@ use zeytun_lib::core::{
     storage::{Db, Storage},
     subscription::SubHeaders,
 };
+struct TempDir(std::path::PathBuf);
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 struct Fixture {
-    dir: std::path::PathBuf,
     manager: CoreManager,
     db: Db,
+    _dir: TempDir,
 }
 impl Fixture {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("apply-state-{}", uuid::Uuid::new_v4()));
         let manager = CoreManager::new(dir.clone(), None, Arc::new(EventBus::headless())).unwrap();
         let db = Db::new(dir.join("core/zeytun.db"));
-        Self { dir, manager, db }
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).unwrap();
+        Self {
+            manager,
+            db,
+            _dir: TempDir(dir),
+        }
     }
 }
 #[test]

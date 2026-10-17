@@ -758,6 +758,7 @@ impl CoreManager {
     }
 
     pub fn set_inbound_mode(&mut self, mode: &str) -> Result<(), crate::error::CommandError> {
+        let prev_mode = self.profile.local_proxy.mode.clone();
         let inbound_mode = match mode {
             "mixed" => InboundMode::Mixed,
             "tun" => InboundMode::Tun,
@@ -771,7 +772,13 @@ impl CoreManager {
         self.profile.normalize_policy_graph();
         self.db.save_local_proxy(&self.profile.local_proxy)?;
         // TUN mode changes require a full restart to add/remove network routes and privileges
-        self.restart_if_running()?;
+        if let Err(e) = self.restart_if_running() {
+            // Revert mode if restart failed (e.g. UAC cancelled)
+            self.profile.local_proxy.mode = prev_mode;
+            self.profile.normalize_policy_graph();
+            let _ = self.db.save_local_proxy(&self.profile.local_proxy);
+            return Err(e);
+        }
         Ok(())
     }
 
