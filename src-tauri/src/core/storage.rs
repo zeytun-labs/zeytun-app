@@ -635,7 +635,7 @@ impl Db {
             version,
             outbound_mode: enum_from_string(outbound_mode)?,
             local_proxy: self.read_local_proxy(conn)?,
-            dns: self.read_dns(conn, id)?,
+            dns: Some(Self::read_dns(conn, id)?.unwrap_or_else(DnsConfig::with_default_server)),
             rule_sets: self.read_rule_sets(conn, id)?,
             policies: self.read_policies(conn, id)?,
             proxies: self.read_proxies(conn, id)?,
@@ -724,11 +724,7 @@ impl Db {
         })
     }
 
-    fn read_dns(
-        &self,
-        conn: &Connection,
-        profile_id: &str,
-    ) -> Result<Option<DnsConfig>, StorageError> {
+    fn read_dns(conn: &Connection, profile_id: &str) -> Result<Option<DnsConfig>, StorageError> {
         let config = conn
             .query_row(
                 "SELECT final_server, fake_ip FROM dns_config WHERE profile_id = ?1 LIMIT 1",
@@ -800,6 +796,7 @@ impl Db {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Some(DnsConfig {
+            mode: None,
             servers: (!servers.is_empty()).then_some(servers),
             final_server,
             fake_ip,
@@ -1096,7 +1093,7 @@ impl Db {
             params![id, enum_to_string(&profile.outbound_mode)?, profile.version],
         )?;
 
-        self.write_dns(tx, id, profile.dns.as_ref())?;
+        Self::write_dns(tx, id, profile.dns.as_ref())?;
         self.write_rule_sets(tx, id, profile.rule_sets.as_deref().unwrap_or(&[]))?;
         self.write_policies(tx, id, &profile.policies)?;
         self.write_proxies(tx, id, &profile.proxies)?;
@@ -1178,7 +1175,6 @@ impl Db {
     }
 
     fn write_dns(
-        &self,
         tx: &Transaction<'_>,
         profile_id: &str,
         dns: Option<&DnsConfig>,
@@ -1739,6 +1735,7 @@ impl Storage for Db {
                  VALUES (?1, ?2, ?3, 'rule', '0.0.1', ?4, ?5)",
                 params![meta.id, meta.name, meta.is_active, next_pos, meta.icon,],
             )?;
+            Self::write_dns(&tx, &meta.id, Some(&DnsConfig::with_default_server()))?;
             Self::adapt_subscription_settings(&tx, meta)?;
             tx.commit()?;
             Ok(())
@@ -1976,6 +1973,7 @@ mod tests {
         let db = Db::new(test_dir.join("zeytun.db"));
         let mut profile = ZeytunCore {
             dns: Some(DnsConfig {
+                mode: None,
                 servers: Some(vec![DnsServer {
                     tag: "primary".to_string(),
                     address: "1.1.1.1".to_string(),
@@ -2028,6 +2026,7 @@ mod tests {
         let db = Db::new(test_dir.join("zeytun.db"));
         let mut profile = ZeytunCore {
             dns: Some(DnsConfig {
+                mode: None,
                 hosts: Some(vec![
                     DnsHostEntry {
                         id: "first".to_string(),

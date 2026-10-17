@@ -35,7 +35,7 @@
 		{preventScroll}
 		data-slot="select-content"
 		class={cn(
-			"text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 border border-border/40 min-w-36 max-h-64 rounded-3xl shadow-lg duration-100 data-[side=inline-start]:slide-in-from-right-2 data-[side=inline-end]:slide-in-from-left-2 isolate z-50 overflow-x-hidden overflow-y-auto relative bg-popover/65 before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:backdrop-blur-xl before:backdrop-saturate-150 **:data-[slot$=-item]:focus:text-accent-foreground **:data-[slot$=-item]:data-highlighted:text-accent-foreground **:data-[slot$=-separator]:bg-foreground/5 **:data-[variant=destructive]:text-destructive! **:data-[variant=destructive]:**:text-destructive!",
+			"text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 border border-border/40 min-w-36 max-h-[min(16rem,var(--bits-select-content-available-height,16rem))] rounded-3xl shadow-lg duration-100 data-[side=inline-start]:slide-in-from-right-2 data-[side=inline-end]:slide-in-from-left-2 isolate z-50 overflow-x-hidden overflow-y-auto relative bg-popover/65 before:pointer-events-none before:absolute before:inset-0 before:-z-1 before:rounded-[inherit] before:backdrop-blur-xl before:backdrop-saturate-150 **:data-[slot$=-item]:focus:text-accent-foreground **:data-[slot$=-item]:data-highlighted:text-accent-foreground **:data-[slot$=-separator]:bg-foreground/5 **:data-[variant=destructive]:text-destructive! **:data-[variant=destructive]:**:text-destructive!",
 			className
 		)}
 		{...restProps}
@@ -44,7 +44,7 @@
 		<SelectPrimitive.Viewport
 			bind:ref={viewportEl}
 			class={cn(
-				"relative h-(--bits-select-anchor-height) max-h-64 w-full min-w-(--bits-select-anchor-width) scroll-my-1 p-1.5"
+				"relative h-(--bits-select-anchor-height) max-h-[min(16rem,var(--bits-select-content-available-height,16rem))] w-full min-w-(--bits-select-anchor-width) overscroll-contain scroll-my-1 p-1.5"
 			)}
 		>
 			{@render children?.()}

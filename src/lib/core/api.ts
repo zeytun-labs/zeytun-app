@@ -511,17 +511,49 @@ export function flushDnsCache() {
   return invoke<string>("flush_dns_cache");
 }
 
+export type DnsRecordType = "A" | "AAAA" | "CNAME";
+
+export interface DnsRecord {
+  name: string;
+  record_type: string;
+  data: string;
+  ttl: number | null;
+  section: "answer" | "authority" | "additional";
+}
+
+export interface DnsLookupTrace {
+  server: string | null;
+  transport: string | null;
+  rule: string | null;
+  rule_index: number | null;
+  outbound: string | null;
+  cache_hit: boolean | null;
+  source: string | null;
+  selection: string | null;
+}
+
 export interface DnsLookupResult {
   resolved_ips: string[];
   server_used: string;
   latency_ms: number;
-  status: number;
+  status: number | null;
   record_type: string;
   ttl: number | null;
+  records: DnsRecord[];
+  trace: DnsLookupTrace | null;
 }
 
-export function testDnsLookup(domain: string) {
-  return invoke<DnsLookupResult>("test_dns_lookup", { domain });
+export function testDnsLookup(
+  domain: string,
+  recordType: DnsRecordType = "A",
+  server: string | null = null,
+  bypassCache = false,
+) {
+  return invoke<DnsLookupResult>("test_dns_lookup", { domain, recordType, server, bypassCache });
+}
+
+export function testSystemDnsLookup(domain: string, recordType: DnsRecordType = "A") {
+  return invoke<DnsLookupResult>("test_system_dns_lookup", { domain, recordType });
 }
 
 export interface NetworkQualityTestProgressEvent {

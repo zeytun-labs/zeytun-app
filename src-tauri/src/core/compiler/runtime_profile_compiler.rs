@@ -364,7 +364,9 @@ impl RuntimeProfileCompiler {
         let mut dns = profile.dns.clone();
         for server in dns.iter_mut().flat_map(|d| d.servers.iter_mut().flatten()) {
             if let Some(target) = &mut server.detour {
-                *target = resolve(target);
+                if target != crate::core::zeytun_core_config::DNS_FOLLOW_MODE {
+                    *target = resolve(target);
+                }
             }
         }
         let mut rule_sets = profile.rule_sets.clone();

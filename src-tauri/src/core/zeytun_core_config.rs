@@ -29,6 +29,10 @@ use crate::core::{
 pub const SECRET: &str = "SECRET";
 pub const DNS_HOSTS_SERVER_TAG: &str = "local-hosts";
 pub const DNS_LOCAL_SERVER_TAG: &str = "local-dns";
+pub const DNS_FOLLOW_MODE: &str = "follow-mode";
+pub fn dns_direct_tag(tag: &str) -> String {
+    format!("__dns-direct-{tag}")
+}
 
 pub struct ZeytunCoreConfigBuilder {
     include_clash_api: bool,
@@ -68,23 +72,83 @@ impl ZeytunCoreConfigBuilder {
             inbounds,
             outbounds,
             route: self.build_route(profile, outbound_mode),
-            dns: self.build_dns(profile),
+            dns: self.build_dns(profile)?,
             services,
             experimental: Some(experimental),
         };
 
-        serde_json::to_value(config)
-            .map_err(|e| format!("failed to serialize zeytun-core config: {e}"))
+        let mut config = serde_json::to_value(config)
+            .map_err(|e| format!("failed to serialize zeytun-core config: {e}"))?;
+        {
+            // Resolving the proxy endpoint through that proxy creates a cycle.
+            // Only first-hop endpoint hostnames bootstrap locally. Chained
+            // endpoints keep remote resolution through their explicit detour.
+            for outbound in config["outbounds"].as_array_mut().into_iter().flatten() {
+                let endpoint_is_domain = outbound["server"]
+                    .as_str()
+                    .is_some_and(|server| server.parse::<std::net::IpAddr>().is_err());
+                let first_hop = outbound["detour"]
+                    .as_str()
+                    .is_none_or(|tag| tag == "direct");
+                if endpoint_is_domain && first_hop && outbound.get("domain_resolver").is_none() {
+                    outbound["domain_resolver"] = serde_json::json!(DNS_LOCAL_SERVER_TAG);
+                }
+            }
+        }
+        Ok(config)
     }
 
-    fn build_dns(&self, profile: &RuntimeProfile) -> Dns {
+    fn global_outbound(profile: &RuntimeProfile) -> String {
+        profile
+            .policies
+            .iter()
+            .find(|policy| policy.source_proxy_policy_id == DEFAULT_SELECTOR_POLICY_TAG)
+            .or_else(|| profile.policies.first())
+            .map(|policy| policy.tag.clone())
+            .or_else(|| {
+                profile
+                    .outbounds
+                    .first()
+                    .map(|outbound| outbound.tag.clone())
+            })
+            .unwrap_or_else(|| "direct".into())
+    }
+
+    fn build_dns(&self, profile: &RuntimeProfile) -> Result<Dns, String> {
         use crate::core::models::zeytun_core::dns::{
             DnsRule, DnsRuleAction, DnsServer, DnsServerType,
         };
 
         let mut dns = Dns::default();
 
-        if let Some(profile_dns) = &profile.dns {
+        let mut profile_dns = profile
+            .dns
+            .clone()
+            .unwrap_or_else(crate::core::dto::DnsConfig::with_default_server);
+        if profile_dns.mode.is_some() {
+            profile_dns.migrate_legacy();
+        }
+        let follows_mode = |tag: &str| {
+            profile_dns
+                .servers
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|server| {
+                    server.tag == tag && server.detour.as_deref() == Some(DNS_FOLLOW_MODE)
+                })
+        };
+        let proxy = Self::global_outbound(profile);
+        let usable_proxy = profile
+            .outbounds
+            .iter()
+            .any(|outbound| !matches!(outbound.outbound.outbound_type, OutboundType::Block));
+        let proxy = if proxy == "direct" || !usable_proxy {
+            "block".to_string()
+        } else {
+            proxy
+        };
+        {
             let mut servers = Vec::new();
             let mut rules = Vec::new();
 
@@ -148,113 +212,83 @@ impl ZeytunCoreConfigBuilder {
                 rules.push(DnsRule::Default(host_rule));
             }
 
-            // Remote servers
-            let mut domain_resolver_tag = None;
-            if let Some(custom_servers) = &profile_dns.servers {
-                domain_resolver_tag = custom_servers.iter().find_map(|s| {
-                    let mut host = s.address.as_str();
-                    for prefix in &["tls://", "https://", "tcp://", "quic://", "udp://"] {
-                        if let Some(rest) = host.strip_prefix(prefix) {
-                            host = rest;
-                            break;
-                        }
+            // Direct hostname endpoints use a real, named bootstrap resolver.
+            // Proxy detours resolve upstream hostnames remotely and must not be
+            // forced through the machine's potentially filtered DNS.
+            use crate::core::dns_config::{DnsEndpoint, DnsTransport};
+            let bootstrap = profile_dns
+                .servers
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .find_map(|s| {
+                    if s.detour.as_deref().is_some_and(|d| d != "direct") {
+                        return None;
                     }
-                    let host_no_path = host.split('/').next().unwrap_or("");
-                    let host_no_port = host_no_path.split(':').next().unwrap_or("");
-                    if host_no_port.parse::<std::net::IpAddr>().is_ok() {
-                        Some(s.tag.clone())
-                    } else {
-                        None
-                    }
-                });
-            }
-
-            let fallback_resolver_tag = "builtin-fallback-resolver".to_string();
-            let mut needs_fallback = false;
-
+                    DnsEndpoint::parse(&s.address)
+                        .ok()
+                        .filter(|e| e.host.parse::<std::net::IpAddr>().is_ok())
+                        .map(|_| s.tag.clone())
+                })
+                .unwrap_or_else(|| DNS_LOCAL_SERVER_TAG.to_string());
             if let Some(custom_servers) = &profile_dns.servers {
                 for server in custom_servers {
+                    let endpoint = DnsEndpoint::parse(&server.address)?;
                     let mut options = std::collections::HashMap::new();
-                    let (server_type, server_host, path) =
-                        if let Some(rest) = server.address.strip_prefix("tls://") {
-                            (DnsServerType::Tls, rest.to_string(), None)
-                        } else if let Some(rest) = server.address.strip_prefix("https://") {
-                            // Extract host and path for https
-                            let (host, _port, p) = split_host_port_path(rest);
-                            (DnsServerType::Https, host, p)
-                        } else if let Some(rest) = server.address.strip_prefix("tcp://") {
-                            (DnsServerType::Tcp, rest.to_string(), None)
-                        } else if let Some(rest) = server.address.strip_prefix("quic://") {
-                            (DnsServerType::Quic, rest.to_string(), None)
-                        } else if let Some(rest) = server.address.strip_prefix("udp://") {
-                            (DnsServerType::Udp, rest.to_string(), None)
-                        } else {
-                            (DnsServerType::Udp, server.address.clone(), None)
-                        };
-
-                    // Strip port from server_host if present
-                    let (host, port, _path) = split_host_port_path(&server_host);
-
-                    options.insert(
-                        "server".to_string(),
-                        serde_json::Value::String(host.clone()),
-                    );
-                    if let Some(p_num) = port {
+                    options.insert("server".to_string(), Value::String(endpoint.host.clone()));
+                    if let Some(port) = endpoint.port {
+                        options.insert("server_port".to_string(), serde_json::json!(port));
+                    }
+                    if let Some(path) = endpoint.path {
+                        options.insert("path".to_string(), Value::String(path));
+                    }
+                    let follow_mode = server.detour.as_deref() == Some(DNS_FOLLOW_MODE);
+                    let detour = if follow_mode {
+                        Some(proxy.as_str())
+                    } else {
+                        server
+                            .detour
+                            .as_deref()
+                            .filter(|d| !d.is_empty() && !d.eq_ignore_ascii_case("direct"))
+                    };
+                    if let Some(detour) = detour {
+                        options.insert("detour".to_string(), Value::String(detour.to_string()));
+                    }
+                    let hostname = endpoint.host.parse::<std::net::IpAddr>().is_err();
+                    if hostname && detour.is_none() {
                         options.insert(
-                            "server_port".to_string(),
-                            serde_json::Value::Number(p_num.into()),
+                            "domain_resolver".to_string(),
+                            Value::String(bootstrap.clone()),
                         );
                     }
-                    if let Some(p) = path {
-                        options.insert("path".to_string(), serde_json::Value::String(p));
-                    }
-
-                    if let Some(detour) = &server.detour {
-                        options.insert(
-                            "detour".to_string(),
-                            serde_json::Value::String(detour.clone()),
-                        );
-                    }
-
-                    let is_ip = host.parse::<std::net::IpAddr>().is_ok();
-                    if !is_ip {
-                        if let Some(resolver_tag) = &domain_resolver_tag {
-                            options.insert(
+                    let server_type = match endpoint.transport {
+                        DnsTransport::Udp => DnsServerType::Udp,
+                        DnsTransport::Tcp => DnsServerType::Tcp,
+                        DnsTransport::Tls => DnsServerType::Tls,
+                        DnsTransport::Https => DnsServerType::Https,
+                        DnsTransport::Quic => DnsServerType::Quic,
+                    };
+                    if follow_mode {
+                        let mut direct_options = options.clone();
+                        direct_options.remove("detour");
+                        if hostname {
+                            direct_options.insert(
                                 "domain_resolver".to_string(),
-                                serde_json::Value::String(resolver_tag.clone()),
+                                Value::String(bootstrap.clone()),
                             );
-                        } else {
-                            options.insert(
-                                "domain_resolver".to_string(),
-                                serde_json::Value::String(fallback_resolver_tag.clone()),
-                            );
-                            needs_fallback = true;
                         }
+                        servers.push(DnsServer {
+                            server_type: server_type.clone(),
+                            tag: Some(dns_direct_tag(&server.tag)),
+                            options: direct_options,
+                        });
                     }
-
                     servers.push(DnsServer {
                         server_type,
                         tag: Some(server.tag.clone()),
                         options,
                     });
                 }
-            }
-
-            if needs_fallback {
-                let mut fallback_opts = std::collections::HashMap::new();
-                fallback_opts.insert(
-                    "server".to_string(),
-                    serde_json::Value::String("223.5.5.5".to_string()),
-                );
-                fallback_opts.insert(
-                    "detour".to_string(),
-                    serde_json::Value::String("direct".to_string()),
-                );
-                servers.push(DnsServer {
-                    server_type: DnsServerType::Udp,
-                    tag: Some(fallback_resolver_tag),
-                    options: fallback_opts,
-                });
             }
 
             if let Some(true) = profile_dns.fake_ip {
@@ -296,46 +330,79 @@ impl ZeytunCoreConfigBuilder {
                         "ruleset" => default.rule_set = Some(vec![rule.value.clone()]),
                         _ => continue,
                     }
+                    if follows_mode(&rule.target) {
+                        let mut direct = default.clone();
+                        direct.clash_mode = Some(ClashMode::Direct);
+                        direct.action = DnsRuleAction::Route {
+                            server: dns_direct_tag(&rule.target),
+                            disable_cache: None,
+                            disable_optimistic_cache: None,
+                            rewrite_ttl: None,
+                            timeout: None,
+                            client_subnet: None,
+                        };
+                        rules.push(DnsRule::Default(direct));
+                    }
                     rules.push(DnsRule::Default(default));
                 }
             }
 
-            // `dns.final` is the resolver for every query no rule matched. It is
-            // surfaced in the UI as the last, always-enabled DNS Rules row.
-            //
-            // A `hosts` server NXDOMAINs every domain outside its table
-            // (`dns/transport/hosts/hosts.go:98`), and the core promotes the FIRST
-            // registered server to default when `dns.final` is unset
-            // (`dns/transport_manager.go:284`) — which silently made the hosts
-            // server resolve everything. So `final` is always written explicitly,
-            // and the built-in local resolver is the default.
-            let is_real_resolver = |server: &DnsServer| {
-                !matches!(
-                    server.server_type,
-                    DnsServerType::Hosts | DnsServerType::Fakeip
-                )
-            };
+            // Final is always an authored resolver choice, never a hidden
+            // provider. Every profile gets the same local-name exemptions.
             let requested_final = profile_dns
                 .final_server
                 .as_deref()
                 .map(str::trim)
                 .filter(|tag| !tag.is_empty())
                 .unwrap_or(DNS_LOCAL_SERVER_TAG);
-            // An unknown or non-resolver tag falls back to local rather than
-            // letting the core pick for us.
-            let final_tag = servers
-                .iter()
-                .find(|server| {
-                    server.tag.as_deref() == Some(requested_final) && is_real_resolver(server)
-                })
-                .and_then(|server| server.tag.clone())
-                .unwrap_or_else(|| DNS_LOCAL_SERVER_TAG.to_string());
-            if final_tag == DNS_LOCAL_SERVER_TAG {
-                servers.push(DnsServer {
-                    server_type: DnsServerType::Local,
-                    tag: Some(DNS_LOCAL_SERVER_TAG.to_string()),
-                    options: std::collections::HashMap::new(),
+            let final_tag = if requested_final == DNS_LOCAL_SERVER_TAG
+                || servers.iter().any(|server| {
+                    server.tag.as_deref() == Some(requested_final)
+                        && !matches!(
+                            server.server_type,
+                            DnsServerType::Hosts | DnsServerType::Fakeip
+                        )
+                }) {
+                requested_final.to_string()
+            } else {
+                return Err("Final DNS resolver is not a configured DNS server".into());
+            };
+            servers.push(DnsServer {
+                server_type: DnsServerType::Local,
+                tag: Some(DNS_LOCAL_SERVER_TAG.into()),
+                options: std::collections::HashMap::new(),
+            });
+            let mut local = Self::dns_route_rule(DNS_LOCAL_SERVER_TAG);
+            local.domain_suffix = Some(vec!["local".into(), "home.arpa".into()]);
+            rules.push(DnsRule::Default(local));
+            let mut single_label = Self::dns_route_rule(DNS_LOCAL_SERVER_TAG);
+            single_label.domain_regex = Some(vec![r"^[^.]+\.?$".into()]);
+            rules.push(DnsRule::Default(single_label));
+            // Direct mode resolves real addresses before FakeIP. Explicit
+            // server detours remain explicit, even when traffic mode is Direct.
+            let direct_final = if follows_mode(&final_tag) {
+                dns_direct_tag(&final_tag)
+            } else {
+                final_tag.clone()
+            };
+            let mut direct = Self::dns_route_rule(&direct_final);
+            direct.clash_mode = Some(ClashMode::Direct);
+            rules.push(DnsRule::Default(direct));
+            if profile_dns.fake_ip == Some(true) {
+                use crate::core::models::zeytun_core::dns::DnsQueryType;
+                let mut fake = Self::empty_dns_rule(DnsRuleAction::Route {
+                    server: "fakeip".to_string(),
+                    disable_cache: None,
+                    disable_optimistic_cache: None,
+                    rewrite_ttl: None,
+                    timeout: None,
+                    client_subnet: None,
                 });
+                fake.query_type = Some(vec![
+                    DnsQueryType::Name("A".into()),
+                    DnsQueryType::Name("AAAA".into()),
+                ]);
+                rules.push(DnsRule::Default(fake));
             }
 
             if !servers.is_empty() {
@@ -348,7 +415,29 @@ impl ZeytunCoreConfigBuilder {
             dns.final_server = Some(final_tag);
         }
 
-        dns
+        if dns.servers.is_none() {
+            dns.servers = Some(vec![DnsServer {
+                server_type: DnsServerType::Local,
+                tag: Some(DNS_LOCAL_SERVER_TAG.to_string()),
+                options: std::collections::HashMap::new(),
+            }]);
+            dns.final_server = Some(DNS_LOCAL_SERVER_TAG.to_string());
+        }
+        dns.reverse_mapping = Some(true);
+        Ok(dns)
+    }
+
+    fn dns_route_rule(server: &str) -> crate::core::models::zeytun_core::dns::DefaultDnsRule {
+        Self::empty_dns_rule(
+            crate::core::models::zeytun_core::dns::DnsRuleAction::Route {
+                server: server.into(),
+                disable_cache: None,
+                disable_optimistic_cache: None,
+                rewrite_ttl: None,
+                timeout: None,
+                client_subnet: None,
+            },
+        )
     }
 
     fn empty_dns_rule(
@@ -591,19 +680,7 @@ impl ZeytunCoreConfigBuilder {
     }
 
     fn build_route(&self, profile: &RuntimeProfile, outbound_mode: &OutboundMode) -> Route {
-        let global_outbound = profile
-            .policies
-            .iter()
-            .find(|policy| policy.source_proxy_policy_id == DEFAULT_SELECTOR_POLICY_TAG)
-            .map(|policy| policy.tag.clone())
-            .or_else(|| profile.policies.first().map(|policy| policy.tag.clone()))
-            .or_else(|| {
-                profile
-                    .outbounds
-                    .first()
-                    .map(|outbound| outbound.tag.clone())
-            })
-            .unwrap_or_else(|| "direct".to_string());
+        let global_outbound = Self::global_outbound(profile);
 
         let mut rules = self.build_clash_mode_rules(&global_outbound);
 
@@ -991,41 +1068,6 @@ fn convert_reject_method(method: &ModelRejectMethod) -> ZeytunCoreRejectMethod {
     }
 }
 
-/// Split an address of the form `host[:port][/path]` into its parts.
-///
-/// Splits at the *last* colon so IPv6 literals keep their own colons:
-/// `[::1]:443` is host `[::1]`, port 443 — a plain `split_once(':')` there
-/// yields host `[` and a port that fails to parse, silently dropping the
-/// port and shipping the whole address as the host.
-fn split_host_port_path(address: &str) -> (String, Option<u16>, Option<String>) {
-    // Path first — it can legitimately contain ':' (https://doh/dns-query).
-    let (authority, path) = match address.split_once('/') {
-        Some((a, p)) => (a, Some(format!("/{p}"))),
-        None => (address, None),
-    };
-
-    // A bracketed IPv6 literal is its own authority: [::1]:443 or [::1].
-    if let Some(rest) = authority.strip_prefix('[') {
-        if let Some((host, after)) = rest.split_once(']') {
-            let port = after.strip_prefix(':').and_then(|p| p.parse::<u16>().ok());
-            return (format!("[{host}]"), port, path);
-        }
-    }
-
-    // Plain host: the port, if any, is after the final colon.
-    match authority.rsplit_once(':') {
-        Some((host, port_str))
-            if !host.is_empty() && !port_str.is_empty() && !port_str.contains(':') =>
-        {
-            match port_str.parse::<u16>() {
-                Ok(port) => (host.to_string(), Some(port), path),
-                Err(_) => (authority.to_string(), None, path),
-            }
-        }
-        _ => (authority.to_string(), None, path),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,6 +1110,7 @@ mod tests {
             rule_sets: None,
             final_outbound: "direct".to_string(),
             dns: Some(DnsConfig {
+                mode: Some(crate::core::dto::DnsMode::Manual),
                 servers: Some(vec![
                     ProfileDnsServer {
                         tag: "primary".to_string(),
@@ -1094,66 +1137,6 @@ mod tests {
     }
 
     #[test]
-    fn split_host_port_path_handles_every_address_shape() {
-        // IPv6 was the actual bug: split_once(':') gave host "[" and a port
-        // that never parsed, so the whole address shipped as the host.
-        let cases: &[(&str, &str, Option<u16>, Option<&str>)] = &[
-            ("1.2.3.4", "1.2.3.4", None, None),
-            ("1.2.3.4:443", "1.2.3.4", Some(443), None),
-            ("dns.example.com", "dns.example.com", None, None),
-            ("dns.example.com:853", "dns.example.com", Some(853), None),
-            ("[::1]:443", "[::1]", Some(443), None),
-            ("[::1]", "[::1]", None, None),
-            ("[2001:db8::1]:853", "[2001:db8::1]", Some(853), None),
-            // A path with no port.
-            (
-                "dns.example.com/dns-query",
-                "dns.example.com",
-                None,
-                Some("/dns-query"),
-            ),
-            // Port and path together.
-            (
-                "dns.example.com:443/dns-query",
-                "dns.example.com",
-                Some(443),
-                Some("/dns-query"),
-            ),
-            // IPv6 with a path.
-            (
-                "[::1]:443/dns-query",
-                "[::1]",
-                Some(443),
-                Some("/dns-query"),
-            ),
-            // Empty input must not panic.
-            ("", "", None, None),
-            // A port that is not a number is left alone, not truncated.
-            (
-                "dns.example.com:notaport",
-                "dns.example.com:notaport",
-                None,
-                None,
-            ),
-        ];
-
-        for (input, host, port, path) in cases {
-            let (got_host, got_port, got_path) = split_host_port_path(input);
-            assert_eq!(
-                got_host.as_str(),
-                *host,
-                "host for {input:?}: got {got_host:?}, want {host:?}"
-            );
-            assert_eq!(got_port, *port, "port for {input:?}");
-            assert_eq!(
-                got_path.as_deref(),
-                *path,
-                "path for {input:?}: got {got_path:?}, want {path:?}"
-            );
-        }
-    }
-
-    #[test]
     fn build_dns_converts_enabled_rules_in_order() {
         let profile = runtime_profile_with_dns(vec![
             profile_dns_rule("domain", "domain", "example.com", "primary", true),
@@ -1164,11 +1147,12 @@ mod tests {
 
         let rules = ZeytunCoreConfigBuilder::new(false, false)
             .build_dns(&profile)
+            .expect("DNS config")
             .rules
             .expect("compiled DNS rules");
         assert!(rules.iter().all(|rule| matches!(rule, DnsRule::Default(_))));
         assert_eq!(
-            serde_json::to_value(rules).expect("serialize DNS rules"),
+            serde_json::to_value(&rules[..3]).expect("serialize DNS rules"),
             serde_json::json!([
                 {
                     "domain": ["example.com"],
@@ -1260,6 +1244,126 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proxied_dns_hostname_uses_remote_resolution_instead_of_local_bootstrap() {
+        for has_bootstrap in [false, true] {
+            let mut profile = runtime_profile_with_dns(Vec::new());
+            let dns = profile.dns.as_mut().unwrap();
+            let mut servers = if has_bootstrap {
+                dns.servers.take().unwrap()
+            } else {
+                Vec::new()
+            };
+            servers.push(ProfileDnsServer {
+                tag: "google".into(),
+                address: "https://dns.google/dns-query".into(),
+                detour: Some("root-policy".into()),
+                name: "Google DNS".into(),
+            });
+            dns.servers = Some(servers);
+            dns.final_server = Some("google".into());
+            let config = ZeytunCoreConfigBuilder::new(false, false)
+                .build(&profile, &OutboundMode::Rule)
+                .unwrap();
+            let servers = config["dns"]["servers"].as_array().unwrap();
+            let google = servers.iter().find(|s| s["tag"] == "google").unwrap();
+            assert_eq!(google["server"], "dns.google");
+            assert_eq!(google["detour"], "root-policy");
+            assert!(google.get("domain_resolver").is_none());
+            assert!(!servers
+                .iter()
+                .any(|s| s["tag"] == "builtin-fallback-resolver"));
+        }
+    }
+
+    #[test]
+    fn direct_dns_hostname_keeps_its_bootstrap_resolver() {
+        for detour in [None, Some("direct")] {
+            for has_bootstrap in [false, true] {
+                let mut profile = runtime_profile_with_dns(Vec::new());
+                let dns = profile.dns.as_mut().unwrap();
+                let mut servers = if has_bootstrap {
+                    dns.servers.take().unwrap()
+                } else {
+                    Vec::new()
+                };
+                servers.push(ProfileDnsServer {
+                    tag: "google".into(),
+                    address: "https://dns.google/dns-query".into(),
+                    detour: detour.map(str::to_string),
+                    name: "Google DNS".into(),
+                });
+                dns.servers = Some(servers);
+                dns.final_server = Some("google".into());
+                let config = ZeytunCoreConfigBuilder::new(false, false)
+                    .build(&profile, &OutboundMode::Rule)
+                    .unwrap();
+                let google = config["dns"]["servers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|s| s["tag"] == "google")
+                    .unwrap();
+                assert_eq!(
+                    google["domain_resolver"],
+                    if has_bootstrap {
+                        "primary"
+                    } else {
+                        DNS_LOCAL_SERVER_TAG
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ipv6_dns_server_compiles_without_brackets_or_unrequested_bootstrap() {
+        let mut profile = runtime_profile_with_dns(Vec::new());
+        profile.dns.as_mut().unwrap().servers = Some(vec![ProfileDnsServer {
+            tag: "ipv6".into(),
+            name: "IPv6 DoH".into(),
+            detour: None,
+            address: "https://[2606:4700:4700::1111]:443/dns-query?key=value".into(),
+        }]);
+        profile.dns.as_mut().unwrap().final_server = Some("ipv6".into());
+        let config = ZeytunCoreConfigBuilder::new(false, false)
+            .build(&profile, &OutboundMode::Rule)
+            .unwrap();
+        let server = &config["dns"]["servers"][0];
+        assert_eq!(server["server"], "2606:4700:4700::1111");
+        assert_eq!(server["server_port"], 443);
+        assert_eq!(server["path"], "/dns-query?key=value");
+        assert!(server.get("domain_resolver").is_none());
+    }
+
+    #[test]
+    fn fakeip_routes_address_queries_after_explicit_rules_and_local_domains() {
+        let mut profile = runtime_profile_with_dns(vec![profile_dns_rule(
+            "explicit",
+            "domain",
+            "updates.discord.com",
+            "primary",
+            true,
+        )]);
+        profile.dns.as_mut().unwrap().fake_ip = Some(true);
+        let config = ZeytunCoreConfigBuilder::new(false, false)
+            .build(&profile, &OutboundMode::Rule)
+            .unwrap();
+        let rules = config["dns"]["rules"].as_array().unwrap();
+        assert_eq!(rules[0]["server"], "primary");
+        assert_eq!(
+            rules[1]["domain_suffix"],
+            serde_json::json!(["local", "home.arpa"])
+        );
+        assert_eq!(rules[1]["server"], DNS_LOCAL_SERVER_TAG);
+        assert_eq!(rules[2]["domain_regex"], serde_json::json!([r"^[^.]+\.?$"]));
+        assert_eq!(rules[3]["clash_mode"], "direct");
+        assert_eq!(rules[3]["server"], "primary");
+        assert_eq!(rules[4]["query_type"], serde_json::json!(["A", "AAAA"]));
+        assert_eq!(rules[4]["server"], "fakeip");
+        assert_eq!(config["dns"]["final"], "primary");
+    }
+
     /// A `hosts` server NXDOMAINs every domain outside its table, so it must never
     /// end up as the core's default resolver. With `dns.final` unset the core
     /// promotes the first registered server, which used to be the hosts server —
@@ -1295,12 +1399,10 @@ mod tests {
         assert_eq!(chosen["type"], "local");
     }
 
-    /// An explicit `dns.final` is honoured verbatim and suppresses the injected
-    /// local resolver. (With `final` unset the default is local by design — the
-    /// user-facing rule is "Local (System)" unless the last DNS Rules row says
-    /// otherwise.)
+    /// Explicit final DNS remains selected while Local/System is available for
+    /// per-domain rules and direct hostname bootstrap.
     #[test]
-    fn existing_resolver_is_preferred_over_injected_local() {
+    fn explicit_final_is_preserved_with_local_resolver_available() {
         let profile = runtime_profile_with_dns(Vec::new());
         assert_eq!(
             profile
@@ -1316,10 +1418,10 @@ mod tests {
 
         let servers = config["dns"]["servers"].as_array().expect("DNS servers");
         assert!(
-            !servers
+            servers
                 .iter()
                 .any(|server| server["tag"] == DNS_LOCAL_SERVER_TAG),
-            "must not inject a local resolver when `dns.final` names a real one"
+            "local DNS must remain available without overriding the explicit final"
         );
         assert_eq!(config["dns"]["final"], serde_json::json!("primary"));
     }
@@ -1348,17 +1450,11 @@ mod tests {
 
     /// A `final` tag naming a deleted server must not leave the core to choose.
     #[test]
-    fn unknown_final_tag_falls_back_to_local() {
+    fn unknown_final_tag_is_rejected_without_silent_local_fallback() {
         let mut profile = runtime_profile_with_dns(Vec::new());
-        profile.dns.as_mut().expect("profile DNS").final_server =
-            Some("deleted-server".to_string());
-        let config = ZeytunCoreConfigBuilder::new(false, false)
+        profile.dns.as_mut().expect("profile DNS").final_server = Some("deleted-server".into());
+        assert!(ZeytunCoreConfigBuilder::new(false, false)
             .build(&profile, &OutboundMode::Rule)
-            .expect("JSON config");
-
-        assert_eq!(
-            config["dns"]["final"],
-            serde_json::json!(DNS_LOCAL_SERVER_TAG)
-        );
+            .is_err());
     }
 }

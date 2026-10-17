@@ -86,7 +86,10 @@ async function step(action: () => Promise<unknown>, label: string): Promise<bool
 }
 
 export class SettingsDraft {
-  settings = $state<Settings>({ ...settingsStore.settings });
+  settings = $state<Settings>({
+    ...settingsStore.settings,
+    enableFakeIp: profileStore.profile?.dns?.fake_ip ?? false,
+  });
   listenPort = $state(currentListenPort());
   theme = $state<Theme>(themePreference.value);
   errors = $state<Partial<Record<SettingsField, string>>>({});
@@ -102,12 +105,16 @@ export class SettingsDraft {
     if ((this.settings.connectionAskEnabled ?? false) !== activeConnectionAsk()) {
       return true;
     }
+    if (this.settings.enableFakeIp !== (profileStore.profile?.dns?.fake_ip ?? false)) {
+      return true;
+    }
     for (const traffic of TRAFFIC_KINDS) {
       if (this.routes[traffic] !== this.savedRoutes[traffic]) return true;
     }
 
     for (const key of Object.keys(this.settings) as (keyof Settings)[]) {
-      if (key === "connectionAskEnabled" || key === "receivePrereleaseUpdates") continue; // normalized above / applied immediately
+      // Profile-owned fields use their authoritative baselines above.
+      if (key === "connectionAskEnabled" || key === "enableFakeIp" || key === "receivePrereleaseUpdates") continue;
       if (this.settings[key] !== settingsStore.settings[key]) return true;
     }
     return false;
@@ -139,6 +146,7 @@ export class SettingsDraft {
   sync() {
     this.listenPort = currentListenPort();
     this.settings = { ...settingsStore.settings };
+    this.settings.enableFakeIp = profileStore.profile?.dns?.fake_ip ?? false;
     this.settings.connectionAskEnabled = activeConnectionAsk();
     this.theme = themePreference.value;
     this.errors = {};

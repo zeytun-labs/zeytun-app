@@ -1,4 +1,4 @@
-<script module>
+<script lang="ts" module>
   // Use a module-level cache so we don't re-fetch for every row
   // that uses the same process name
   const iconCache = new Map<string, string | null>();

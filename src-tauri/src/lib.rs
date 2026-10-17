@@ -1086,64 +1086,83 @@ async fn core_clash_select_proxy(
         .map_err(|e| crate::error::CommandError::Api(format!("clash api error: {e}")))
 }
 
-#[derive(serde::Serialize)]
-struct DnsLookupResult {
-    resolved_ips: Vec<String>,
-    server_used: String,
-    latency_ms: u64,
-    status: u16,
-    record_type: String,
-    ttl: Option<u32>,
-}
-
 #[tauri::command]
 async fn test_dns_lookup(
     domain: String,
+    record_type: Option<String>,
+    server: Option<String>,
+    bypass_cache: Option<bool>,
     state: tauri::State<'_, AppState>,
-) -> Result<DnsLookupResult, crate::error::CommandError> {
+) -> Result<crate::adapters::dns_lookup::DnsLookupResult, crate::error::CommandError> {
+    use crate::adapters::dns_lookup::{core_result, normalize_record_type};
     let domain = crate::core::manager::normalize_dns_domain(&domain)?;
+    let record_type = normalize_record_type(record_type.as_deref().unwrap_or("A"), false)
+        .map_err(crate::error::CommandError::InvalidInput)?;
+    let server = server
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if server
+        .as_deref()
+        .is_some_and(|s| s.len() > 256 || s.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return Err(crate::error::CommandError::InvalidInput(
+            "Invalid DNS server identifier".into(),
+        ));
+    }
     let client = {
         let core = state.core.lock().await;
         if !core.is_running() {
             return Err(crate::error::CommandError::State(
-                "core is not running".to_string(),
+                "core is not running".into(),
             ));
         }
-        core.clash_api_client().ok_or_else(|| {
-            crate::error::CommandError::Api("clash api is not available".to_string())
-        })?
+        core.clash_api_client()
+            .ok_or_else(|| crate::error::CommandError::Api("clash api is not available".into()))?
     };
-
-    let (response, latency_ms) = tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         let started = std::time::Instant::now();
-        let response = client.dns_query(&domain);
-        (response, started.elapsed().as_millis() as u64)
+        let response = client
+            .dns_query_with_options(
+                &domain,
+                &record_type,
+                server.as_deref(),
+                bypass_cache.unwrap_or(false),
+            )
+            .map_err(|e| crate::error::CommandError::Api(format!("clash api error: {e}")))?;
+        Ok(core_result(
+            response,
+            record_type,
+            started.elapsed().as_millis() as u64,
+        ))
     })
     .await
-    .map_err(|e| crate::error::CommandError::Internal(format!("task failed: {e}")))?;
-    let response =
-        response.map_err(|e| crate::error::CommandError::Api(format!("clash api error: {e}")))?;
+    .map_err(|e| crate::error::CommandError::Internal(format!("task failed: {e}")))?
+}
 
-    let mut resolved_ips = Vec::new();
-    let mut ttl = None;
-    for answer in response.answer {
-        if answer.record_type != 1 {
-            continue;
-        }
-        if let Ok(ip) = answer.data.trim().parse::<std::net::Ipv4Addr>() {
-            resolved_ips.push(ip.to_string());
-            ttl.get_or_insert(answer.ttl);
-        }
-    }
-
-    Ok(DnsLookupResult {
-        resolved_ips,
-        server_used: response.server,
-        latency_ms,
-        status: response.status,
-        record_type: "A".to_string(),
-        ttl,
-    })
+#[tauri::command]
+async fn test_system_dns_lookup(
+    domain: String,
+    record_type: Option<String>,
+) -> Result<crate::adapters::dns_lookup::DnsLookupResult, crate::error::CommandError> {
+    use crate::adapters::dns_lookup::{normalize_record_type, system_result};
+    static SYSTEM_LOOKUPS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    let domain = crate::core::manager::normalize_dns_domain(&domain)?;
+    let record_type = normalize_record_type(record_type.as_deref().unwrap_or("A"), true)
+        .map_err(crate::error::CommandError::InvalidInput)?;
+    let permit = SYSTEM_LOOKUPS.try_acquire().map_err(|_| {
+        crate::error::CommandError::State(
+            "A system DNS lookup is still running; please try again shortly".into(),
+        )
+    })?;
+    let lookup = tauri::async_runtime::spawn_blocking(move || {
+        // Keep the limit until the OS call actually finishes, even after timeout.
+        let _permit = permit;
+        system_result(&domain, &record_type).map_err(crate::error::CommandError::Api)
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(12), lookup)
+        .await
+        .map_err(|_| crate::error::CommandError::Api("System DNS lookup timed out".into()))?
+        .map_err(|e| crate::error::CommandError::Internal(format!("System DNS task failed: {e}")))?
 }
 
 #[tauri::command]
@@ -2029,6 +2048,7 @@ pub fn run() {
             core_run_diagnostics,
             flush_dns_cache,
             test_dns_lookup,
+            test_system_dns_lookup,
             crash_dump_list_unseen,
             crash_dump_read,
             crash_dump_dismiss

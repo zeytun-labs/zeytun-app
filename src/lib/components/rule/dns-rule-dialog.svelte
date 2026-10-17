@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
@@ -12,6 +13,7 @@
   } from "$lib/core/types";
   import type { DnsRuleItem } from "./dns-rule-table.svelte";
   import { errorMessage } from "$lib/errors";
+  import { LOCAL_DNS_SERVER_TAG } from "$lib/core/dns-servers";
 
   type DnsServerOption = {
     value: string;
@@ -51,10 +53,6 @@
     { value: "ruleset", label: "Rule-set Match" },
   ];
 
-  function serverLocation(server: DnsServer): "Local" | "Remote" {
-    return server.detour?.toLowerCase() === "direct" ? "Local" : "Remote";
-  }
-
   function serverLabel(server: DnsServer): string {
     return server.name;
   }
@@ -66,10 +64,13 @@
   }
 
   const serverOptions = $derived<DnsServerOption[]>(
-    dnsServers.map((server) => ({
-      value: server.tag,
-      label: serverLabel(server),
-    })),
+    [
+      { value: LOCAL_DNS_SERVER_TAG, label: "Local (System)" },
+      ...dnsServers.map((server) => ({
+        value: server.tag,
+        label: serverLabel(server),
+      })),
+    ],
   );
 
   const rulesetOptions = $derived(
@@ -126,8 +127,7 @@
       : `${value} (missing ruleset)`;
   }
 
-  $effect(() => {
-    if (!open) return;
+  function initializeForm() {
     error = null;
 
     if (mode === "edit" && rule) {
@@ -138,9 +138,14 @@
     } else {
       kind = "domain";
       value = "";
-      target = dnsServers[0]?.tag ?? "block";
+      target = dnsServers[0]?.tag ?? LOCAL_DNS_SERVER_TAG;
       comment = "";
     }
+  }
+
+  $effect(() => {
+    // Profile refreshes must not replace a draft while the user is editing.
+    if (open) untrack(initializeForm);
   });
 
   async function handleSubmit(e: Event) {
@@ -288,7 +293,7 @@
           {#if hasUnavailableTarget}
             <p class="text-destructive text-xs">
               DNS server "{target}" no longer exists. Select an available server
-              or Block before saving.
+              or Local (System), or Block before saving.
             </p>
           {/if}
         </div>

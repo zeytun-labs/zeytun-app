@@ -156,6 +156,9 @@ impl CoreManager {
         let mut profile = profile;
         profile.local_proxy = self.profile.local_proxy.clone();
         profile.normalize_policy_graph();
+        crate::core::dns_config::normalize_profile_dns(&mut profile)
+            .map_err(crate::error::CommandError::InvalidInput)?;
+        validate_profile_dns_rules(&profile)?;
         self.profile = profile;
         self.db.save_profile(&self.profile)?;
         Ok(())
@@ -401,6 +404,8 @@ impl CoreManager {
                 dns.hosts = (!hosts.is_empty()).then_some(hosts);
             }
             profile.dns = Some(dns);
+            crate::core::dns_config::normalize_profile_dns(&mut profile)
+                .map_err(crate::error::CommandError::InvalidInput)?;
             validate_profile_dns_rules(&profile)?;
             Some(profile)
         } else {
@@ -908,6 +913,10 @@ impl CoreManager {
 
             self.lifecycle.update_applied_mode(mode);
 
+            if let Err(error) = clash_client.flush_dns_response_cache() {
+                crate::clog!("Could not refresh DNS answers after mode change: {error:?}");
+            }
+
             // Temp overlay follows the mode: switching to Rule re-pushes the
             // full temp+session list; switching to Direct/Global clears it
             // (empty push) so nothing leaks past the clash-mode catch-all.
@@ -1170,6 +1179,10 @@ impl CoreManager {
                 self.lifecycle
                     .update_applied_selection(&input.policy_tag, &input.member_tag);
 
+                if let Err(error) = clash_api.flush_dns_response_cache() {
+                    crate::clog!("Could not refresh DNS answers after proxy change: {error:?}");
+                }
+
                 // Flush all connections on proxy switch to prevent browser keep-alive issues
                 let api_clone = clash_api.clone();
                 std::thread::spawn(move || {
@@ -1303,7 +1316,7 @@ impl CoreManager {
     ) -> Result<(), crate::error::CommandError> {
         let final_server = final_server
             .map(|tag| tag.trim().to_string())
-            .filter(|tag| !tag.is_empty());
+            .filter(|tag| !tag.is_empty() && tag != "local-dns");
 
         if let Some(tag) = &final_server {
             if tag == DNS_HOSTS_SERVER_TAG {
@@ -1329,6 +1342,7 @@ impl CoreManager {
         let mut next_profile = self.profile.clone();
         let dns = next_profile.dns.get_or_insert_with(Default::default);
         dns.final_server = final_server;
+        dns.mode = None;
         self.db.save_profile(&next_profile)?;
         self.profile = next_profile;
         Ok(())
@@ -2082,7 +2096,11 @@ fn normalize_dns_hosts(
         .collect()
 }
 
-fn validate_profile_dns_rules(profile: &ZeytunCore) -> Result<(), crate::error::CommandError> {
+pub(crate) fn validate_profile_dns_rules(
+    profile: &ZeytunCore,
+) -> Result<(), crate::error::CommandError> {
+    crate::core::dns_config::normalize_profile_dns(&mut profile.clone())
+        .map_err(crate::error::CommandError::InvalidInput)?;
     if profile
         .dns
         .as_ref()
@@ -2143,7 +2161,10 @@ fn validate_dns_rules(
                 rule.id
             )));
         }
-        if rule.target != "block" && !server_tags.contains(rule.target.as_str()) {
+        if rule.target != "block"
+            && rule.target != crate::core::zeytun_core_config::DNS_LOCAL_SERVER_TAG
+            && !server_tags.contains(rule.target.as_str())
+        {
             return Err(crate::error::CommandError::InvalidInput(format!(
                 "DNS rule `{}` target `{}` is not a configured DNS server",
                 rule.id, rule.target
@@ -2163,6 +2184,8 @@ fn validate_dns_rules(
                     rule.id, rule.value
                 )));
             }
+        } else {
+            normalize_dns_domain(rule.value.trim().trim_start_matches('.'))?;
         }
     }
 
@@ -2216,6 +2239,7 @@ mod tests {
     fn profile_for_dns_validation() -> ZeytunCore {
         let mut profile = ZeytunCore {
             dns: Some(DnsConfig {
+                mode: None,
                 servers: Some(vec![DnsServer {
                     tag: "primary".to_string(),
                     address: "1.1.1.1".to_string(),
@@ -2282,6 +2306,7 @@ mod tests {
             enabled: true,
         }]);
         let update = DnsConfig {
+            mode: None,
             servers: None,
             final_server: None,
             fake_ip: Some(true),

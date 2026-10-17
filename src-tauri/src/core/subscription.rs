@@ -120,7 +120,11 @@ impl SubscriptionManager {
             .iter()
             .flat_map(|dns| dns.servers.iter().flatten())
         {
-            if let Some(tag) = &server.detour {
+            if let Some(tag) = server
+                .detour
+                .as_ref()
+                .filter(|tag| tag.as_str() != crate::core::zeytun_core_config::DNS_FOLLOW_MODE)
+            {
                 add(Kind::DnsDetour, server.tag.clone(), tag);
             }
         }
@@ -546,7 +550,8 @@ impl SubscriptionManager {
                 dns.servers
                     .iter()
                     .flatten()
-                    .filter_map(|s| s.detour.clone()),
+                    .filter_map(|s| s.detour.clone())
+                    .filter(|tag| tag != crate::core::zeytun_core_config::DNS_FOLLOW_MODE),
             );
         }
         for ruleset in profile.rule_sets.iter().flatten() {

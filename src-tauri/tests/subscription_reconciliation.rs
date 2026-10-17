@@ -372,6 +372,7 @@ fn every_authored_dependency_retains_tombstone_and_duplicate_existing_tags() {
     );
     p.proxies.push(chain);
     p.dns = Some(DnsConfig {
+        mode: None,
         servers: Some(vec![DnsServer {
             tag: "dns".into(),
             name: "DNS".into(),
@@ -543,6 +544,7 @@ fn delete_profile() -> ZeytunCore {
     session.expires_at = 0;
     p.session_rules.push(session);
     p.dns = Some(DnsConfig {
+        mode: None,
         servers: Some(vec![DnsServer {
             tag: "dns".into(),
             name: "DNS".into(),

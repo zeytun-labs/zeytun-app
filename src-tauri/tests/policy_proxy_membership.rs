@@ -139,6 +139,7 @@ fn empty_policies_chain_final_dns_and_live_rules_fail_closed() {
     p.rules.push(serde_json::from_value(json!({"id":2,"kind":"DOMAIN","value":"example.test","outbound":"a","enabled":true,"comment":""})).unwrap());
     p.temp_rules.push(serde_json::from_value(json!({"id":3,"kind":"DOMAIN","value":"temp.test","outbound":"a","enabled":true,"comment":"","expires_at":i64::MAX})).unwrap());
     p.dns = Some(DnsConfig {
+        mode: None,
         servers: Some(vec![DnsServer {
             tag: "dns".into(),
             name: "DNS".into(),

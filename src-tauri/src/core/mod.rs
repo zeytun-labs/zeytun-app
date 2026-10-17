@@ -2,6 +2,7 @@ pub mod auto_update;
 pub mod compiler;
 pub mod constants;
 pub mod daemon;
+pub mod dns_config;
 pub mod dto;
 pub mod events;
 pub mod lifecycle;

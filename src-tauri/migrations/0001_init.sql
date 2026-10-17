@@ -235,6 +235,13 @@ CREATE INDEX IF NOT EXISTS idx_dns_host_profile ON dns_host(profile_id, position
 INSERT OR IGNORE INTO profile (id, name, is_active, outbound_mode, version, position)
 VALUES ('default', 'Default', 1, 'rule', '0.0.1', 0);
 
+-- Editable DNS defaults are part of the initial, unreleased schema.
+INSERT OR IGNORE INTO dns_config (profile_id, final_server)
+VALUES ('default', 'dns-default');
+
+INSERT OR IGNORE INTO dns_server (profile_id, tag, address, detour, position, name)
+VALUES ('default', 'dns-default', 'https://8.8.8.8/dns-query', 'follow-mode', 0, 'Google DoH');
+
 -- Graph revision triggers (increment profile.graph_revision on authored changes)
 CREATE TRIGGER IF NOT EXISTS graph_revision_proxy_insert AFTER INSERT ON proxy
 BEGIN UPDATE profile SET graph_revision = graph_revision + 1 WHERE id IN (NEW.profile_id); END;

@@ -1,4 +1,4 @@
-<script module>
+<script lang="ts" module>
   import type { ResolvedProcess } from "$lib/core/types";
 
   // Module-level cache so identical rule values resolve once per session.

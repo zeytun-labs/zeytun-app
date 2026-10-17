@@ -1,6 +1,7 @@
 pub mod clash_api;
 pub mod config_store;
 pub mod diagnostics;
+pub mod dns_lookup;
 pub mod geoip_update;
 pub mod ip_info;
 pub mod net_probe;

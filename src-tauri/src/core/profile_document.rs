@@ -6,7 +6,7 @@ use crate::core::dto::{
     ZeytunCore, DEFAULT_SELECTOR_POLICY_TAG,
 };
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const FORMAT_IDENTIFIER: &str = "zeytun-profile";
 pub const MAX_DOCUMENT_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
 pub const MAX_SINGLE_ASSET_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
@@ -116,13 +116,19 @@ impl ProfileDocument {
             doc_policies.insert(0, root);
         }
 
+        let mut dns = profile.dns.clone();
+        if let Some(dns) = &mut dns {
+            if dns.mode.is_some() {
+                dns.migrate_legacy();
+            }
+        }
         let doc = ProfileDocument {
             format: FORMAT_IDENTIFIER.to_string(),
             schema_version: CURRENT_SCHEMA_VERSION,
             profile: ProfileDocumentData {
                 name: name.to_string(),
                 icon,
-                dns: profile.dns.clone(),
+                dns,
                 sources: doc_sources,
                 proxies: doc_proxies,
                 policies: doc_policies,
@@ -154,7 +160,7 @@ impl ProfileDocument {
             ));
         }
 
-        if doc.schema_version != CURRENT_SCHEMA_VERSION {
+        if !(1..=CURRENT_SCHEMA_VERSION).contains(&doc.schema_version) {
             return Err(format!(
                 "unsupported schema_version {}, current supported is {}",
                 doc.schema_version, CURRENT_SCHEMA_VERSION
@@ -230,6 +236,9 @@ impl ProfileDocument {
             }
         }
 
+        let (mut profile, _) = self.to_zeytun_core("dns-validation");
+        crate::core::dns_config::normalize_profile_dns(&mut profile)?;
+        crate::core::manager::validate_profile_dns_rules(&profile).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -263,7 +272,12 @@ impl ProfileDocument {
     pub fn to_zeytun_core(&self, new_id: &str) -> (ZeytunCore, Vec<SubscriptionSource>) {
         let mut core = ZeytunCore {
             id: new_id.to_string(),
-            dns: self.profile.dns.clone(),
+            dns: Some(
+                self.profile
+                    .dns
+                    .clone()
+                    .unwrap_or_else(DnsConfig::with_default_server),
+            ),
             proxies: self.profile.proxies.clone(),
             policies: self.profile.policies.clone(),
             rules: self.profile.rules.clone(),
@@ -271,6 +285,15 @@ impl ProfileDocument {
             ..ZeytunCore::default()
         };
         core.normalize_policy_graph();
+        if self.schema_version == 1 {
+            core.dns
+                .get_or_insert_with(Default::default)
+                .migrate_legacy();
+        } else if let Some(dns) = &mut core.dns {
+            if dns.mode.is_some() {
+                dns.migrate_legacy();
+            }
+        }
         (core, self.profile.sources.clone())
     }
 }

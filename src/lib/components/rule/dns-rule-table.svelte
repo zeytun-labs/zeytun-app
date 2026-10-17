@@ -1,17 +1,16 @@
 <script lang="ts">
   import { Badge } from "$lib/components/ui/badge/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
-  import * as Empty from "$lib/components/ui/empty/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { Add01Icon, AddressBookIcon } from "@hugeicons/core-free-icons";
   import type {
     DnsRuleDto,
     DnsRuleKind,
     DnsRuleTarget,
     DnsServer,
+    OutboundMode,
   } from "$lib/core/types";
   import { cn } from "$lib/utils";
+  import { dnsRuleTargetLabel, LOCAL_DNS_SERVER_TAG } from "$lib/core/dns-servers";
+  import DnsRowActions from "./dns-row-actions.svelte";
   import CellEnabled from "./cell-enabled.svelte";
 
   export type { DnsRuleKind, DnsRuleTarget };
@@ -28,12 +27,15 @@
     selectedId: string | null;
     onSelect: (id: string) => void;
     onEdit: (id: string) => void;
+    onDelete: (id: string) => void;
     onToggleEnabled?: (id: string, enabled: boolean) => void;
     /** `dns.final`: the resolver for queries no rule matched. Null = local. */
     finalTarget?: string | null;
+    fakeIp?: boolean;
+    outboundMode?: OutboundMode;
+    savedPolicy?: boolean;
     onFinalChange?: (target: string | null) => void;
     disabled?: boolean;
-    onAddRule?: () => void;
   }
 
   let {
@@ -42,14 +44,17 @@
     selectedId,
     onSelect,
     onEdit,
+    onDelete,
     onToggleEnabled,
     finalTarget = null,
+    fakeIp = false,
+    outboundMode = "rule",
+    savedPolicy = false,
     onFinalChange,
     disabled = false,
-    onAddRule,
   }: Props = $props();
 
-  const GRID = "grid-cols-[44px_110px_1fr_160px_1fr]";
+  const GRID = "grid-cols-[44px_110px_1fr_160px_1fr_40px]";
 
   function targetBadgeStyle(target: DnsRuleTarget) {
     return target === "block"
@@ -58,9 +63,7 @@
   }
 
   function targetLabel(target: DnsRuleTarget) {
-    if (target === "block") return "Block";
-    const server = dnsServers.find((s) => s.tag === target);
-    return server?.name || target;
+    return dnsRuleTargetLabel(target, dnsServers);
   }
 
   function kindLabel(kind: DnsRuleKind) {
@@ -76,12 +79,18 @@
 
   // A stale tag (server deleted while it was `final`) still renders, so the row
   // never silently lies about which resolver the core will use.
-  const finalValue = $derived(finalTarget ?? LOCAL_VALUE);
+  const finalValue = $derived(
+    !finalTarget || finalTarget === LOCAL_DNS_SERVER_TAG ? LOCAL_VALUE : finalTarget,
+  );
   const finalLabel = $derived.by(() => {
-    if (!finalTarget) return "Local (System)";
+    if (!finalTarget || finalTarget === LOCAL_DNS_SERVER_TAG) return "Local (System)";
     const server = dnsServers.find((s) => s.tag === finalTarget);
     return server?.name || `${finalTarget} (missing)`;
   });
+  const fakeIpEffective = $derived(fakeIp && outboundMode !== "direct");
+  const finalDescription = $derived(
+    `${savedPolicy ? "Saved settings. " : ""}Final never overrides Hosts or matching DNS rules. Local names use Local (System). ${fakeIpEffective ? "Unmatched A / AAAA queries use FakeIP before Final." : fakeIp && outboundMode === "direct" ? "FakeIP is bypassed in Direct mode." : "Final resolves unmatched queries."}`,
+  );
 </script>
 
 <div class="w-full text-sm">
@@ -101,79 +110,51 @@
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
       Comment
     </div>
+    <div class="sr-only">Actions</div>
   </div>
   <div class="p-0">
-    {#if rules.length === 0}
-      <div class="p-6">
-        <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
-          <Empty.Media variant="icon">
-            <HugeiconsIcon
-              icon={AddressBookIcon}
-              class="size-5 text-muted-foreground"
-            />
-          </Empty.Media>
-          <Empty.Header>
-            <Empty.Title>No DNS rules configured</Empty.Title>
-            <Empty.Description>
-              Add DNS routing rules to route domain lookups to specific resolvers.
-            </Empty.Description>
-          </Empty.Header>
-          {#if onAddRule}
-            <Empty.Content>
-              <Button variant="outline" size="sm" class="gap-1.5" onclick={onAddRule}>
-                <HugeiconsIcon icon={Add01Icon} class="size-4" />
-                Add DNS Rule
-              </Button>
-            </Empty.Content>
-          {/if}
-        </Empty.Root>
-      </div>
-    {:else}
-      {#each rules as r, i (r.id)}
-        {#if i > 0}<div class="h-px w-full bg-border/40"></div>{/if}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          data-state={selectedId === r.id ? "selected" : undefined}
-          class="h-12 grid {GRID} items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors px-2 cursor-pointer {r.enabled ===
-          false
-            ? 'opacity-50'
-            : ''}"
-          onclick={() => onSelect(r.id)}
-          ondblclick={() => onEdit(r.id)}
-        >
-          <div class="px-2 flex items-center justify-center">
-            <CellEnabled
-              checked={r.enabled !== false}
-              {disabled}
-              onChange={(v) => onToggleEnabled?.(r.id, v)}
-            />
-          </div>
-          <div class="px-2 flex items-center">
-            <Badge
-              variant="secondary"
-              class="text-muted-foreground uppercase font-mono"
-            >
-              {kindLabel(r.kind)}
-            </Badge>
-          </div>
-          <div
-            class="px-2 truncate font-mono font-medium text-foreground"
-            title={r.value}
-          >
-            {r.value}
-          </div>
-          <div class="px-2 flex items-center">
-            <Badge class={cn(targetBadgeStyle(r.target), "font-mono")}>
-              {targetLabel(r.target)}
-            </Badge>
-          </div>
-          <div class="px-2 truncate italic text-muted-foreground/60">
-            {r.comment || "—"}
-          </div>
+    {#each rules as r, i (r.id)}
+      {#if i > 0}<div class="h-px w-full bg-border/40"></div>{/if}
+      <DnsRowActions
+        label={`DNS rule ${r.value}`}
+        selected={selectedId === r.id}
+        {disabled}
+        class="h-12 grid {GRID} items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors px-2 cursor-pointer {r.enabled === false ? 'opacity-50' : ''}"
+        onSelect={() => onSelect(r.id)}
+        onEdit={() => onEdit(r.id)}
+        onDelete={() => onDelete(r.id)}
+      >
+        <div class="px-2 flex items-center justify-center">
+          <CellEnabled
+            checked={r.enabled !== false}
+            {disabled}
+            onChange={(v) => onToggleEnabled?.(r.id, v)}
+          />
         </div>
-      {/each}
-    {/if}
+        <div class="px-2 flex items-center">
+          <Badge
+            variant="secondary"
+            class="text-muted-foreground uppercase font-mono"
+          >
+            {kindLabel(r.kind)}
+          </Badge>
+        </div>
+        <div
+          class="px-2 truncate font-mono font-medium text-foreground"
+          title={r.value}
+        >
+          {r.value}
+        </div>
+        <div class="px-2 flex items-center">
+          <Badge class={cn(targetBadgeStyle(r.target), "font-mono")}>
+            {targetLabel(r.target)}
+          </Badge>
+        </div>
+        <div class="px-2 truncate italic text-muted-foreground/60">
+          {r.comment || "—"}
+        </div>
+      </DnsRowActions>
+    {/each}
 
     <!--
       `dns.final` as the last row. It is always in effect and cannot be
@@ -181,10 +162,10 @@
       leaving it unset lets the core promote whichever server happens to be
       first — which once made the hosts table resolve everything.
     -->
-    <div class="h-px w-full bg-border/70"></div>
+    {#if rules.length > 0}<div class="h-px w-full bg-border/70"></div>{/if}
     <div
       class="h-12 grid {GRID} items-center bg-muted/20 px-2"
-      title="Always last. Resolves every query no rule above matched."
+      title={finalDescription}
     >
       <div class="px-2 flex items-center justify-center">
         <CellEnabled checked disabled onChange={() => {}} />
@@ -198,7 +179,7 @@
         </Badge>
       </div>
       <div class="px-2 truncate text-muted-foreground">
-        Everything else (unmatched queries)
+        {fakeIpEffective ? "Remaining queries (after FakeIP)" : "Everything else (unmatched queries)"}
       </div>
       <div class="px-2 flex items-center">
         <Select.Root
@@ -224,8 +205,9 @@
         </Select.Root>
       </div>
       <div class="px-2 truncate italic text-muted-foreground/60">
-        Default resolver — cannot be disabled
+        {savedPolicy ? "Saved · " : ""}{fakeIpEffective ? "A / AAAA use FakeIP before Final" : fakeIp && outboundMode === "direct" ? "FakeIP bypassed in Direct mode" : "Fallback — specific rules take priority"}
       </div>
+      <div></div>
     </div>
   </div>
 </div>

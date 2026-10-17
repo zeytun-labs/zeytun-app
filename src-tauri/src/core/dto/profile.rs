@@ -274,6 +274,9 @@ pub struct DnsServer {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DnsConfig {
+    /// Read-only compatibility with profiles written before editable Final.
+    #[serde(default, skip_serializing)]
+    pub mode: Option<DnsMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub servers: Option<Vec<DnsServer>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -284,6 +287,64 @@ pub struct DnsConfig {
     pub rules: Option<Vec<DnsRule>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts: Option<Vec<DnsHostEntry>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DnsMode {
+    Automatic,
+    Manual,
+}
+
+impl DnsConfig {
+    pub fn with_default_server() -> Self {
+        let mut dns = Self::default();
+        dns.add_default_server();
+        dns
+    }
+
+    /// Materialize the former implicit Google default once, retaining authored
+    /// servers/rules/hosts and explicit Manual/remote Final choices.
+    pub fn migrate_legacy(&mut self) {
+        let was_automatic = self.mode == Some(DnsMode::Automatic)
+            || (self.mode.is_none()
+                && self
+                    .final_server
+                    .as_deref()
+                    .is_none_or(|tag| tag.trim().is_empty() || tag == "local-dns"));
+        for server in self.servers.as_deref_mut().unwrap_or_default() {
+            if server.detour.as_deref().is_none_or(|d| d.trim().is_empty()) {
+                server.detour = Some("direct".into());
+            }
+        }
+        if was_automatic {
+            self.add_default_server();
+        } else if self
+            .final_server
+            .as_deref()
+            .is_none_or(|tag| tag.trim().is_empty())
+        {
+            self.final_server = Some("local-dns".into());
+        }
+        self.mode = None;
+    }
+
+    fn add_default_server(&mut self) {
+        let servers = self.servers.get_or_insert_with(Vec::new);
+        let mut tag = "dns-default".to_string();
+        let mut suffix = 1;
+        while servers.iter().any(|server| server.tag == tag) {
+            tag = format!("dns-default-{suffix}");
+            suffix += 1;
+        }
+        servers.push(DnsServer {
+            tag: tag.clone(),
+            name: "Google DoH".into(),
+            address: "https://8.8.8.8/dns-query".into(),
+            detour: Some("follow-mode".into()),
+        });
+        self.final_server = Some(tag);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,7 +497,7 @@ impl Default for ZeytunCore {
                 log_level: Some("info".to_string()),
                 connection_ask: None,
             },
-            dns: None,
+            dns: Some(DnsConfig::with_default_server()),
             rule_sets: None,
             policies: vec![Self::default_root_policy(
                 DEFAULT_SELECTOR_POLICY_TAG,

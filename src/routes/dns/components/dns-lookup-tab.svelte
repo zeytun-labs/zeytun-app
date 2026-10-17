@@ -1,262 +1,240 @@
 <script lang="ts">
-  import { toast } from "svelte-sonner";
-  import * as Card from "$lib/components/ui/card";
-  import { Input } from "$lib/components/ui/input/index.js";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import { Spinner } from "$lib/components/ui/spinner";
-  import { HugeiconsIcon } from "@hugeicons/svelte";
+  import { onDestroy } from "svelte";
+  import { profileStore } from "$lib/stores/profile.svelte";
+  import { Input } from "$lib/components/ui/input";
+  import { Button } from "$lib/components/ui/button";
+  import { Checkbox } from "$lib/components/ui/checkbox";
+  import * as Select from "$lib/components/ui/select";
   import {
-    Activity01Icon,
-    Copy01Icon,
-    GlobalSearchIcon,
-    Search01Icon,
-    ServerStack01Icon,
-    Target01Icon,
-    Tick01Icon,
-  } from "@hugeicons/core-free-icons";
-  import { testDnsLookup, type DnsLookupResult } from "$lib/core/api";
+    testDnsLookup,
+    testSystemDnsLookup,
+    type DnsLookupResult,
+    type DnsRecordType,
+  } from "$lib/core/api";
+  import { compareDnsAnswers, normalizeLookupDomain, type DnsComparison } from "$lib/core/dns-diagnostics";
+  import { createDnsLoadingIndicator, shouldCompareSystem } from "$lib/core/dns-loading";
+  import { LOCAL_DNS_SERVER_TAG } from "$lib/core/dns-servers";
+  import { dnsResolverLabel, dnsLookupServerTag } from "$lib/core/dns-policy";
   import { errorMessage } from "$lib/errors";
+  import DnsLookupResultPanel from "./dns-lookup-result.svelte";
+  import LoadingIcon from "./loading-icon.svelte";
 
-  let domain = $state("youtube.com");
-  let isLoading = $state(false);
-  let lookupResult = $state<DnsLookupResult | null>(null);
-  let queriedDomain = $state("");
-  let lookupError = $state<string | null>(null);
-  let copied = $state(false);
-
-  const statusNames: Record<number, string> = {
-    0: "SUCCESS",
-    1: "FORMERR",
-    2: "SERVFAIL",
-    3: "NXDOMAIN",
-    4: "NOTIMP",
-    5: "REFUSED",
-    6: "YXDOMAIN",
-    7: "YXRRSET",
-    8: "NXRRSET",
-    9: "NOTAUTH",
-    10: "NOTZONE",
+  const AUTOMATIC = "__automatic__";
+  const recordTypes: DnsRecordType[] = ["A", "AAAA", "CNAME"];
+  let domain = $state("");
+  let recordType = $state<DnsRecordType>("A");
+  let server = $state<string | null>(null);
+  let bypassCache = $state(false);
+  let compareSystem = $state(false);
+  let coreLoading = $state(false);
+  let systemLoading = $state(false);
+  type DisplayedResponse = {
+    domain: string;
+    recordType: DnsRecordType;
+    result: DnsLookupResult | null;
+    error: string | null;
   };
+  let coreResponse = $state<DisplayedResponse | null>(null);
+  let systemResponse = $state<DisplayedResponse | null>(null);
+  let formError = $state<string | null>(null);
+  let pendingDomain = $state("");
+  let pendingType = $state<DnsRecordType>("A");
+  let requestId = $state(0);
+  let comparisonResponse = $state<{
+    domain: string; recordType: DnsRecordType; kind: DnsComparison;
+  } | null>(null);
+  let showLoading = $state(false);
+  const loadingIndicator = createDnsLoadingIndicator((visible) => { showLoading = visible; });
+  let generation = 0;
+  onDestroy(() => {
+    generation++;
+    loadingIndicator.dispose();
+  });
 
-  function statusLabel(status: number): string {
-    return statusNames[status] ?? "DNS ERROR";
-  }
+  const servers = $derived(profileStore.profile?.dns?.servers ?? []);
+  const canCompare = $derived(recordType !== "CNAME");
+  const willCompare = $derived(shouldCompareSystem(server, recordType, compareSystem));
+  const isLoading = $derived(coreLoading || systemLoading);
+  const busy = $derived(isLoading || showLoading);
+  const serverLabel = $derived(server === null ? "Automatic · DNS rules" : dnsResolverLabel(server, servers));
 
-  function hasAddresses(result: DnsLookupResult): boolean {
-    return result.resolved_ips.length > 0;
-  }
-
-  function resultTone(result: DnsLookupResult): string {
-    if (result.status !== 0) {
-      return "border-red-500/20 bg-red-500/10 text-red-500";
-    }
-    if (!hasAddresses(result)) {
-      return "border-amber-500/20 bg-amber-500/10 text-amber-500";
-    }
-    return "border-emerald-500/20 bg-emerald-500/10 text-emerald-500";
-  }
-
-  function resultDot(result: DnsLookupResult): string {
-    if (result.status !== 0) return "bg-red-500";
-    return hasAddresses(result) ? "bg-emerald-500" : "bg-amber-500";
-  }
-
-  async function handleLookup() {
-    const query = domain.trim();
+  async function handleLookup(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    const query = normalizeLookupDomain(domain);
     if (!query) {
-      toast.error("Please enter a valid domain.");
+      formError = "Enter a domain name without a URL, path, or port.";
       return;
     }
+    formError = null;
+    const type = recordType;
+    const selectedServer = server;
+    const runtimeServer = dnsLookupServerTag(selectedServer, servers, profileStore.outboundMode);
+    const skipCache = bypassCache;
+    const compare = shouldCompareSystem(selectedServer, type, compareSystem);
+    const current = ++generation;
+    requestId++;
+    pendingDomain = query;
+    pendingType = type;
+    coreLoading = true;
+    systemLoading = compare;
+    loadingIndicator.start();
+    let nextCore: DisplayedResponse | null = null;
+    let nextSystem: DisplayedResponse | null = null;
 
-    isLoading = true;
-    lookupResult = null;
-    lookupError = null;
-    queriedDomain = query;
-
-    try {
-      const result = await testDnsLookup(query);
-      lookupResult = result;
-      if (result.status === 0 && result.resolved_ips.length > 0) {
-        toast.success(`DNS lookup completed for ${query}.`);
+    async function runCore() {
+      try {
+        if (!profileStore.isRunning) throw new Error("Start the core to query its DNS resolver.");
+        const result = await testDnsLookup(query!, type, runtimeServer, skipCache);
+        nextCore = { domain: query!, recordType: type, result, error: null };
+      } catch (error) {
+        nextCore = { domain: query!, recordType: type, result: null, error: errorMessage(error) };
+      } finally {
+        if (generation === current) {
+          coreResponse = nextCore;
+          coreLoading = false;
+        }
       }
-    } catch (error) {
-      console.error("DNS lookup error:", error);
-      lookupError = `DNS lookup failed: ${errorMessage(error)}`;
-      toast.error(lookupError);
-    } finally {
-      isLoading = false;
     }
-  }
-
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Enter") void handleLookup();
-  }
-
-  async function copyAddresses() {
-    if (!lookupResult || lookupResult.resolved_ips.length === 0) return;
-    try {
-      await navigator.clipboard.writeText(lookupResult.resolved_ips.join("\n"));
-      copied = true;
-      toast.success(
-        lookupResult.resolved_ips.length === 1
-          ? "IP copied to clipboard."
-          : "IP addresses copied to clipboard.",
-      );
-      setTimeout(() => (copied = false), 2000);
-    } catch {
-      toast.error("Failed to copy IP addresses.");
+    async function runSystem() {
+      try {
+        const result = await testSystemDnsLookup(query!, type);
+        nextSystem = { domain: query!, recordType: type, result, error: null };
+      } catch (error) {
+        nextSystem = { domain: query!, recordType: type, result: null, error: errorMessage(error) };
+      } finally {
+        if (generation === current) {
+          systemResponse = nextSystem;
+          systemLoading = false;
+        }
+      }
     }
+    await Promise.allSettled([runCore(), ...(compare ? [runSystem()] : [])]);
+    if (generation !== current) return;
+    loadingIndicator.finish();
+    if (!compare) systemResponse = null;
+    // Compare only completed responses from the same query, never a stale pair.
+    const core = nextCore as DisplayedResponse | null;
+    const system = nextSystem as DisplayedResponse | null;
+    comparisonResponse = core?.result && system?.result
+      ? { domain: query, recordType: type, kind: compareDnsAnswers(core.result, system.result) }
+      : null;
   }
 </script>
 
-<div class="mx-auto flex w-full max-w-4xl min-w-0 flex-col gap-6">
-  <Card.Root class="bg-card/70 border-border/40 rounded-3xl p-5 shadow-sm sm:p-6">
-    <Card.Header class="p-0 pb-4">
+<div class="flex w-full min-w-0 flex-col gap-4 px-2 pb-2">
+  {#if !profileStore.isRunning}
+    <p role="status" class="rounded-2xl border border-border/60 px-4 py-3 text-xs text-muted-foreground">
+      Start Core to use Lookup. Enable Compare with System to query the system resolver.
+    </p>
+  {:else if profileStore.pendingRestart}
+    <p role="status" class="rounded-2xl border border-border/60 bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
+      Results use active DNS settings. Restart Core to apply your saved changes.
+    </p>
+  {/if}
+
+  <form onsubmit={handleLookup} class="flex min-w-0 flex-col gap-3">
+    <div class="grid min-w-0 grid-cols-[6rem_minmax(0,1fr)] gap-2 lg:grid-cols-[minmax(0,1fr)_6rem_minmax(12rem,15rem)_7rem]">
+      <Input
+        aria-label="Domain to resolve"
+        bind:value={domain}
+        placeholder="Enter a domain, e.g. example.com"
+        class="col-span-2 h-10 min-w-0 rounded-full lg:col-span-1 border-border/60 bg-card/40 px-4 font-mono text-sm"
+        disabled={isLoading}
+        spellcheck={false}
+        autocapitalize="none"
+        autocomplete="off"
+      />
+      <Select.Root type="single" value={recordType} disabled={isLoading} onValueChange={(value) => {
+        if (recordTypes.includes(value as DnsRecordType)) recordType = value as DnsRecordType;
+      }}>
+        <Select.Trigger aria-label="DNS record type" class="data-[size=default]:h-10 w-full rounded-full font-mono">{recordType}</Select.Trigger>
+        <Select.Content>
+          {#each recordTypes as type (type)}<Select.Item value={type} label={type}>{type}</Select.Item>{/each}
+        </Select.Content>
+      </Select.Root>
+      <Select.Root type="single" value={server ?? AUTOMATIC} disabled={isLoading} onValueChange={(value) => { server = value === AUTOMATIC ? null : value; }}>
+        <Select.Trigger id="dns-lookup-resolver" aria-label="Resolver to query" class="data-[size=default]:h-10 w-full min-w-0 rounded-full"><span class="truncate">{serverLabel}</span></Select.Trigger>
+        <Select.Content>
+          <Select.Item value={AUTOMATIC} label="Automatic · DNS rules">Automatic · DNS rules</Select.Item>
+          <Select.Item value={LOCAL_DNS_SERVER_TAG} label="Local (System)">Local (System)</Select.Item>
+          {#each servers as item (item.tag)}<Select.Item value={item.tag} label={item.name}>{item.name}</Select.Item>{/each}
+        </Select.Content>
+      </Select.Root>
+      <Button
+        type="submit"
+        class={`col-span-2 lg:col-span-1 h-10 w-full shrink-0 gap-2 rounded-full bg-primary px-4 hover:bg-primary disabled:bg-primary transition-[background-color,color,box-shadow,opacity] ${busy ? "disabled:opacity-100" : ""}`}
+        disabled={busy || (!profileStore.isRunning && !willCompare)}
+        aria-label="Lookup DNS records"
+        aria-busy={isLoading}
+      >
+        <LoadingIcon loading={showLoading} />
+        Lookup
+      </Button>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-3 px-1 text-xs text-muted-foreground">
       <div class="flex items-center gap-2">
-        <HugeiconsIcon icon={GlobalSearchIcon} class="size-5 text-primary" />
-        <Card.Title class="text-lg font-semibold">DNS Lookup Tool</Card.Title>
+        <Checkbox id="dns-lookup-bypass" bind:checked={bypassCache} disabled={isLoading} />
+        <label for="dns-lookup-bypass" class="cursor-pointer">Bypass Core cache</label>
       </div>
-      <Card.Description class="pl-7 text-xs text-muted-foreground">
-        Test DNS resolution and inspect the response returned by the active core.
-      </Card.Description>
-    </Card.Header>
-
-    <Card.Content class="p-0 pt-2">
-      <div class="flex flex-col items-stretch gap-2.5 sm:flex-row sm:items-center">
-        <div class="relative min-w-0 flex-1">
-          <Input
-            bind:value={domain}
-            placeholder="e.g. youtube.com or api.github.com"
-            class="h-10.5 rounded-2xl border-border/40 bg-muted/40 pl-4 pr-10 font-mono text-sm focus-visible:ring-primary/30"
-            onkeydown={handleKeydown}
-            disabled={isLoading}
-          />
+      {#if server === null}
+        <div class="flex items-center gap-2">
+          <Checkbox id="dns-lookup-system" checked={willCompare} onCheckedChange={(checked) => { compareSystem = checked; }} disabled={isLoading || !canCompare} />
+          <label for="dns-lookup-system" class={canCompare ? "cursor-pointer" : "opacity-50"}>Compare with System</label>
         </div>
-        <Button
-          class="h-10.5 w-full shrink-0 gap-2 rounded-2xl px-6 font-medium shadow-sm sm:w-auto"
-          onclick={handleLookup}
-          disabled={isLoading}
-        >
-          {#if isLoading}
-            <Spinner class="size-4 border-white/30 border-t-white" />
-            <span>Testing...</span>
-          {:else}
-            <HugeiconsIcon icon={Search01Icon} class="size-4" />
-            <span>Test Lookup</span>
-          {/if}
-        </Button>
-      </div>
-    </Card.Content>
-  </Card.Root>
+        {#if !canCompare}<span>System comparison supports A and AAAA, not CNAME.</span>{/if}
+      {/if}
+    </div>
+    {#if server !== null || bypassCache}
+      <p class="px-1 text-[11px] leading-relaxed text-muted-foreground">
+        {server !== null ? "A specific resolver bypasses DNS rules, Hosts, and the FakeIP fallback. " : ""}
+        {bypassCache ? "Bypass skips the Core DNS response cache for this query; FakeIP mappings and macOS cache are unchanged. " : ""}
+        Advanced options require a compatible core.
+      </p>
+    {/if}
+    {#if formError}<p role="alert" class="px-1 text-xs text-destructive">{formError}</p>{/if}
+  </form>
 
-  {#if isLoading}
-    <Card.Root class="bg-card/70 border-border/40 flex flex-col items-center justify-center gap-3 rounded-3xl p-8 text-center shadow-sm">
-      <Spinner class="size-7 text-primary" />
-      <div class="flex flex-col gap-1">
-        <p class="text-sm font-medium text-foreground">Resolving domain...</p>
-        <p class="font-mono text-xs text-muted-foreground">{queriedDomain}</p>
-      </div>
-    </Card.Root>
-  {:else if lookupError}
-    <Card.Root class="rounded-3xl border-destructive/30 bg-destructive/10 p-5 shadow-sm">
-      <p class="wrap-break-word text-sm text-destructive">{lookupError}</p>
-    </Card.Root>
-  {:else if lookupResult}
-    <Card.Root class="bg-card/70 border-border/40 flex min-w-0 flex-col gap-5 rounded-3xl p-5 shadow-sm sm:p-6">
-      <div class="flex min-w-0 flex-col gap-3 border-b border-border/30 pb-4 sm:flex-row sm:items-center sm:justify-between">
-        <div class="flex min-w-0 items-center gap-2.5">
-          <span class={`size-2.5 shrink-0 rounded-full ${resultDot(lookupResult)}`}></span>
-          <span class="truncate font-mono text-base font-semibold text-foreground" title={queriedDomain}>
-            {queriedDomain}
-          </span>
-        </div>
-        <span class={`inline-flex w-fit items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${resultTone(lookupResult)}`}>
-          {statusLabel(lookupResult.status)} ({lookupResult.status})
-        </span>
-      </div>
-
-      <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <div class="flex min-w-0 flex-col gap-2 rounded-2xl border border-border/30 bg-background/60 p-4 transition-colors hover:bg-background/80 md:col-span-1">
-          <div class="flex items-center justify-between gap-2">
-            <span class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <HugeiconsIcon icon={Target01Icon} class="size-3.5 text-emerald-500" />
-              Resolved IPs
-            </span>
-            {#if lookupResult.resolved_ips.length > 0}
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                class="text-muted-foreground hover:text-foreground"
-                onclick={copyAddresses}
-                title="Copy all resolved IP addresses"
-              >
-                {#if copied}
-                  <HugeiconsIcon icon={Tick01Icon} class="size-3.5 text-emerald-500" />
-                {:else}
-                  <HugeiconsIcon icon={Copy01Icon} class="size-3.5" />
-                {/if}
-              </Button>
-            {/if}
-          </div>
-
-          {#if lookupResult.resolved_ips.length > 0}
-            <div class="flex min-w-0 flex-col gap-1.5">
-              {#each lookupResult.resolved_ips as ip (ip)}
-                <span class="break-all rounded-lg bg-muted/30 px-2 py-1 font-mono text-sm font-semibold text-foreground">
-                  {ip}
-                </span>
-              {/each}
-            </div>
-          {:else if lookupResult.status === 3}
-            <p class="text-sm text-muted-foreground">
-              This domain does not exist (NXDOMAIN); no IP addresses were returned.
-            </p>
-          {:else if lookupResult.status === 0}
-            <p class="text-sm text-muted-foreground">
-              The lookup succeeded, but no {lookupResult.record_type || "requested"} records were returned.
-            </p>
-          {:else}
-            <p class="text-sm text-muted-foreground">
-              The resolver returned {statusLabel(lookupResult.status)} without any IP addresses.
-            </p>
-          {/if}
-        </div>
-
-        <div class="flex min-w-0 flex-col gap-1.5 rounded-2xl border border-border/30 bg-background/60 p-4 transition-colors hover:bg-background/80">
-          <span class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <HugeiconsIcon icon={ServerStack01Icon} class="size-3.5 text-sky-500" />
-            DNS Server Used
-          </span>
-          <span class="wrap-break-word font-mono text-base font-bold tracking-tight text-foreground">
-            {lookupResult.server_used || "Not reported"}
-          </span>
-        </div>
-
-        <div class="flex flex-col gap-1.5 rounded-2xl border border-border/30 bg-background/60 p-4 transition-colors hover:bg-background/80">
-          <span class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <HugeiconsIcon icon={Activity01Icon} class="size-3.5 text-amber-500" />
-            Query Latency
-          </span>
-          <span class="font-mono text-base font-bold tracking-tight text-foreground">
-            {lookupResult.latency_ms} ms
-          </span>
-        </div>
-      </div>
-
-      <div class="flex flex-col gap-2 rounded-2xl border border-border/20 bg-muted/30 px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-        <span>
-          Record Type:
-          <strong class="font-mono text-foreground">
-            {lookupResult.record_type || "Not reported"}
-          </strong>
-        </span>
-        <span>
-          TTL:
-          <strong class="font-mono text-foreground">
-            {lookupResult.ttl === null ? "Not provided" : `${lookupResult.ttl}s`}
-          </strong>
-        </span>
-      </div>
-    </Card.Root>
+  {#if comparisonResponse}
+    <p role="status" class="rounded-2xl border border-border/50 bg-card/20 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+      <span class="font-mono text-foreground">{comparisonResponse.domain} · {comparisonResponse.recordType}</span>
+      <span aria-hidden="true" class="px-1 opacity-50">—</span>
+      {#if comparisonResponse.kind === "same"}
+        Core and System returned the same address set.
+      {:else if comparisonResponse.kind === "fakeip"}
+        One response contains FakeIP virtual addresses, so public IP equality is not expected. Different resolvers and CDN locations may also return different public addresses.
+      {:else if comparisonResponse.kind === "different"}
+        The address sets differ. Different DNS resolvers, CDN locations, and caches can return different valid answers. This comparison alone does not identify the cause.
+      {:else}
+        These responses cannot be compared as address sets because one has an error or no address answers.
+      {/if}
+    </p>
+  {/if}
+  {#if coreResponse || (coreLoading && showLoading)}
+    <DnsLookupResultPanel
+      title="Core"
+      domain={coreResponse?.domain ?? pendingDomain}
+      recordType={coreResponse?.recordType ?? pendingType}
+      result={coreResponse?.result ?? null}
+      error={coreResponse?.error ?? null}
+      loading={coreLoading && showLoading}
+      pendingDomain={pendingDomain}
+      pendingType={pendingType}
+      revision={requestId}
+    />
+  {/if}
+  {#if systemResponse || (systemLoading && showLoading)}
+    <DnsLookupResultPanel
+      title="System"
+      domain={systemResponse?.domain ?? pendingDomain}
+      recordType={systemResponse?.recordType ?? pendingType}
+      result={systemResponse?.result ?? null}
+      error={systemResponse?.error ?? null}
+      loading={systemLoading && showLoading}
+      pendingDomain={pendingDomain}
+      pendingType={pendingType}
+      revision={requestId}
+    />
   {/if}
 </div>

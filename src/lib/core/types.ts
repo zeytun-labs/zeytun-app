@@ -371,14 +371,15 @@ export type UpdateProfileInput = {
 export type DnsServer = {
   tag: string;
   address: string;
+  /** follow-mode tracks connection mode; legacy absent values mean Direct. */
   detour?: string | null;
   name: string;
 };
 
 export type DnsRuleKind = "domain" | "domain_suffix" | "ruleset";
 
-/** A configured DNS server tag, or the backend's built-in block action. */
-export type DnsRuleTarget = DnsServer["tag"] | "block";
+/** A configured DNS server tag, the built-in system resolver, or block action. */
+export type DnsRuleTarget = DnsServer["tag"] | "local-dns" | "block";
 
 export type DnsHostEntry = {
   id: string;

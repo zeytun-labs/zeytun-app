@@ -55,6 +55,12 @@ pub struct ClashProxiesResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClashDnsQueryResponse {
+    #[serde(default, rename = "Authority")]
+    pub authority: Vec<ClashDnsAnswer>,
+    #[serde(default, rename = "Additional")]
+    pub additional: Vec<ClashDnsAnswer>,
+    #[serde(default, rename = "Trace")]
+    pub trace: Option<crate::adapters::dns_lookup::DnsLookupTrace>,
     #[serde(rename = "Status")]
     pub status: u16,
     #[serde(default, rename = "Answer")]
@@ -65,6 +71,8 @@ pub struct ClashDnsQueryResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClashDnsAnswer {
+    #[serde(default, rename = "Name", alias = "name")]
+    pub name: String,
     #[serde(rename = "Type", alias = "type")]
     pub record_type: u16,
     #[serde(rename = "TTL", alias = "ttl")]
@@ -234,14 +242,64 @@ impl ClashApiClient {
     }
 
     pub fn dns_query(&self, name: &str) -> Result<ClashDnsQueryResponse, ClashApiError> {
-        let path = format!("/dns/query?name={}&type=A", urlencode_query(name));
-        let response = self.get(&path)?;
+        self.dns_query_with_options(name, "A", None, false)
+    }
+
+    pub fn dns_query_with_options(
+        &self,
+        name: &str,
+        record_type: &str,
+        server: Option<&str>,
+        bypass_cache: bool,
+    ) -> Result<ClashDnsQueryResponse, ClashApiError> {
+        if server.is_some() || bypass_cache {
+            let capabilities = self.get_dns("/dns/capabilities")
+                .and_then(|response| self.expect_success("/dns/capabilities", response))
+                .and_then(|response| response.into_string().map_err(|e| ClashApiError::RequestFailed(e.to_string())))
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).map_err(|e| ClashApiError::NotExpected(e.to_string())))
+                .map_err(|_| ClashApiError::NotExpected("Per-server testing and cache bypass require the updated DNS diagnostics core. Rebuild/update the bundled Core.".into()))?;
+            if capabilities["diagnostics_version"].as_u64() != Some(1)
+                || (server.is_some() && capabilities["explicit_server"] != true)
+                || (bypass_cache && capabilities["bypass_cache"] != true)
+            {
+                return Err(ClashApiError::NotExpected(
+                    "The running core does not support these DNS diagnostic options".into(),
+                ));
+            }
+        }
+        let mut path = format!(
+            "/dns/query?name={}&type={}",
+            urlencode_query(name),
+            urlencode_query(record_type)
+        );
+        if let Some(server) = server {
+            path.push_str(&format!("&server={}", urlencode_query(server)));
+        }
+        if bypass_cache {
+            path.push_str("&bypass_cache=true");
+        }
+        let response = self.get_dns(&path)?;
         let response = self.expect_success(&path, response)?;
         let body = response
             .into_string()
             .map_err(|e| ClashApiError::RequestFailed(e.to_string()))?;
         serde_json::from_str(&body)
             .map_err(|e| ClashApiError::NotExpected(format!("invalid DNS query response: {e}")))
+    }
+
+    fn get_dns(&self, path: &str) -> Result<ureq::Response, ClashApiError> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(15))
+            .build();
+        let mut request = agent
+            .get(&format!("http://{}{}", self.controller, path))
+            .set("User-Agent", "Zeytun/0.1");
+        if let Some(secret) = &self.secret {
+            request = request.set("Authorization", &format!("Bearer {secret}"));
+        }
+        request
+            .call()
+            .map_err(|e| ClashApiError::RequestFailed(e.to_string()))
     }
 
     pub fn flush_dns_cache(&self) -> Result<(), ClashApiError> {
@@ -260,6 +318,14 @@ impl ClashApiClient {
                 "DNS cache flush failed: {dns_error:?}; FakeIP cache flush failed: {fakeip_error:?}"
             ))),
         }
+    }
+
+    /// Refresh real answers when the exit path changes; keep FakeIP mappings
+    /// alive so applications holding virtual addresses can still connect.
+    pub fn flush_dns_response_cache(&self) -> Result<(), ClashApiError> {
+        self.post("/cache/dns/flush", "")
+            .and_then(|response| self.expect_success("/cache/dns/flush", response))
+            .map(|_| ())
     }
 
     fn expect_success(
@@ -406,6 +472,32 @@ fn urlencoding(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_dns_server_fails_closed_with_older_core() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let count = stream.read(&mut request).unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..count]).starts_with("GET /dns/capabilities ")
+            );
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let client = ClashApiClient::new(address.to_string(), None);
+        let error = client
+            .dns_query_with_options("example.com", "AAAA", Some("google"), false)
+            .unwrap_err();
+        assert!(error.to_string().contains("updated DNS diagnostics core"));
+        server.join().unwrap();
+    }
 
     #[test]
     fn parses_uppercase_dns_query_response_fields() {

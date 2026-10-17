@@ -235,6 +235,7 @@ fn allocated_tags_are_used_for_all_outbound_reference_fields() {
     p.temp_rules.push(serde_json::from_value(json!({"id":3,"kind":"DOMAIN","value":"temp.test","outbound":"saved","enabled":true,"comment":"","expires_at":i64::MAX})).unwrap());
     p.session_rules.push(serde_json::from_value(json!({"id":4,"kind":"DOMAIN","value":"session.test","outbound":" policy ","enabled":true,"comment":"","expires_at":0,"session":true})).unwrap());
     p.dns = Some(DnsConfig {
+        mode: None,
         servers: Some(vec![DnsServer {
             tag: "dns".into(),
             name: "DNS".into(),

@@ -1,35 +1,25 @@
 <script lang="ts">
-  import { HugeiconsIcon } from "@hugeicons/svelte";
-  import {
-    Add01Icon,
-    Delete01Icon,
-    Search01Icon,
-  } from "@hugeicons/core-free-icons";
-  import { coreUpdateDnsFinal, coreUpdateDnsRules } from "$lib/core/api";
+  import { coreUpdateDnsRules } from "$lib/core/api";
+  import { dnsRuleTargetExists } from "$lib/core/dns-servers";
   import type { DnsRuleDto, RuleSet } from "$lib/core/types";
   import { profileStore } from "$lib/stores/profile.svelte";
   import { useAsyncAction } from "$lib/composables/use-async-action.svelte";
-  import { Button } from "$lib/components/ui/button/index.js";
-  import * as InputGroup from "$lib/components/ui/input-group";
   import { Skeleton } from "$lib/components/ui/skeleton/index.js";
   import DnsRuleTable, {
     type DnsRuleItem,
   } from "$lib/components/rule/dns-rule-table.svelte";
   import DnsRuleDialog from "$lib/components/rule/dns-rule-dialog.svelte";
 
-    let {
+  let {
     triggerAdd = $bindable(),
-    triggerDelete = $bindable(),
-    selectedId = $bindable(null),
     search = $bindable(""),
   } = $props<{
     triggerAdd?: () => void;
-    triggerDelete?: () => void;
-    selectedId?: string | null;
     search?: string;
   }>();
 
-    let dialogOpen = $state(false);
+  let selectedId = $state<string | null>(null);
+  let dialogOpen = $state(false);
   let dialogMode = $state<"create" | "edit">("create");
   let editingRule = $state<DnsRuleItem | null>(null);
 
@@ -64,13 +54,11 @@
     );
   });
 
-    $effect(() => {
-    triggerAdd = openCreateDialog;
-    triggerDelete = deleteSelected;
-  });
-  
   $effect(() => {
+    triggerAdd = openCreateDialog;
+  });
 
+  $effect(() => {
     if (dnsRules.length === 0) {
       selectedId = null;
       return;
@@ -92,12 +80,14 @@
   }
 
   function openCreateDialog() {
+    if (action.saving || profileStore.loading) return;
     dialogMode = "create";
     editingRule = null;
     dialogOpen = true;
   }
 
   function openEditDialog(id: string) {
+    if (action.saving || profileStore.loading) return;
     const rule = dnsRules.find((item) => item.id === id);
     if (!rule) return;
 
@@ -108,11 +98,9 @@
   }
 
   async function saveRule(data: Omit<DnsRuleItem, "id" | "enabled">) {
-    const targetExists =
-      data.target === "block" ||
-      dnsServers.some((server) => server.tag === data.target);
+    const targetExists = dnsRuleTargetExists(data.target, dnsServers);
     if (!targetExists) {
-      throw new Error("Select an available DNS server or Block.");
+      throw new Error("Select an available DNS server, Local (System), or Block.");
     }
 
     if (
@@ -154,15 +142,15 @@
     await persistRules(next);
   }
 
-  async function deleteSelected() {
-    if (!selectedId || action.saving) return;
+  async function deleteRule(id: string) {
+    if (action.saving || profileStore.loading || !dnsRules.some((rule) => rule.id === id)) return;
     const next = (profileStore.profile?.dns?.rules ?? []).filter(
-      (rule) => rule.id !== selectedId,
+      (rule) => rule.id !== id,
     );
 
     await action.run(async () => {
       await persistRules(next);
-      selectedId = next[0]?.id ?? null;
+      if (selectedId === id) selectedId = next[0]?.id ?? null;
     });
   }
 
@@ -174,18 +162,16 @@
     await action.run(() => persistRules(next));
   }
 
-  /** `dns.final`: null selects the built-in local (system) resolver. */
+  /** Final is the fallback resolver; specific rules and Hosts keep priority. */
   async function changeFinal(target: string | null) {
     if (action.saving) return;
     await action.run(async () => {
       const profile = profileStore.profile;
       if (!profile) throw new Error("No active profile is available.");
-
-      await coreUpdateDnsFinal(target);
-      const dns = profile.dns ?? {};
-      dns.final_server = target;
-      profile.dns = dns;
-      profileStore.pendingRestart = true;
+      await profileStore.updateProfile({
+        id: profile.id,
+        dns: { ...profile.dns, final_server: target },
+      });
     });
   }
 </script>
@@ -194,7 +180,7 @@
   <div class="min-w-0 overflow-x-auto">
     {#if profileStore.loading}
       <div class="flex min-w-170 flex-col gap-3 p-4">
-        {#each Array(4) as _}
+        {#each [1, 2, 3, 4] as row (row)}
           <Skeleton class="h-11 w-full" />
         {/each}
       </div>
@@ -206,16 +192,19 @@
           selectedId={selectedId}
           onSelect={(id) => (selectedId = id)}
           onEdit={openEditDialog}
+          onDelete={deleteRule}
           onToggleEnabled={toggleEnabled}
           finalTarget={profileStore.profile?.dns?.final_server ?? null}
+          fakeIp={profileStore.profile?.dns?.fake_ip ?? false}
+          outboundMode={profileStore.outboundMode}
+          savedPolicy={profileStore.pendingRestart || !profileStore.isRunning}
           onFinalChange={changeFinal}
           disabled={action.saving}
-          onAddRule={openCreateDialog}
         />
       </div>
     {/if}
   </div>
-  </div>
+</div>
 
 <DnsRuleDialog
   bind:open={dialogOpen}

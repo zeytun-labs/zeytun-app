@@ -6,20 +6,29 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Label } from "$lib/components/ui/label/index.js";
+  import { Skeleton } from "$lib/components/ui/skeleton/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
     Add01Icon,
-    Delete01Icon,
     ServerStack01Icon,
   } from "@hugeicons/core-free-icons";
   import { profileStore } from "$lib/stores/profile.svelte";
   import type { DnsServer } from "$lib/core/types";
+  import { FOLLOW_MODE_DETOUR } from "$lib/core/dns-policy";
+  import {
+    DNS_PROTOCOLS,
+    dnsProtocolFromAddress,
+    dnsAddressWithoutProtocol,
+    upsertDnsServer,
+    dnsServerDeleteError,
+    dnsDetourExists,
+    type DnsProtocol,
+  } from "$lib/core/dns-servers";
+  import DnsRowActions from "$lib/components/rule/dns-row-actions.svelte";
   import Badge from "$lib/components/ui/badge/badge.svelte";
   import { cn } from "$lib/utils";
   import { errorMessage } from "$lib/errors";
-
-  type DnsProtocol = "DoH" | "DoT" | "TCP" | "UDP" | "QUIC";
 
   type UIItem = {
     tag: string;
@@ -31,28 +40,18 @@
 
   let {
     triggerAdd = $bindable(),
-    triggerDelete = $bindable(),
-    selectedId = $bindable(null),
   } = $props<{
     triggerAdd?: () => void;
-    triggerDelete?: () => void;
-    selectedId?: string | null;
   }>();
 
+  let selectedId = $state<string | null>(null);
   let isSaving = $state(false);
+  let operationError = $state<string | null>(null);
 
   // The profile is the only source of truth; never display unpersisted servers.
   const rawServers = $derived<DnsServer[]>(
     profileStore.profile?.dns?.servers ?? [],
   );
-
-  function getProtocolFromAddress(address: string): DnsProtocol {
-    if (address.startsWith("https://")) return "DoH";
-    if (address.startsWith("tls://")) return "DoT";
-    if (address.startsWith("quic://")) return "QUIC";
-    if (address.startsWith("tcp://")) return "TCP";
-    return "UDP";
-  }
 
   // All servers combined
   const allServers = $derived<UIItem[]>(
@@ -60,132 +59,145 @@
       tag: s.tag,
       address: s.address,
       detour: s.detour ?? null,
-      protocol: getProtocolFromAddress(s.address),
+      protocol: dnsProtocolFromAddress(s.address),
       name: s.name,
     })),
   );
 
-  // --- Add Dialog State ---
-  let addDialogOpen = $state(false);
+  // Creating and editing use the same form; editing never replaces a server tag.
+  let dialogOpen = $state(false);
+  let editingTag = $state<string | null>(null);
+  let dialogProfileId = $state<string | null>(null);
+  let dialogError = $state<string | null>(null);
   let newAddress = $state("");
   let newName = $state("");
   let newProtocol = $state<DnsProtocol>("DoH");
-  // Default to null (no detour/core default). User can change to "direct" or a policy.
-  let newDetour = $state<string | null>(null);
-
-  const protocols: DnsProtocol[] = ["DoH", "DoT", "TCP", "UDP", "QUIC"];
+  // New servers follow connection mode; legacy missing detours remain Direct.
+  let newDetour = $state<string | null>(FOLLOW_MODE_DETOUR);
+  const proxyOptions = $derived(
+    (profileStore.profile?.proxies ?? []).map((proxy) => ({
+      tag: proxy.tag,
+      label: `${proxy.title || proxy.tag}${!proxy.enabled ? " (disabled)" : !proxy.available ? " (unavailable)" : ""}`,
+    })),
+  );
 
   onMount(async () => {
     if (!profileStore.profile) {
-      await profileStore.load();
+      try {
+        await profileStore.load();
+      } catch (error) {
+        operationError = errorMessage(error);
+      }
     }
   });
 
   function openAddDialog() {
+    if (isSaving || profileStore.loading || !profileStore.profile) return;
+    editingTag = null;
+    dialogProfileId = profileStore.profile.id;
+    dialogError = null;
+    operationError = null;
     newAddress = "";
     newName = "";
     newProtocol = "DoH";
-    newDetour = null;
-    addDialogOpen = true;
+    newDetour = FOLLOW_MODE_DETOUR;
+    dialogOpen = true;
+  }
+
+  function openEditDialog(tag: string) {
+    if (isSaving || profileStore.loading) return;
+    const server = rawServers.find((item) => item.tag === tag);
+    if (!server || !profileStore.profile) return;
+    selectedId = tag;
+    editingTag = tag;
+    dialogProfileId = profileStore.profile.id;
+    dialogError = null;
+    operationError = null;
+    newName = server.name;
+    newAddress = dnsAddressWithoutProtocol(server.address);
+    newProtocol = dnsProtocolFromAddress(server.address);
+    newDetour = server.detour || "direct";
+    dialogOpen = true;
   }
 
   $effect(() => {
     triggerAdd = openAddDialog;
-    triggerDelete = async () => {
-      if (selectedId) {
-        await removeServer(selectedId);
-        selectedId = null;
-      }
-    };
   });
 
-  function formatAddress(raw: string, protocol: DnsProtocol): string {
-    let clean = raw.trim();
-    if (!clean) return "";
-    // Strip any existing protocol prefix first
-    clean = clean.replace(
-      /^(https?:\/\/|tls:\/\/|quic:\/\/|tcp:\/\/|udp:\/\/)/i,
-      "",
-    );
-    switch (protocol) {
-      case "DoH":
-        return `https://${clean}`;
-      case "DoT":
-        return `tls://${clean}`;
-      case "QUIC":
-        return `quic://${clean}`;
-      case "TCP":
-        return `tcp://${clean}`;
-      case "UDP":
-        return clean;
+  function changeProtocol(protocol: DnsProtocol) {
+    newProtocol = protocol;
+    newAddress = dnsAddressWithoutProtocol(newAddress);
+    dialogError = null;
+  }
+
+  function handleAddressInput(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    if (/^(https|tls|tcp|udp|quic):\/\//i.test(input.value.trim())) {
+      newProtocol = dnsProtocolFromAddress(input.value);
     }
   }
 
   async function persistServers(servers: DnsServer[]) {
-    if (!profileStore.profile) {
-      throw new Error("No active profile is available.");
-    }
+    const profile = profileStore.profile;
+    if (!profile) throw new Error("No active profile is available.");
+    await profileStore.updateProfile({
+      id: profile.id,
+      dns: { ...profile.dns, servers },
+    });
+  }
+
+  async function saveServer(event: SubmitEvent) {
+    event.preventDefault();
+    if (isSaving) return;
+    dialogError = null;
     isSaving = true;
-    const currentDns = profileStore.profile.dns ?? {};
     try {
-      await profileStore.updateProfile({
-        id: profileStore.profile.id,
-        dns: {
-          ...currentDns,
-          servers,
-        },
-      });
-      profileStore.pendingRestart = true;
+      const profile = profileStore.profile;
+      if (!profile || profile.id !== dialogProfileId) {
+        throw new Error("The active profile changed. Close this dialog and try again.");
+      }
+      const selectedDetour = newDetour?.trim() || null;
+      const detour = selectedDetour?.toLowerCase() === "direct" ? "direct" : selectedDetour;
+      if (!dnsDetourExists(detour, profile)) {
+        throw new Error("The selected proxy is no longer available. Select another outbound.");
+      }
+      const tag = editingTag ?? `dns-${crypto.randomUUID()}`;
+      const nextServers = upsertDnsServer(
+        rawServers,
+        { name: newName, address: newAddress, protocol: newProtocol, detour },
+        tag,
+        editingTag !== null,
+      );
+      await persistServers(nextServers);
+      selectedId = tag;
+      toast.success(editingTag ? "DNS server updated." : "DNS server added.");
+      dialogOpen = false;
+    } catch (error) {
+      dialogError = errorMessage(error);
     } finally {
       isSaving = false;
     }
   }
 
-  async function addServer() {
-    const raw = newAddress.trim();
-    if (!raw) {
-      toast.error("Server address is required.");
-      return;
-    }
-    const rawName = newName.trim();
-    if (!rawName) {
-      toast.error("Server name is required.");
-      return;
-    }
-
-    const formattedAddress = formatAddress(raw, newProtocol);
-    const tag = `dns-${Date.now().toString(36)}`;
-
-    const newServer: DnsServer = {
-      tag,
-      address: formattedAddress,
-      detour: newDetour ?? undefined,
-      name: rawName,
-    };
-
-    const nextServers = [...rawServers, newServer];
-    try {
-      await persistServers(nextServers);
-      toast.success("DNS server added successfully.");
-      addDialogOpen = false;
-    } catch (error) {
-      toast.error("Failed to add DNS server", {
-        description: errorMessage(error),
-      });
-      console.error("Failed to add DNS server:", error);
-    }
-  }
-
   async function removeServer(tag: string) {
-    const nextServers = rawServers.filter((s) => s.tag !== tag);
+    if (isSaving || profileStore.loading) return;
+    operationError = null;
+    const dns = profileStore.profile?.dns;
+    if (!dns || !rawServers.some((server) => server.tag === tag)) return;
+    const referenceError = dnsServerDeleteError(dns, tag);
+    if (referenceError) {
+      operationError = referenceError;
+      return;
+    }
+    isSaving = true;
     try {
-      await persistServers(nextServers);
+      await persistServers(rawServers.filter((server) => server.tag !== tag));
+      if (selectedId === tag) selectedId = null;
       toast.success("DNS server removed.");
     } catch (error) {
-      toast.error("Failed to remove DNS server", {
-        description: errorMessage(error),
-      });
-      console.error("Failed to remove DNS server:", error);
+      operationError = errorMessage(error);
+    } finally {
+      isSaving = false;
     }
   }
 
@@ -212,24 +224,26 @@
   }
 
   function detourLabel(detour: string | null): string {
-    if (!detour) return "default";
-    if (detour === "direct" || detour === "DIRECT") return "direct (Local DNS)";
+    if (detour === FOLLOW_MODE_DETOUR) return "Follow connection mode";
+    if (!detour) return "Direct";
+    if (detour === "direct" || detour === "DIRECT") return "Direct";
     const policy = profileStore.profile?.policies?.find(
       (p) => p.tag === detour,
     );
-    return policy ? getPolicyName(policy.name, policy.tag) : detour;
+    if (policy) return getPolicyName(policy.name, policy.tag);
+    return proxyOptions.find((proxy) => proxy.tag === detour)?.label ?? `${detour} (missing outbound)`;
   }
 </script>
 
 {#snippet serverRow(server: UIItem)}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    data-state={selectedId === server.tag ? "selected" : undefined}
-    class="group h-12 grid grid-cols-[80px_160px_1fr_160px] sm:grid-cols-[80px_200px_1fr_180px] items-center rounded-xl hover:bg-card/70 data-[state=selected]:bg-card/70 transition-colors cursor-pointer px-2"
-    onclick={() => {
-      selectedId = server.tag;
-    }}
+  <DnsRowActions
+    label={`DNS server ${server.name}`}
+    selected={selectedId === server.tag}
+    disabled={isSaving || profileStore.loading}
+    class="group h-12 grid grid-cols-[80px_160px_1fr_160px_40px] sm:grid-cols-[80px_200px_1fr_180px_40px] items-center rounded-xl hover:bg-card/70 data-[state=selected]:bg-card/70 transition-colors cursor-pointer px-2"
+    onSelect={() => { selectedId = server.tag; }}
+    onEdit={() => openEditDialog(server.tag)}
+    onDelete={() => { void removeServer(server.tag); }}
   >
     <!-- Protocol badge -->
     <div class="px-2 flex items-center">
@@ -260,11 +274,20 @@
         {detourLabel(server.detour)}
       </Badge>
     </div>
-  </div>
+  </DnsRowActions>
 {/snippet}
 
 <div class="w-full text-sm px-2 pb-2 flex flex-col">
-  {#if allServers.length === 0}
+  {#if operationError}
+    <p role="alert" class="m-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">{operationError}</p>
+  {/if}
+  {#if profileStore.loading}
+    <div class="flex flex-col gap-3 p-4" aria-label="Loading DNS servers">
+      {#each [1, 2, 3] as row (row)}
+        <Skeleton class="h-11 w-full" />
+      {/each}
+    </div>
+  {:else if allServers.length === 0}
     <div class="mt-4">
       <Empty.Root class="border border-dashed border-border/50 bg-card/20 py-12">
         <Empty.Media variant="icon">
@@ -295,7 +318,7 @@
     </div>
   {:else}
     <div
-      class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[80px_160px_1fr_160px] sm:grid-cols-[80px_200px_1fr_180px] px-2 border-b border-border/70"
+      class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[80px_160px_1fr_160px_40px] sm:grid-cols-[80px_200px_1fr_180px_40px] px-2 border-b border-border/70"
     >
       <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
         Type
@@ -309,6 +332,7 @@
       <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
         Routing
       </div>
+      <div class="sr-only">Actions</div>
     </div>
     <div class="space-y-0 text-sm">
       {#each allServers as server, i (server.tag)}
@@ -321,99 +345,132 @@
   {/if}
 </div>
 
-<!-- Add Server Dialog -->
-<Dialog.Root bind:open={addDialogOpen}>
+<!-- The existing server tag is retained when editing. -->
+<Dialog.Root bind:open={dialogOpen}>
   <Dialog.Content class="sm:max-w-md flex flex-col">
-    <Dialog.Header>
-      <Dialog.Title>Add DNS Server</Dialog.Title>
-      <Dialog.Description>Configure a new DNS server.</Dialog.Description>
-    </Dialog.Header>
-    <div class="flex flex-col gap-4">
-      <div class="flex flex-col gap-2">
-        <Label for="dns-name">Server Name</Label>
-        <Input
-          id="dns-name"
-          bind:value={newName}
-          placeholder="e.g. Google DNS"
-        />
-      </div>
-      <div class="flex flex-col gap-2">
-        <Label for="dns-address">Server Address</Label>
-        <Input
-          id="dns-address"
-          bind:value={newAddress}
-          placeholder={newProtocol === "DoH"
-            ? "dns.google/dns-query"
-            : newProtocol === "DoT"
-              ? "1.1.1.1"
-              : "223.5.5.5"}
-        />
-      </div>
-      <div class="flex flex-col gap-2">
-        <Label>Protocol</Label>
-        <Select.Root
-          type="single"
-          value={newProtocol}
-          onValueChange={(v) => {
-            newProtocol = v as DnsProtocol;
-          }}
-        >
-          <Select.Trigger class="w-full justify-between">
-            {newProtocol}
-          </Select.Trigger>
-          <Select.Content>
-            {#each protocols as proto (proto)}
-              <Select.Item value={proto} label={proto}>
-                {proto}
+    <form onsubmit={saveServer} class="flex flex-col gap-4">
+      <Dialog.Header>
+        <Dialog.Title>{editingTag ? "Edit DNS Server" : "Add DNS Server"}</Dialog.Title>
+        <Dialog.Description>
+          {editingTag ? "Update this resolver. DNS rules that use it keep their target." : "Choose a resolver and the outbound used for its DNS requests."}
+        </Dialog.Description>
+      </Dialog.Header>
+      {#if dialogError}
+        <p role="alert" class="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">{dialogError}</p>
+      {/if}
+      <div class="flex flex-col gap-4">
+        <div class="flex flex-col gap-2">
+          <Label for="dns-name">Server Name</Label>
+          <Input
+            id="dns-name"
+            bind:value={newName}
+            disabled={isSaving}
+            required
+            placeholder="e.g. Google DNS"
+          />
+        </div>
+        <div class="flex flex-col gap-2">
+          <Label for="dns-address">Server Address</Label>
+          <Input
+            id="dns-address"
+            bind:value={newAddress}
+            oninput={handleAddressInput}
+            disabled={isSaving}
+            required
+            aria-describedby="dns-address-hint"
+            placeholder={newProtocol === "DoH"
+              ? "dns.google/dns-query"
+              : newProtocol === "DoT"
+                ? "dns.google:853"
+                : "223.5.5.5"}
+          />
+          <p id="dns-address-hint" class="text-xs text-muted-foreground">
+            {#if newProtocol === "DoH"}
+              HTTPS encrypts queries. The default path is /dns-query; keep a custom
+              path if your provider requires one.
+            {:else}
+              {newProtocol === "DoT" || newProtocol === "QUIC" ? "Encrypted" : "Unencrypted"} DNS.
+              Enter a hostname or IP address and optional port. Use [IPv6]:port for IPv6.
+            {/if}
+          </p>
+        </div>
+        <div class="flex flex-col gap-2">
+          <Label>Protocol</Label>
+          <Select.Root
+            type="single"
+            value={newProtocol}
+            disabled={isSaving}
+            onValueChange={(v) => {
+              if (DNS_PROTOCOLS.includes(v as DnsProtocol)) changeProtocol(v as DnsProtocol);
+            }}
+          >
+            <Select.Trigger class="w-full justify-between">
+              {newProtocol}
+            </Select.Trigger>
+            <Select.Content>
+              {#each DNS_PROTOCOLS as proto (proto)}
+                <Select.Item value={proto} label={proto}>
+                  {proto}
+                </Select.Item>
+              {/each}
+            </Select.Content>
+          </Select.Root>
+        </div>
+        <div class="flex flex-col gap-2">
+          <Label>Outbound</Label>
+          <Select.Root
+            type="single"
+            value={newDetour ?? "direct"}
+            disabled={isSaving}
+            onValueChange={(v) => {
+              newDetour = v;
+            }}
+          >
+            <Select.Trigger class="w-full justify-between">
+              {detourLabel(newDetour)}
+            </Select.Trigger>
+            <Select.Content>
+              <Select.Item value={FOLLOW_MODE_DETOUR} label="Follow connection mode">
+                Follow connection mode
               </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
-      </div>
-      <div class="flex flex-col gap-2">
-        <Label>Outbound</Label>
-        <Select.Root
-          type="single"
-          value={newDetour ?? ""}
-          onValueChange={(v) => {
-            newDetour = v === "" ? null : v;
-          }}
-        >
-          <Select.Trigger class="w-full justify-between">
-            {newDetour === "direct" || newDetour === "DIRECT"
-              ? "direct (Local DNS)"
-              : newDetour
-                ? detourLabel(newDetour)
-                : "No detour (core default)"}
-          </Select.Trigger>
-          <Select.Content>
-            <Select.Item value="" label="No detour (core default)">
-              No detour (core default)
-            </Select.Item>
-            <Select.Item value="direct" label="direct (Local DNS)">
-              direct (Local DNS)
-            </Select.Item>
-            {#each profileStore.profile?.policies ?? [] as policy (policy.tag)}
-              <Select.Item
-                value={policy.tag}
-                label={getPolicyName(policy.name, policy.tag)}
-              >
-                {getPolicyName(policy.name, policy.tag)}
+              <Select.Item value="direct" label="Direct">
+                Direct
               </Select.Item>
-            {/each}
-          </Select.Content>
-        </Select.Root>
-        <p class="text-[11px] text-muted-foreground">
-          Choose which outbound this DNS server queries through. Select "direct
-          (Local DNS)" for domain-based local routing.
-        </p>
+              <Select.Group>
+                <Select.Label>Proxy Policies</Select.Label>
+                {#each profileStore.profile?.policies ?? [] as policy (policy.tag)}
+                  <Select.Item
+                    value={policy.tag}
+                    label={getPolicyName(policy.name, policy.tag)}
+                  >
+                    {getPolicyName(policy.name, policy.tag)}
+                  </Select.Item>
+                {/each}
+              </Select.Group>
+              {#if proxyOptions.length > 0}
+                <Select.Group>
+                  <Select.Label>Individual Proxies</Select.Label>
+                  {#each proxyOptions as proxy (proxy.tag)}
+                    <Select.Item value={proxy.tag} label={proxy.label}>
+                      {proxy.label}
+                    </Select.Item>
+                  {/each}
+                </Select.Group>
+              {/if}
+            </Select.Content>
+          </Select.Root>
+          <p class="text-[11px] text-muted-foreground">
+            Follow connection mode uses your selected proxy in Global and Rule modes,
+            and connects directly in Direct mode. An explicit outbound keeps its chosen route.
+          </p>
+        </div>
       </div>
-    </div>
-    <Dialog.Footer>
-      <Button type="button" variant="outline" onclick={() => (addDialogOpen = false)}>
-        Cancel
-      </Button>
-      <Button type="button" onclick={addServer} disabled={isSaving}>Add Server</Button>
-    </Dialog.Footer>
+      <Dialog.Footer>
+        <Button type="button" variant="outline" onclick={() => (dialogOpen = false)} disabled={isSaving}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={isSaving || profileStore.loading}>{isSaving ? "Saving…" : editingTag ? "Save Changes" : "Add Server"}</Button>
+      </Dialog.Footer>
+    </form>
   </Dialog.Content>
 </Dialog.Root>

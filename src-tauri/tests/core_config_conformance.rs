@@ -128,6 +128,92 @@ fn temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// Validate the complete DNS output against the native core schema. This catches
+/// transport-specific fields and FakeIP rules that serde alone cannot validate.
+#[test]
+fn core_accepts_compiled_dns_transports_and_fakeip_rules() {
+    use zeytun_lib::core::{
+        dto::{DnsConfig, DnsRule, DnsServer, OutboundMode},
+        models::{runtime::RuntimeProfile, zeytun_core::log::Log},
+        zeytun_core_config::ZeytunCoreConfigBuilder,
+    };
+    let Some(core) = core_binary() else {
+        return;
+    };
+    let servers = [
+        ("udp", "1.1.1.1:5353"),
+        ("tcp", "tcp://[2001:4860:4860::8888]:53"),
+        ("tls", "tls://dns.google:853"),
+        ("https", "https://[2606:4700:4700::1111]:443/query?key=test"),
+        ("quic", "quic://dns.adguard-dns.com:853"),
+    ]
+    .into_iter()
+    .map(|(tag, address)| DnsServer {
+        tag: tag.into(),
+        name: tag.into(),
+        address: address.into(),
+        detour: Some("direct".into()),
+    })
+    .collect();
+    let mut profile = RuntimeProfile {
+        name: "DNS conformance".into(),
+        log: Log::default(),
+        tags: Vec::new(),
+        inbound_mode: Default::default(),
+        outbounds: Vec::new(),
+        policies: Vec::new(),
+        rules: Vec::new(),
+        live_temp: Vec::new(),
+        live_permanent: Vec::new(),
+        rule_sets: None,
+        final_outbound: "direct".into(),
+        dns: Some(DnsConfig {
+            mode: None,
+            servers: Some(servers),
+            final_server: Some("https".into()),
+            fake_ip: Some(false),
+            rules: Some(vec![DnsRule {
+                id: "local".into(),
+                kind: "domain_suffix".into(),
+                value: "example.com".into(),
+                target: "local-dns".into(),
+                enabled: true,
+                comment: None,
+            }]),
+            hosts: None,
+        }),
+        connection_ask: None,
+        ignored_proxy_servers: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let dir = temp_dir("dns-check");
+    for (fake_ip, route) in [false, true]
+        .into_iter()
+        .flat_map(|fake| ["direct", "follow-mode"].map(|route| (fake, route)))
+    {
+        for server in profile.dns.as_mut().unwrap().servers.as_mut().unwrap() {
+            server.detour = Some(route.into());
+        }
+        profile.dns.as_mut().unwrap().fake_ip = Some(fake_ip);
+        let config = ZeytunCoreConfigBuilder::new(false, false)
+            .build(&profile, &OutboundMode::Rule)
+            .unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+        let output = std::process::Command::new(&core)
+            .args(["check", "-c"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "compiled DNS (fake_ip={fake_ip}, route={route}) was rejected: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Build one server per protocol through the real parse path.
 fn build_servers() -> Vec<(String, String, Outbound)> {
     let factory = OutboundFactory;
@@ -333,6 +419,7 @@ fn core_accepts_fail_closed_references_from_real_compiler() {
     p.temp_rules.push(serde_json::from_value(serde_json::json!({"id":3,"kind":"DOMAIN","value":"temp.test","outbound":"chain","enabled":true,"comment":"","expires_at":i64::MAX})).unwrap());
     p.rule_sets=Some(vec![serde_json::from_value(serde_json::json!({"id":"rs","tag":"rs","type":"remote","source":"https://example.test/rules.srs","action":"missing","download_policy":"missing","enabled":true})).unwrap()]);
     p.dns = Some(DnsConfig {
+        mode: None,
         servers: Some(vec![DnsServer {
             tag: "dns".into(),
             name: "DNS".into(),

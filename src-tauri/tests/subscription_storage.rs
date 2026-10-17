@@ -319,7 +319,7 @@ fn legacy_adapters_use_source_storage_not_profile_columns() {
 }
 
 #[test]
-fn single_migration_baseline_records_init() {
+fn migration_history_records_only_the_consolidated_initial_schema() {
     let path = fixture();
     let conn = Connection::open(path).unwrap();
     let count: i64 = conn
