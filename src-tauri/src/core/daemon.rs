@@ -1028,7 +1028,7 @@ fn extract_process_name(path: &str) -> String {
         return slice.to_string();
     }
 
-    if let Some(last_slash) = path.rfind('/') {
+    if let Some(last_slash) = path.rfind(|c| c == '/' || c == '\\') {
         return path[last_slash + 1..].to_string();
     }
 
@@ -1042,7 +1042,7 @@ fn extract_executable_name(path: &str) -> String {
     if path.is_empty() {
         return "System".to_string();
     }
-    if let Some(last_slash) = path.rfind('/') {
+    if let Some(last_slash) = path.rfind(|c| c == '/' || c == '\\') {
         return path[last_slash + 1..].to_string();
     }
     path.to_string()

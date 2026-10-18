@@ -81,8 +81,7 @@ pub const ICON_CACHE_SUBDIR: &str = "icons";
 
 /// Inspector renders icons at 24px; cap the raster at 32x32 so each PNG stays
 /// ~2KB instead of the full 512/1024px system icon.
-#[cfg(target_os = "macos")]
-const ICON_PX: f64 = 32.0;
+const ICON_PX: u32 = 32;
 
 /// Absolute path of the cache file for a given process name (no extraction).
 pub fn icon_cache_path(cache_dir: &Path, process_name: &str) -> PathBuf {
@@ -109,7 +108,16 @@ pub fn ensure_process_icon(
         return Ok(dest);
     }
 
-    if process_path.is_empty() {
+    let mut effective_path = process_path.trim_matches('"').to_string();
+    if effective_path.is_empty() || !Path::new(&effective_path).exists() {
+        let (_, candidate) =
+            crate::adapters::process_resolve::resolve_process("PROCESS-NAME", process_name);
+        if !candidate.is_empty() && Path::new(&candidate).exists() {
+            effective_path = candidate;
+        }
+    }
+
+    if effective_path.is_empty() {
         return Err(crate::error::CommandError::Internal(
             "Cache miss and no process path provided for extraction".to_string(),
         ));
@@ -120,7 +128,7 @@ pub fn ensure_process_icon(
             .map_err(|e| crate::error::CommandError::Internal(e.to_string()))?;
     }
 
-    let png = extract_icon_png(process_path)?;
+    let png = extract_icon_png(&effective_path)?;
 
     // Write to a temp file + rename so a concurrent reader never sees a
     // half-written PNG.
@@ -132,11 +140,12 @@ pub fn ensure_process_icon(
     Ok(dest)
 }
 
-/// Replace path separators / NUL so a process name can't escape the cache dir.
+/// Replace path separators / NUL / Windows-invalid characters so a process
+/// name can't escape the cache dir or create an illegal filename.
 fn sanitize(name: &str) -> String {
     name.chars()
         .map(|c| match c {
-            '/' | '\\' | '\0' | ':' => '_',
+            '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
             _ => c,
         })
         .collect()
@@ -183,7 +192,7 @@ fn extract_icon_png(process_path: &str) -> Result<Vec<u8>, crate::error::Command
         // (NSBitmapImageRep + NSGraphicsContext) so it is safe on the tokio
         // worker thread this command runs on -- NSImage lockFocus is
         // main-thread-only and must not be used here.
-        let target_size = NSSize::new(ICON_PX, ICON_PX);
+        let target_size = NSSize::new(ICON_PX as f64, ICON_PX as f64);
         let px = ICON_PX as isize;
 
         let bitmap_class = objc2::runtime::AnyClass::get(c"NSBitmapImageRep")
@@ -261,10 +270,271 @@ fn extract_icon_png(process_path: &str) -> Result<Vec<u8>, crate::error::Command
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn extract_icon_png(process_path: &str) -> Result<Vec<u8>, crate::error::CommandError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
+    use windows::Win32::UI::Shell::{
+        ExtractIconExW, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
+
+    let clean_path = process_path.trim_matches('"');
+    let path_wide: Vec<u16> = std::ffi::OsStr::new(clean_path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut hicon = HICON::default();
+    let mut hicon_large = HICON::default();
+    let mut hicon_small = HICON::default();
+
+    unsafe {
+        let count = ExtractIconExW(
+            PCWSTR(path_wide.as_ptr()),
+            0,
+            Some(&mut hicon_large),
+            Some(&mut hicon_small),
+            1,
+        );
+        if count == 1 && !hicon_large.is_invalid() {
+            hicon = hicon_large;
+            if !hicon_small.is_invalid() {
+                let _ = DestroyIcon(hicon_small);
+            }
+        } else if count == 1 && !hicon_small.is_invalid() {
+            hicon = hicon_small;
+            if !hicon_large.is_invalid() {
+                let _ = DestroyIcon(hicon_large);
+            }
+        } else {
+            if !hicon_large.is_invalid() {
+                let _ = DestroyIcon(hicon_large);
+            }
+            if !hicon_small.is_invalid() {
+                let _ = DestroyIcon(hicon_small);
+            }
+            let mut shfi = SHFILEINFOW::default();
+            let res = SHGetFileInfoW(
+                PCWSTR(path_wide.as_ptr()),
+                FILE_FLAGS_AND_ATTRIBUTES(0),
+                Some(&mut shfi),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON,
+            );
+            if res != 0 && !shfi.hIcon.is_invalid() {
+                hicon = shfi.hIcon;
+            }
+        }
+    }
+
+    if hicon.is_invalid() {
+        return Err(crate::error::CommandError::Internal(format!(
+            "Failed to extract icon for `{clean_path}`"
+        )));
+    }
+
+    struct IconGuard(HICON);
+    impl Drop for IconGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DestroyIcon(self.0);
+            }
+        }
+    }
+    let _icon_guard = IconGuard(hicon);
+
+    unsafe { hicon_to_png(hicon) }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn hicon_to_png(
+    hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
+) -> Result<Vec<u8>, crate::error::CommandError> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW,
+        BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, HBITMAP, HGDIOBJ,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    let mut icon_info = ICONINFO::default();
+    GetIconInfo(hicon, &mut icon_info)
+        .map_err(|e| crate::error::CommandError::Internal(format!("GetIconInfo failed: {e}")))?;
+
+    struct GdiGuard {
+        color: HBITMAP,
+        mask: HBITMAP,
+    }
+    impl Drop for GdiGuard {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.color.is_invalid() {
+                    let _ = DeleteObject(HGDIOBJ(self.color.0));
+                }
+                if !self.mask.is_invalid() {
+                    let _ = DeleteObject(HGDIOBJ(self.mask.0));
+                }
+            }
+        }
+    }
+    let _guard = GdiGuard {
+        color: icon_info.hbmColor,
+        mask: icon_info.hbmMask,
+    };
+
+    let hdc = CreateCompatibleDC(None);
+    if hdc.is_invalid() {
+        return Err(crate::error::CommandError::Internal("CreateCompatibleDC failed".into()));
+    }
+    struct DcGuard(HDC);
+    impl Drop for DcGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DeleteDC(self.0);
+            }
+        }
+    }
+    let _dc_guard = DcGuard(hdc);
+
+    let has_color = !icon_info.hbmColor.is_invalid();
+    let target_bmp = if has_color {
+        icon_info.hbmColor
+    } else {
+        icon_info.hbmMask
+    };
+
+    let mut bm = BITMAP::default();
+    if GetObjectW(
+        HGDIOBJ(target_bmp.0),
+        std::mem::size_of::<BITMAP>() as i32,
+        Some(&mut bm as *mut _ as *mut _),
+    ) == 0
+    {
+        return Err(crate::error::CommandError::Internal("GetObjectW failed".into()));
+    }
+
+    let width = bm.bmWidth;
+    let height = if has_color {
+        bm.bmHeight
+    } else {
+        bm.bmHeight / 2
+    };
+    if width <= 0 || height <= 0 {
+        return Err(crate::error::CommandError::Internal("Invalid bitmap dimensions".into()));
+    }
+
+    let mut bi = BITMAPINFO::default();
+    bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bi.bmiHeader.biWidth = width;
+    bi.bmiHeader.biHeight = -height;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB.0;
+
+    let mut bgra_buf = vec![0u8; (width * height * 4) as usize];
+    let scanlines = GetDIBits(
+        hdc,
+        target_bmp,
+        0,
+        height as u32,
+        Some(bgra_buf.as_mut_ptr() as *mut _),
+        &mut bi,
+        DIB_RGB_COLORS,
+    );
+    if scanlines == 0 {
+        return Err(crate::error::CommandError::Internal("GetDIBits failed".into()));
+    }
+
+    let mut rgba_buf = bgra_buf;
+    let mut has_alpha = false;
+    for chunk in rgba_buf.chunks_exact_mut(4) {
+        let b = chunk[0];
+        let r = chunk[2];
+        let a = chunk[3];
+        chunk[0] = r;
+        chunk[2] = b;
+        if a > 0 {
+            has_alpha = true;
+        }
+    }
+
+    if !has_alpha && !icon_info.hbmMask.is_invalid() {
+        let mut mask_bi = BITMAPINFO::default();
+        mask_bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        mask_bi.bmiHeader.biWidth = width;
+        mask_bi.bmiHeader.biHeight = -height;
+        mask_bi.bmiHeader.biPlanes = 1;
+        mask_bi.bmiHeader.biBitCount = 1;
+        mask_bi.bmiHeader.biCompression = BI_RGB.0;
+
+        let mask_row_bytes = ((width + 31) / 32 * 4) as usize;
+        let mut mask_buf = vec![0u8; mask_row_bytes * height as usize];
+        if GetDIBits(
+            hdc,
+            icon_info.hbmMask,
+            0,
+            height as u32,
+            Some(mask_buf.as_mut_ptr() as *mut _),
+            &mut mask_bi,
+            DIB_RGB_COLORS,
+        ) != 0
+        {
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let byte_idx = y * mask_row_bytes + (x / 8);
+                    let bit_idx = 7 - (x % 8);
+                    let mask_bit = (mask_buf[byte_idx] >> bit_idx) & 1;
+                    let pixel_idx = (y * width as usize + x) * 4;
+                    rgba_buf[pixel_idx + 3] = if mask_bit == 0 { 255 } else { 0 };
+                }
+            }
+        } else {
+            for chunk in rgba_buf.chunks_exact_mut(4) {
+                chunk[3] = 255;
+            }
+        }
+    }
+
+    let img = image::RgbaImage::from_raw(width as u32, height as u32, rgba_buf)
+        .ok_or_else(|| crate::error::CommandError::Internal("Failed to create RgbaImage".into()))?;
+
+    let resized = if width != ICON_PX as i32 || height != ICON_PX as i32 {
+        image::imageops::resize(&img, ICON_PX, ICON_PX, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+
+    let mut png_bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    resized
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| crate::error::CommandError::Internal(format!("PNG encode failed: {e}")))?;
+
+    Ok(png_bytes)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn extract_icon_png(process_path: &str) -> Result<Vec<u8>, crate::error::CommandError> {
     let _ = process_path;
     Err(crate::error::CommandError::Internal(
-        "Icon extraction is only supported on macOS".to_string(),
+        "Icon extraction is only supported on macOS and Windows".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_extract_windows_icon() {
+        let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+        let cmd_path = format!(r"{sysroot}\System32\cmd.exe");
+        if Path::new(&cmd_path).exists() {
+            let png_bytes = extract_icon_png(&cmd_path).expect("failed to extract cmd.exe icon");
+            assert!(!png_bytes.is_empty());
+            assert_eq!(&png_bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        }
+    }
 }

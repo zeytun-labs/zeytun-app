@@ -1311,16 +1311,7 @@ async fn get_process_icon(
         .app_cache_dir()
         .map_err(|e| crate::error::CommandError::Internal(e.to_string()))?;
 
-    // The traffic card's process tab lists names from historical analytics,
-    // which may have no live connection (hence no path). Resolve the app
-    // bundle from the name so the icon still appears.
-    let process_path = if process_path.is_empty() {
-        crate::adapters::process_resolve::resolve_process("PROCESS-NAME", &process_name).1
-    } else {
-        process_path
-    };
-
-    // Perform extraction inside spawn_blocking so AppKit work doesn't block Tokio
+    // Perform extraction inside spawn_blocking so platform work doesn't block Tokio
     tauri::async_runtime::spawn_blocking(move || {
         let path = crate::adapters::process_icon::ensure_process_icon(
             &cache_dir,

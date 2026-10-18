@@ -100,6 +100,30 @@ fn find_bundle_stem(stem: &str) -> Option<&'static PathBuf> {
     })
 }
 
+#[cfg(target_os = "windows")]
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let name_exe = if name.to_lowercase().ends_with(".exe") {
+        name.to_string()
+    } else {
+        format!("{name}.exe")
+    };
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(&name_exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(sysroot) = std::env::var("SystemRoot") {
+        let candidate = PathBuf::from(sysroot).join("System32").join(&name_exe);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Helper suffixes, longest first so `strip_suffix` never eats a prefix of a
 /// longer suffix (" Helper" before " Helper (Renderer)" would garble the stem).
 const HELPER_SUFFIXES: &[&str] = &[
@@ -183,13 +207,21 @@ pub fn resolve_process(kind: &str, value: &str) -> (String, String) {
                 .or_else(|| value.strip_suffix(".exe"))
                 .unwrap_or(value)
                 .to_string();
-            match find_bundle(value) {
-                Some(bundle) => (
+            if let Some(bundle) = find_bundle(value) {
+                return (
                     bundle_display_name(bundle),
                     bundle.to_string_lossy().into_owned(),
-                ),
-                None => (fallback, String::new()),
+                );
             }
+            #[cfg(target_os = "windows")]
+            if let Some(path) = find_in_path(value) {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| fallback.clone());
+                return (name, path.to_string_lossy().into_owned());
+            }
+            (fallback, String::new())
         }
         "PROCESS-PATH" => {
             #[cfg(target_os = "macos")]
@@ -272,6 +304,13 @@ mod tests {
 
     #[test]
     fn fallbacks() {
+        #[cfg(target_os = "windows")]
+        {
+            let (name, path) = resolve_process("PROCESS-NAME", "cmd");
+            assert_eq!(name, "cmd");
+            assert!(path.to_lowercase().ends_with("cmd.exe"));
+        }
+
         let (name, path) = resolve_process("PROCESS-PATH-REGEX", r".*nonexistent-app.*");
         assert_eq!(name, "nonexistent-app");
         assert!(path.is_empty());
