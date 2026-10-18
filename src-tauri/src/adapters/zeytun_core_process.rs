@@ -632,32 +632,54 @@ mod tests {
     #[cfg(target_os = "windows")]
     fn test_job_object_kills_child_on_close() {
         use std::process::Command;
+        use std::time::{Duration, Instant};
         use windows::Win32::Foundation::CloseHandle;
 
-        let child = Command::new("powershell.exe")
-            .args(["-Command", "Start-Sleep -Seconds 30"])
+        let mut child = Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ])
             .spawn()
             .expect("spawn powershell");
 
-        let child_pid = child.id();
-        let job = super::attach_to_job_object(&child).expect("attach job object");
+        let job = match super::attach_to_job_object(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("attach job object: {error}");
+            }
+        };
 
         // Closing the job object handle must trigger JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        unsafe {
-            let _ = CloseHandle(job);
+        // SAFETY: attach_to_job_object returned an owned, valid handle; close it once.
+        let closed = unsafe { CloseHandle(job) };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let exited = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break Ok(true),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => break Ok(false),
+                Err(error) => break Err(error),
+            }
+        };
+
+        // Reap the child even when closing the job or observing termination fails.
+        if !matches!(exited, Ok(true)) {
+            let _ = child.kill();
         }
-
-        std::thread::sleep(std::time::Duration::from_millis(600));
-
-        // Verify child process was terminated
-        let check = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {child_pid}"), "/FO", "CSV"])
-            .output()
-            .expect("run tasklist");
-        let out = String::from_utf8_lossy(&check.stdout);
+        let reaped = child.wait();
+        closed.expect("close job object");
+        reaped.expect("wait for child process");
         assert!(
-            !out.contains(&format!("\"{child_pid}\"")),
-            "Child process PID {child_pid} was not terminated by Job Object"
+            exited.expect("query child process"),
+            "Job Object did not terminate the child within five seconds"
         );
     }
 }

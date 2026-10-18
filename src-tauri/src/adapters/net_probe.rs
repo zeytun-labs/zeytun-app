@@ -241,11 +241,14 @@ pub fn local_latencies() -> Result<serde_json::Value, crate::error::CommandError
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 5 && parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0" {
-                    if parts[2] != "On-link" && parts[2] != "127.0.0.1" {
-                        gw = parts[2].to_string();
-                        break;
-                    }
+                if parts.len() >= 5
+                    && parts[0] == "0.0.0.0"
+                    && parts[1] == "0.0.0.0"
+                    && parts[2] != "On-link"
+                    && parts[2] != "127.0.0.1"
+                {
+                    gw = parts[2].to_string();
+                    break;
                 }
             }
         }
@@ -564,9 +567,7 @@ mod windows_net {
 
             let network_type = if has_active_wifi {
                 "wifi"
-            } else if gw_if_type == IF_TYPE_ETHERNET_CSMACD {
-                "ethernet"
-            } else if !gw_adapter_ip.is_empty() {
+            } else if gw_if_type == IF_TYPE_ETHERNET_CSMACD || !gw_adapter_ip.is_empty() {
                 "ethernet"
             } else {
                 "unknown"
@@ -594,13 +595,23 @@ mod test_win_net {
             "Detected Windows network: id='{}', name='{}', type='{}', ip='{}'",
             info.id, info.name, info.network_type, info.local_ip
         );
+        assert!(!info.id.is_empty());
         assert!(!info.name.is_empty());
-        assert!(!info.network_type.is_empty());
-        assert_ne!(info.name, "UNKNOWN");
-        assert_eq!(info.network_type, "wifi");
-        assert!(info.name.starts_with("Wi-Fi ("));
-        assert!(info.name.ends_with(')'));
-        assert!(!info.local_ip.is_empty());
+        // Hosted runners need not have Wi-Fi or an available network profile.
+        match info.network_type.as_str() {
+            "wifi" => assert!(
+                info.name == "Wi-Fi"
+                    || (info.name.starts_with("Wi-Fi (") && info.name.ends_with(')'))
+            ),
+            "ethernet" => assert_eq!(info.name, "Ethernet"),
+            "unknown" => {}
+            other => panic!("Unexpected Windows network type: {other}"),
+        }
+        if !info.local_ip.is_empty() {
+            info.local_ip
+                .parse::<std::net::Ipv4Addr>()
+                .expect("valid local IPv4 address");
+        }
 
         let active_name = active_interface().expect("active name");
         assert_eq!(active_name, info.name);

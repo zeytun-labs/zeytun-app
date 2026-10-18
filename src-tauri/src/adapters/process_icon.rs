@@ -456,7 +456,7 @@ unsafe fn hicon_to_png(
 
     let mut rgba_buf = bgra_buf;
     let mut has_alpha = false;
-    for chunk in rgba_buf.chunks_exact_mut(4) {
+    for chunk in rgba_buf.as_chunks_mut::<4>().0 {
         let b = chunk[0];
         let r = chunk[2];
         let a = chunk[3];
@@ -498,7 +498,7 @@ unsafe fn hicon_to_png(
                 }
             }
         } else {
-            for chunk in rgba_buf.chunks_exact_mut(4) {
+            for chunk in rgba_buf.as_chunks_mut::<4>().0 {
                 chunk[3] = 255;
             }
         }

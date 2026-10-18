@@ -180,12 +180,15 @@ fn read_net_config() -> NetConfig {
         let stdout = String::from_utf8_lossy(&out.stdout);
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 5 && parts[0] == "0.0.0.0" && parts[1] == "0.0.0.0" {
-                if parts[2] != "On-link" && parts[2] != "127.0.0.1" {
-                    ipv4_router = Some(parts[2].to_string());
-                    ipv4_address = Some(parts[3].to_string());
-                    break;
-                }
+            if parts.len() >= 5
+                && parts[0] == "0.0.0.0"
+                && parts[1] == "0.0.0.0"
+                && parts[2] != "On-link"
+                && parts[2] != "127.0.0.1"
+            {
+                ipv4_router = Some(parts[2].to_string());
+                ipv4_address = Some(parts[3].to_string());
+                break;
             }
         }
     }
