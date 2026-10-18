@@ -127,6 +127,9 @@
       const latest = dumps[0];
       const content = await crashDumpRead(latest).catch(() => null);
 
+      // Mark seen immediately so the alert shows once per crash, not on every restart
+      void crashDumpDismiss();
+
       notificationStore.pushNotification({
         title: "Previous session crashed",
         message:
