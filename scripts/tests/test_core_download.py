@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -64,6 +65,7 @@ class CoreDownloadTests(unittest.TestCase):
         self.install(self.archive())
         self.assertEqual((self.destination / ".gitkeep").read_bytes(), b"")
 
+    @unittest.skipIf(os.name == "nt", "Windows does not expose POSIX executable bits")
     def test_macos_binary_is_executable(self):
         self.install(self.archive("macos-aarch64"), "macos-aarch64")
         self.assertTrue((self.destination / "zeytun-core").stat().st_mode & stat.S_IXUSR)
