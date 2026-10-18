@@ -31,7 +31,7 @@ pub enum StorageError {
 }
 
 /// Compare emitted intent, not upstream/display metadata or provenance.
-fn runtime_intent(profile: &ZeytunCore) -> Value {
+pub(crate) fn runtime_intent(profile: &ZeytunCore) -> Value {
     use crate::core::compiler::{
         profile_converter::ProfileConverter, runtime_profile_compiler::RuntimeProfileCompiler,
     };
