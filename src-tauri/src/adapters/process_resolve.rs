@@ -82,7 +82,10 @@ fn collect_apps(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
             continue;
         }
         #[cfg(target_os = "windows")]
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")) {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        {
             out.push(path);
             continue;
         }
@@ -183,9 +186,7 @@ fn name_from_regex(value: &str) -> String {
         .iter()
         .find(|t| t.ends_with(".app") || t.ends_with(".exe"))
     {
-        let name = t
-            .trim_end_matches(".app")
-            .trim_end_matches(".exe");
+        let name = t.trim_end_matches(".app").trim_end_matches(".exe");
         if !name.is_empty() {
             return name.to_string();
         }
@@ -274,7 +275,8 @@ mod tests {
             assert_eq!(name, "Google Chrome");
             assert_eq!(path, "/Applications/Google Chrome.app");
 
-            let (name, path) = resolve_process("PROCESS-PATH-REGEX", r"^/Applications/Telegram\.app/");
+            let (name, path) =
+                resolve_process("PROCESS-PATH-REGEX", r"^/Applications/Telegram\.app/");
             assert_eq!(name, "Telegram");
             if Path::new("/Applications/Telegram.app").exists() {
                 assert_eq!(path, "/Applications/Telegram.app");

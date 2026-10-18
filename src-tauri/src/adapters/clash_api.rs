@@ -561,12 +561,21 @@ mod tests {
 
     #[test]
     fn controller_normalizes_wildcards_to_loopback() {
-        assert_eq!(normalize_client_controller("0.0.0.0:19090"), "127.0.0.1:19090");
+        assert_eq!(
+            normalize_client_controller("0.0.0.0:19090"),
+            "127.0.0.1:19090"
+        );
         assert_eq!(normalize_client_controller("[::]:19090"), "127.0.0.1:19090");
         assert_eq!(normalize_client_controller("0.0.0.0"), "127.0.0.1");
         assert_eq!(normalize_client_controller("[::]"), "127.0.0.1");
-        assert_eq!(normalize_client_controller("127.0.0.1:19090"), "127.0.0.1:19090");
-        assert_eq!(normalize_client_controller("192.168.1.5:19090"), "192.168.1.5:19090");
+        assert_eq!(
+            normalize_client_controller("127.0.0.1:19090"),
+            "127.0.0.1:19090"
+        );
+        assert_eq!(
+            normalize_client_controller("192.168.1.5:19090"),
+            "192.168.1.5:19090"
+        );
 
         let client = ClashApiClient::new("0.0.0.0:19090".to_string(), None);
         assert_eq!(client.controller(), "127.0.0.1:19090");

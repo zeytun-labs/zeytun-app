@@ -277,8 +277,8 @@ pub async fn install_release_update(
             if app.extension().is_none_or(|ext| ext != "app") {
                 return Err("A bundled .app is required for installation".to_owned());
             }
-            let metadata =
-                plist::Value::from_file(app.join("Contents/Info.plist")).map_err(|e| e.to_string())?;
+            let metadata = plist::Value::from_file(app.join("Contents/Info.plist"))
+                .map_err(|e| e.to_string())?;
             let dict = metadata
                 .as_dictionary()
                 .ok_or("Invalid installed bundle metadata")?;

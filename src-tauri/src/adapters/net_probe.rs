@@ -234,7 +234,10 @@ pub fn local_latencies() -> Result<serde_json::Value, crate::error::CommandError
     #[cfg(target_os = "windows")]
     {
         let mut gw = String::new();
-        if let Ok(out) = std::process::Command::new("route").args(["print", "0.0.0.0"]).output() {
+        if let Ok(out) = std::process::Command::new("route")
+            .args(["print", "0.0.0.0"])
+            .output()
+        {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -248,14 +251,20 @@ pub fn local_latencies() -> Result<serde_json::Value, crate::error::CommandError
         }
 
         if !gw.is_empty() {
-            if let Ok(po) = std::process::Command::new("ping").args(["-n", "1", "-w", "1000", &gw]).output() {
+            if let Ok(po) = std::process::Command::new("ping")
+                .args(["-n", "1", "-w", "1000", &gw])
+                .output()
+            {
                 let ping_out = String::from_utf8_lossy(&po.stdout);
                 router_ms = parse_ping_time(&ping_out);
             }
         }
 
         let mut dns_server = "8.8.8.8".to_string();
-        if let Ok(out) = std::process::Command::new("netsh").args(["interface", "ip", "show", "dns"]).output() {
+        if let Ok(out) = std::process::Command::new("netsh")
+            .args(["interface", "ip", "show", "dns"])
+            .output()
+        {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 if let Some((_, ip_part)) = line.split_once(':') {
@@ -268,7 +277,10 @@ pub fn local_latencies() -> Result<serde_json::Value, crate::error::CommandError
             }
         }
 
-        if let Ok(po) = std::process::Command::new("ping").args(["-n", "1", "-w", "1000", &dns_server]).output() {
+        if let Ok(po) = std::process::Command::new("ping")
+            .args(["-n", "1", "-w", "1000", &dns_server])
+            .output()
+        {
             let ping_out = String::from_utf8_lossy(&po.stdout);
             dns_ms = parse_ping_time(&ping_out);
         }
@@ -376,17 +388,17 @@ pub fn active_interface() -> Result<String, crate::error::CommandError> {
 #[cfg(target_os = "windows")]
 mod windows_net {
     use std::net::Ipv4Addr;
-    use windows::Win32::Networking::NetworkListManager::{
-        NetworkListManager, INetworkListManager, NLM_ENUM_NETWORK_CONNECTED,
-    };
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
-    };
     use windows::Win32::NetworkManagement::IpHelper::{
         GetAdaptersAddresses, GAA_FLAG_INCLUDE_ALL_INTERFACES, GAA_FLAG_INCLUDE_GATEWAYS,
         IP_ADAPTER_ADDRESSES_LH,
     };
+    use windows::Win32::Networking::NetworkListManager::{
+        INetworkListManager, NetworkListManager, NLM_ENUM_NETWORK_CONNECTED,
+    };
     use windows::Win32::Networking::WinSock::{AF_UNSPEC, SOCKADDR_IN};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
 
     const IF_TYPE_IEEE80211: u32 = 71;
     const IF_TYPE_ETHERNET_CSMACD: u32 = 6;
@@ -532,8 +544,12 @@ mod windows_net {
                                 // AF_INET = 2
                                 let sin = sockaddr as *const SOCKADDR_IN;
                                 let ip_bytes = (*sin).sin_addr.S_un.S_addr.to_ne_bytes();
-                                let ip =
-                                    Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
+                                let ip = Ipv4Addr::new(
+                                    ip_bytes[0],
+                                    ip_bytes[1],
+                                    ip_bytes[2],
+                                    ip_bytes[3],
+                                );
                                 gw_adapter_ip = ip.to_string();
                                 gw_adapter_name = friendly_name.clone();
                                 gw_if_type = if_type;
@@ -590,5 +606,3 @@ mod test_win_net {
         assert_eq!(active_name, info.name);
     }
 }
-
-

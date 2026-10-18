@@ -36,6 +36,9 @@ function Ensure-CoreSource {
             New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
         }
         git clone --depth 1 --branch $CoreRef $CoreRepo $CoreSrc
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to clone zeytun-core (exit code $LASTEXITCODE)."
+        }
     }
     Write-Host "Core source: $CoreSrc" -ForegroundColor Green
 }
@@ -57,6 +60,9 @@ function Build-Core {
         $env:GOOS = "windows"
         $env:GOARCH = "amd64"
         go build -v -trimpath -tags $tags -ldflags $ldflags -o $CoreDest ./cmd/sing-box
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build zeytun-core (exit code $LASTEXITCODE)."
+        }
     } finally {
         Pop-Location
     }

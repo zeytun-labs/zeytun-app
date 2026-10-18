@@ -382,7 +382,11 @@ fn http_probe_direct(local_ip: Option<&str>) -> Option<HttpProbe> {
 
     let mut cmd = Command::new("curl");
 
-    let dev_null = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+    let dev_null = if cfg!(target_os = "windows") {
+        "NUL"
+    } else {
+        "/dev/null"
+    };
 
     // -I: HEAD request
     // -s: silent
@@ -450,7 +454,11 @@ fn http_probe_proxy(proxy_port: u16) -> Option<HttpProbe> {
     let mut cmd = Command::new("curl");
     let proxy_str = format!("http://127.0.0.1:{}", proxy_port);
 
-    let dev_null = if cfg!(target_os = "windows") { "NUL" } else { "/dev/null" };
+    let dev_null = if cfg!(target_os = "windows") {
+        "NUL"
+    } else {
+        "/dev/null"
+    };
 
     // -I: HEAD request
     // -s: silent stdout (stderr stays open)

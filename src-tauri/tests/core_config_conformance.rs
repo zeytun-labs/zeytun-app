@@ -106,7 +106,12 @@ fn fixture_links() -> Vec<(&'static str, String)> {
 
 fn core_binary() -> Option<PathBuf> {
     let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/bin");
-    for arch in ["macos-aarch64", "macos-x86_64", "windows-x86_64", "windows-aarch64"] {
+    for arch in [
+        "macos-aarch64",
+        "macos-x86_64",
+        "windows-x86_64",
+        "windows-aarch64",
+    ] {
         for name in ["zeytun-core.exe", "zeytun-core"] {
             let candidate = base.join(arch).join(name);
             if candidate.is_file() {

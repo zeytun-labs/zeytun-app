@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, windows]
   pull_request:
   workflow_dispatch:
 
@@ -48,3 +48,60 @@ jobs:
           make build-core-ci CORE_VERSION=zeytun-ci
           make geoip
       - run: make check-rs
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Keep source line endings consistent with Linux and macOS builds
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4.1.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+          cache: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2.8.0
+        with:
+          workspaces: src-tauri
+      - name: Install protobuf
+        run: choco install protoc --yes --no-progress
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check versions
+        run: python scripts/dev.py version
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+      - name: Check frontend
+        run: pnpm check
+      - name: Test frontend
+        run: pnpm test
+      - name: Build frontend and verify CSP
+        run: |
+          pnpm build
+          python scripts/check-csp-hashes.py
+      - name: Prepare Windows native resources
+        shell: pwsh
+        env:
+          GOTOOLCHAIN: local
+        run: ./scripts/native-resources.ps1 -CoreSrc "$env:GITHUB_WORKSPACE/.cache/zeytun-core"
+      - name: Lint Windows Rust targets
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings -A clippy::result_large_err
+      - name: Test Windows Rust targets
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --all-targets --features updater-tools
+      - name: Build unsigned Windows installer
+        # Reuse the frontend whose CSP was verified above. No release secrets are needed.
+        run: pnpm exec tauri build --ci --no-sign --bundles nsis --config src-tauri/tauri.windows-ci.json -- --locked

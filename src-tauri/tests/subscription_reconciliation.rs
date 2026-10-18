@@ -512,7 +512,10 @@ impl DeleteFixture {
         db.create_subscription("default", &source("a")).unwrap();
         db.create_subscription("default", &source("b")).unwrap();
         db.save_profile(&delete_profile()).unwrap();
-        Self { db, _dir: TempDir(dir) }
+        Self {
+            db,
+            _dir: TempDir(dir),
+        }
     }
 }
 fn delete_profile() -> ZeytunCore {

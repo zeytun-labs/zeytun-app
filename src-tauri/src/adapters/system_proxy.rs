@@ -229,14 +229,18 @@ mod tests {
         use winreg::RegKey;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let key = hkcu.open_subkey(super::SystemProxyManager::INTERNET_SETTINGS).unwrap();
+        let key = hkcu
+            .open_subkey(super::SystemProxyManager::INTERNET_SETTINGS)
+            .unwrap();
         let orig_enable: Option<u32> = key.get_value("ProxyEnable").ok();
         let orig_server: Option<String> = key.get_value("ProxyServer").ok();
 
         let mgr = super::SystemProxyManager;
         mgr.enable("0.0.0.0", 39999).unwrap();
 
-        let key = hkcu.open_subkey(super::SystemProxyManager::INTERNET_SETTINGS).unwrap();
+        let key = hkcu
+            .open_subkey(super::SystemProxyManager::INTERNET_SETTINGS)
+            .unwrap();
         let new_enable: u32 = key.get_value("ProxyEnable").unwrap();
         let new_server: String = key.get_value("ProxyServer").unwrap();
         assert_eq!(new_enable, 1);

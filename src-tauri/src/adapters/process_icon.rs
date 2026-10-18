@@ -353,8 +353,8 @@ unsafe fn hicon_to_png(
     hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
 ) -> Result<Vec<u8>, crate::error::CommandError> {
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW,
-        BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HDC, HBITMAP, HGDIOBJ,
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
 
@@ -385,7 +385,9 @@ unsafe fn hicon_to_png(
 
     let hdc = CreateCompatibleDC(None);
     if hdc.is_invalid() {
-        return Err(crate::error::CommandError::Internal("CreateCompatibleDC failed".into()));
+        return Err(crate::error::CommandError::Internal(
+            "CreateCompatibleDC failed".into(),
+        ));
     }
     struct DcGuard(HDC);
     impl Drop for DcGuard {
@@ -411,7 +413,9 @@ unsafe fn hicon_to_png(
         Some(&mut bm as *mut _ as *mut _),
     ) == 0
     {
-        return Err(crate::error::CommandError::Internal("GetObjectW failed".into()));
+        return Err(crate::error::CommandError::Internal(
+            "GetObjectW failed".into(),
+        ));
     }
 
     let width = bm.bmWidth;
@@ -421,7 +425,9 @@ unsafe fn hicon_to_png(
         bm.bmHeight / 2
     };
     if width <= 0 || height <= 0 {
-        return Err(crate::error::CommandError::Internal("Invalid bitmap dimensions".into()));
+        return Err(crate::error::CommandError::Internal(
+            "Invalid bitmap dimensions".into(),
+        ));
     }
 
     let mut bi = BITMAPINFO::default();
@@ -443,7 +449,9 @@ unsafe fn hicon_to_png(
         DIB_RGB_COLORS,
     );
     if scanlines == 0 {
-        return Err(crate::error::CommandError::Internal("GetDIBits failed".into()));
+        return Err(crate::error::CommandError::Internal(
+            "GetDIBits failed".into(),
+        ));
     }
 
     let mut rgba_buf = bgra_buf;
@@ -500,7 +508,12 @@ unsafe fn hicon_to_png(
         .ok_or_else(|| crate::error::CommandError::Internal("Failed to create RgbaImage".into()))?;
 
     let resized = if width != ICON_PX as i32 || height != ICON_PX as i32 {
-        image::imageops::resize(&img, ICON_PX, ICON_PX, image::imageops::FilterType::Lanczos3)
+        image::imageops::resize(
+            &img,
+            ICON_PX,
+            ICON_PX,
+            image::imageops::FilterType::Lanczos3,
+        )
     } else {
         img
     };
@@ -534,7 +547,10 @@ mod tests {
         if Path::new(&cmd_path).exists() {
             let png_bytes = extract_icon_png(&cmd_path).expect("failed to extract cmd.exe icon");
             assert!(!png_bytes.is_empty());
-            assert_eq!(&png_bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+            assert_eq!(
+                &png_bytes[0..8],
+                &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+            );
         }
     }
 }

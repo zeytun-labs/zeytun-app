@@ -5,13 +5,13 @@ use base64::Engine;
 use flate2::read::GzDecoder;
 use semver::Version;
 use serde_json::Value;
+use std::path::Path;
 #[cfg(target_os = "macos")]
 use std::{
     collections::{HashMap, HashSet},
     io::{Cursor, Read},
     path::Component,
 };
-use std::path::Path;
 use url::Url;
 
 pub const REPOSITORY: &str = "zeytun-labs/zeytun-app";

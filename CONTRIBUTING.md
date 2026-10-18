@@ -271,6 +271,15 @@ copying or enabling `unsafe-inline` for scripts.
 
 ## Checks
 
+CI runs on pull requests and pushes to `main` and `windows`. The Windows job
+checks frontend types/tests and generated CSP hashes, runs Rust formatting,
+Clippy and tests on `windows-latest`, and builds an unsigned NSIS installer.
+It uses `scripts/native-resources.ps1` to build the Windows core and download
+GeoIP. No release or signing secrets are needed. The CI-only
+`src-tauri/tauri.windows-ci.json` overlay skips rebuilding the already-verified
+frontend and disables updater signing artifacts; it does not change the shared
+security policy. Generated CSP hashes must be committed before CI runs.
+
 Use `make ci-frontend` for frontend/tooling changes, `make check-rs` for Rust,
 and `make ci` before a PR that affects both. Rust checks require the core and
 GeoIP resources from `make setup`. No updater signing secrets are needed.

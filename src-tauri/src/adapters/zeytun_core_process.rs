@@ -472,14 +472,14 @@ fn attach_to_job_object(child: &Child) -> Result<windows::Win32::Foundation::HAN
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
     unsafe {
-        let job = CreateJobObjectW(None, None)
-            .map_err(|e| format!("CreateJobObjectW failed: {e}"))?;
+        let job =
+            CreateJobObjectW(None, None).map_err(|e| format!("CreateJobObjectW failed: {e}"))?;
 
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -509,7 +509,9 @@ fn attach_to_job_object(child: &Child) -> Result<windows::Win32::Foundation::HAN
 #[cfg(target_os = "windows")]
 pub fn is_elevated() -> bool {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {
@@ -659,4 +661,3 @@ mod tests {
         );
     }
 }
-
