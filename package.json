@@ -31,6 +31,7 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "~2.11.0",
     "@tauri-apps/plugin-websocket": "^2.4.2",
+    "country-flag-emoji-polyfill": "^0.1.10",
     "d3-scale": "^4.0.2",
     "d3-shape": "^3.2.0",
     "motion-sv": "^0.1.13",

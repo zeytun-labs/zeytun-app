@@ -36,6 +36,9 @@
   import SettingsDialog from "$lib/components/settings/settings-dialog.svelte";
   import CriticalBanner from "$lib/components/critical-banner.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
+  import { initFlagPolyfill } from "$lib/utils/flags";
+
+  initFlagPolyfill();
 
   const { children } = $props();
 
