@@ -535,12 +535,12 @@ fn extract_icon_png(process_path: &str) -> Result<Vec<u8>, crate::error::Command
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::*;
+    use super::extract_icon_png;
+    use std::path::Path;
 
     #[test]
-    #[cfg(target_os = "windows")]
     fn test_extract_windows_icon() {
         let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
         let cmd_path = format!(r"{sysroot}\System32\cmd.exe");

@@ -29,7 +29,7 @@ fn permissive_parser_must_not_accept_malformed_raw_credentials_or_ports() {
         );
         assert_eq!(serde_json::to_value(&p).unwrap(), before);
         assert!(zeytun_lib::core::link_parser::proxy_from_link(
-            &broken,
+            broken,
             ProxyOrigin::Manual,
             "manual".into()
         )

@@ -332,7 +332,7 @@ pub fn active_interface() -> Result<String, crate::error::CommandError> {
                         let lower = name.to_lowercase();
                         if lower.contains("wi-fi") || lower.contains("wifi") {
                             if let Ok(out) = std::process::Command::new("networksetup")
-                                .args(["-getairportnetwork", &interface])
+                                .args(["-getairportnetwork", interface])
                                 .output()
                             {
                                 let stdout = String::from_utf8_lossy(&out.stdout);

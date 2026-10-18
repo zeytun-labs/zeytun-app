@@ -17,8 +17,6 @@ impl SystemProxyManager {
     /// Enable system proxy across all active/enabled network services.
     /// Attempts all services; succeeds if at least one service was successfully configured.
     pub fn enable(&self, host: &str, port: u16) -> Result<(), String> {
-        use std::process::Command;
-
         let host = normalize_proxy_host(host);
         let services = self.network_services();
         let port_str = port.to_string();
