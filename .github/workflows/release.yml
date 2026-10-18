@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
@@ -59,9 +59,19 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
+      - name: Read pinned Rust version
+        id: rust
+        run: python3 -c "import tomllib; print('version=' + tomllib.load(open('rust-toolchain.toml', 'rb'))['toolchain']['channel'])" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
+          toolchain: ${{ steps.rust.outputs.version }}
           targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          workspaces: src-tauri
+          shared-key: package
+          key: aarch64-apple-darwin
+          cache-on-failure: true
       - name: Install protobuf
         run: brew install protobuf
       - name: Download pinned production core and corresponding source

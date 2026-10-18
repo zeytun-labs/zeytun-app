@@ -286,25 +286,54 @@ remain as reviewed. Script hashes are never copied manually or replaced with
 
 ## Checks
 
-CI runs on pull requests and pushes to `main` and `windows`, and can be started
-manually. Its jobs are:
+CI runs on pull requests, pushes to `main` and `windows`, and `v*` tags. It can
+also be started manually. Routine checks and installer builds are separate jobs:
+
 
 | Check | Platforms | Coverage |
 |---|---|---|
 | Shared checks | Linux, once | Version consistency, development/release tooling tests, Rust formatting |
 | Frontend | Linux, macOS, Windows | Locked dependencies, type-checks, frontend tests, portable CSP tests, production frontend build and CSP generation/verification |
-| Desktop | macOS Apple Silicon, Windows x64 | Native resources, restored frontend/CSP verification, Clippy, Rust tests, unsigned app/DMG or NSIS build |
-| CI passed | Aggregates all jobs | Fails if any prerequisite fails, is cancelled, or is skipped |
+| Desktop | macOS Apple Silicon, Windows x64 | Native resources, restored frontend/CSP verification, Clippy, Rust tests, debug smoke build without installers |
+| Installer | macOS Apple Silicon, Windows x64, when required | Full optimized Release build and unsigned app/DMG or NSIS packaging |
+| CI passed | Aggregates all jobs | Requires every routine check and any required installer build to succeed |
 
 Matrices use `fail-fast: false` so a failure on one platform does not cancel the
 other platform checks. Actions are pinned to commit SHAs; the workflow has only
 read access to repository contents and needs no release or signing secrets.
-All Cargo lint, test and bundle commands use `--locked`.
+All Cargo lint, test and bundle commands in CI use `--locked`.
+
+Ordinary source PRs and pushes to `windows` run the fast path: Clippy, real native
+tests and `tauri build --debug --no-bundle` on both supported desktop platforms.
+This avoids compiling a second, optimized Rust profile and compressing an
+installer on every edit. The smoke build uses the verified production frontend
+and the same CSP as packaging; it does not start a development server.
+
+Full installer builds run on pushes to `main`, `v*` tags, manual runs (the
+`build_installers` input defaults to true), and PRs changing packaging inputs.
+`scripts/ci-plan.py` compares the tested PR merge commit to its base parent,
+including deleted/renamed paths, without the GitHub changed-files API limit.
+Packaging inputs include Cargo manifests/lockfile, the Rust toolchain, Tauri
+settings, build scripts, icons, capabilities, bundled resources, core pins,
+frontend dependency manifests and CI configuration. A generated script hash
+refresh alone does not request installers; other CSP or Tauri setting changes do.
+Installer jobs run in parallel with Desktop checks rather than waiting for them.
+Tag-triggered signed app publication still belongs to the Release workflow;
+CI's installers are unsigned inspection artifacts.
+
+`rust-toolchain.toml` pins the same exact Rust version for local work, checks and
+Release. Upgrade it deliberately in a PR; moving `stable` updates no longer
+invalidate the cache unexpectedly. Native setup lives in
+`.github/actions/prepare-desktop`. Fast checks retain the existing `desktop`
+cache namespace; installer builds and Release use a separate `package` cache.
+Both save dependencies after failed builds as well as successful ones. A cache
+miss still requires compilation, and the first build in the new installer cache
+will populate it. Cache reuse does not guarantee a fixed runtime.
 
 The `frontend-<platform>` artifacts retain each verified build and its matching
 configuration for three days. Desktop jobs consume those artifacts from the
-same workflow run and upload unsigned `desktop-<Rust target>` installers for
-seven days. These are CI inspection artifacts, not published releases or
+same workflow run. When requested, Installer jobs upload unsigned
+`desktop-<Rust target>` installers for seven days. These are CI inspection artifacts, not published releases or
 notarized/signed updater tests. Both CI and Release download the same production
 core from `zeytun-labs/zeytun-core`, pinned by tag, source commit and asset
 SHA-256 in `scripts/core-release.json`. Neither pipeline installs Go, clones
@@ -333,8 +362,10 @@ integration and packaging are supported; frontend coverage alone does not
 establish native Linux support.
 
 For branch protection or repository rulesets, require the stable **CI passed**
-status check. Its job uses `always()` and explicitly requires every job result
-to be `success`, including all matrix entries. Configure this check in GitHub
+status check. Its job uses `always()` and requires every routine job result to
+be `success`, including all matrix entries. It accepts an Installer `skipped`
+result only when the successful plan explicitly selected `installers=false`;
+required, failed or cancelled packaging cannot be hidden by a skip. Configure this check in GitHub
 repository settings after its first run; workflow changes alone do not enable
 branch protection. Replace any required checks using the previous job names.
 

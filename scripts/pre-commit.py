@@ -35,7 +35,7 @@ def native(name: str) -> bool:
 
 
 def tooling(name: str) -> bool:
-    return name.startswith(("scripts/", ".githooks/", ".github/workflows/")) or name == "Makefile"
+    return name.startswith(("scripts/", ".githooks/", ".github/workflows/", ".github/actions/")) or name in {"Makefile", "rust-toolchain.toml"}
 
 
 def unstaged_inputs(check_frontend: bool, check_native: bool) -> list[str]:
