@@ -59,6 +59,11 @@ class CoreDownloadTests(unittest.TestCase):
         self.assertEqual({path.name for path in self.destination.iterdir()}, core.TARGET_FILES["windows-x86_64"])
         self.assertEqual((self.destination / "libcronet.dll").read_bytes(), b"runtime file")
 
+    def test_install_preserves_the_tracked_resource_placeholder(self):
+        (self.destination / ".gitkeep").touch()
+        self.install(self.archive())
+        self.assertEqual((self.destination / ".gitkeep").read_bytes(), b"")
+
     def test_macos_binary_is_executable(self):
         self.install(self.archive("macos-aarch64"), "macos-aarch64")
         self.assertTrue((self.destination / "zeytun-core").stat().st_mode & stat.S_IXUSR)

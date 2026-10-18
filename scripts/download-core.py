@@ -97,6 +97,9 @@ def install_core(lock: dict, target: str, destination: Path, cache: Path) -> Non
             raise ValueError("Core binary metadata does not match the pinned release")
         executable = "zeytun-core.exe" if target == "windows-x86_64" else "zeytun-core"
         (stage / executable).chmod(0o755)
+        # Resource folders contain a tracked empty placeholder in fresh clones.
+        if (destination / ".gitkeep").is_file():
+            (stage / ".gitkeep").touch()
         backup = Path(temporary) / "previous"
         if destination.exists():
             destination.rename(backup)
