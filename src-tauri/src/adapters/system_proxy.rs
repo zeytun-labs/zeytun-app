@@ -2,6 +2,16 @@
 
 pub struct SystemProxyManager;
 
+/// Normalize proxy target host. `0.0.0.0`, `::`, or empty string are unspecified
+/// bind addresses (INADDR_ANY) and illegal as connect destinations on Windows
+/// (WSAEADDRNOTAVAIL 10049). Local OS system proxy must always target loopback.
+fn normalize_proxy_host(host: &str) -> &str {
+    match host {
+        "0.0.0.0" | "::" | "" => "127.0.0.1",
+        other => other,
+    }
+}
+
 #[cfg(target_os = "macos")]
 impl SystemProxyManager {
     /// Enable system proxy across all active/enabled network services.
@@ -9,6 +19,7 @@ impl SystemProxyManager {
     pub fn enable(&self, host: &str, port: u16) -> Result<(), String> {
         use std::process::Command;
 
+        let host = normalize_proxy_host(host);
         let services = self.network_services();
         let port_str = port.to_string();
         let mut first_error = None;
@@ -122,12 +133,13 @@ impl SystemProxyManager {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
         use winreg::RegKey;
 
+        let effective_host = normalize_proxy_host(host);
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let (key, _) = hkcu
             .create_subkey_with_flags(Self::INTERNET_SETTINGS, KEY_SET_VALUE)
             .map_err(|e| format!("Failed to open Internet Settings registry key: {e}"))?;
 
-        let proxy_server = format!("{}:{}", host, port);
+        let proxy_server = format!("{}:{}", effective_host, port);
         key.set_value("ProxyServer", &proxy_server)
             .map_err(|e| format!("Failed to set ProxyServer: {e}"))?;
 
@@ -183,6 +195,18 @@ impl SystemProxyManager {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_proxy_host() {
+        assert_eq!(normalize_proxy_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(normalize_proxy_host("::"), "127.0.0.1");
+        assert_eq!(normalize_proxy_host(""), "127.0.0.1");
+        assert_eq!(normalize_proxy_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(normalize_proxy_host("localhost"), "localhost");
+        assert_eq!(normalize_proxy_host("192.168.1.100"), "192.168.1.100");
+    }
+
     #[test]
     fn parses_network_services_output_ignoring_disabled_and_headers() {
         let sample = "An asterisk (*) denotes that a network service is disabled.\nAX88179A\n*Thunderbolt Bridge\nWi-Fi\n*Surge\n";
@@ -210,7 +234,7 @@ mod tests {
         let orig_server: Option<String> = key.get_value("ProxyServer").ok();
 
         let mgr = super::SystemProxyManager;
-        mgr.enable("127.0.0.1", 39999).unwrap();
+        mgr.enable("0.0.0.0", 39999).unwrap();
 
         let key = hkcu.open_subkey(super::SystemProxyManager::INTERNET_SETTINGS).unwrap();
         let new_enable: u32 = key.get_value("ProxyEnable").unwrap();

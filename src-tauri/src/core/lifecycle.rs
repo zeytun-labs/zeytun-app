@@ -353,8 +353,10 @@ impl CoreLifecycle {
         if !self.process_manager.is_running()? {
             return Ok(()); // Saved preference takes effect on the next core start.
         }
-        let host = &profile.local_proxy.listen;
-        let host = if host.is_empty() { "127.0.0.1" } else { host };
+        let host = match profile.local_proxy.listen.as_str() {
+            "" | "0.0.0.0" | "::" => "127.0.0.1",
+            other => other,
+        };
         self.system_proxy_manager.enable(
             host,
             profile
