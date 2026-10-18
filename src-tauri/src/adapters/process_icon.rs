@@ -354,7 +354,7 @@ unsafe fn hicon_to_png(
 ) -> Result<Vec<u8>, crate::error::CommandError> {
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, RGBQUAD,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
 
@@ -468,13 +468,21 @@ unsafe fn hicon_to_png(
     }
 
     if !has_alpha && !icon_info.hbmMask.is_invalid() {
-        let mut mask_bi = BITMAPINFO::default();
-        mask_bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        mask_bi.bmiHeader.biWidth = width;
-        mask_bi.bmiHeader.biHeight = -height;
-        mask_bi.bmiHeader.biPlanes = 1;
-        mask_bi.bmiHeader.biBitCount = 1;
-        mask_bi.bmiHeader.biCompression = BI_RGB.0;
+        // BITMAPINFO has only a one-entry trailing palette placeholder. GDI writes
+        // two RGBQUAD entries for a 1-bpp DIB, so give it the full C layout.
+        #[repr(C)]
+        #[derive(Default)]
+        struct MaskBitmapInfo {
+            header: BITMAPINFOHEADER,
+            colors: [RGBQUAD; 2],
+        }
+        let mut mask_bi = MaskBitmapInfo::default();
+        mask_bi.header.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        mask_bi.header.biWidth = width;
+        mask_bi.header.biHeight = -height;
+        mask_bi.header.biPlanes = 1;
+        mask_bi.header.biBitCount = 1;
+        mask_bi.header.biCompression = BI_RGB.0;
 
         let mask_row_bytes = ((width + 31) / 32 * 4) as usize;
         let mut mask_buf = vec![0u8; mask_row_bytes * height as usize];
@@ -484,7 +492,9 @@ unsafe fn hicon_to_png(
             0,
             height as u32,
             Some(mask_buf.as_mut_ptr() as *mut _),
-            &mut mask_bi,
+            // SAFETY: repr(C) preserves the BITMAPINFO header/palette layout;
+            // both palette entries and the complete scanline buffer are writable.
+            (&mut mask_bi as *mut MaskBitmapInfo).cast::<BITMAPINFO>(),
             DIB_RGB_COLORS,
         ) != 0
         {
@@ -537,8 +547,83 @@ fn extract_icon_png(process_path: &str) -> Result<Vec<u8>, crate::error::Command
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::extract_icon_png;
+    use super::{extract_icon_png, hicon_to_png, ICON_PX};
     use std::path::Path;
+
+    #[test]
+    fn icon_without_alpha_uses_the_monochrome_mask() {
+        use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject, HBITMAP, HGDIOBJ};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateIconIndirect, DestroyIcon, HICON, ICONINFO,
+        };
+
+        struct BitmapGuard(HBITMAP);
+        impl Drop for BitmapGuard {
+            fn drop(&mut self) {
+                // SAFETY: this guard exclusively owns a bitmap created below.
+                unsafe {
+                    let _ = DeleteObject(HGDIOBJ(self.0 .0));
+                }
+            }
+        }
+        struct IconGuard(HICON);
+        impl Drop for IconGuard {
+            fn drop(&mut self) {
+                // SAFETY: this guard exclusively owns the icon created below.
+                unsafe {
+                    let _ = DestroyIcon(self.0);
+                }
+            }
+        }
+
+        let color = vec![0u8; (ICON_PX * ICON_PX * 4) as usize];
+        // Each scanline is WORD aligned. Left half transparent, right half opaque.
+        let row_bytes = ICON_PX.div_ceil(16) as usize * 2;
+        let mut mask = vec![0u8; row_bytes * ICON_PX as usize];
+        for y in 0..ICON_PX as usize {
+            for x in 0..(ICON_PX / 2) as usize {
+                mask[y * row_bytes + x / 8] |= 0x80 >> (x % 8);
+            }
+        }
+        // SAFETY: buffers contain every scanline for their declared dimensions
+        // and remain alive while CreateBitmap copies their contents.
+        let color = BitmapGuard(unsafe {
+            CreateBitmap(
+                ICON_PX as i32,
+                ICON_PX as i32,
+                1,
+                32,
+                Some(color.as_ptr().cast()),
+            )
+        });
+        let mask = BitmapGuard(unsafe {
+            CreateBitmap(
+                ICON_PX as i32,
+                ICON_PX as i32,
+                1,
+                1,
+                Some(mask.as_ptr().cast()),
+            )
+        });
+        assert!(!color.0.is_invalid());
+        assert!(!mask.0.is_invalid());
+        let info = ICONINFO {
+            fIcon: true.into(),
+            hbmColor: color.0,
+            hbmMask: mask.0,
+            ..Default::default()
+        };
+        // SAFETY: both bitmaps are valid and alive; CreateIconIndirect copies them.
+        let icon = IconGuard(unsafe { CreateIconIndirect(&info) }.expect("create test icon"));
+        // SAFETY: the guard keeps this valid icon alive throughout conversion.
+        let png = unsafe { hicon_to_png(icon.0) }.expect("convert masked icon");
+        let image = image::load_from_memory(&png)
+            .expect("decode icon PNG")
+            .to_rgba8();
+        assert_eq!(image.dimensions(), (ICON_PX, ICON_PX));
+        assert_eq!(image.get_pixel(0, ICON_PX / 2)[3], 0);
+        assert_eq!(image.get_pixel(ICON_PX - 1, ICON_PX / 2)[3], 255);
+    }
 
     #[test]
     fn test_extract_windows_icon() {

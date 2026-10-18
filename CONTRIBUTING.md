@@ -222,8 +222,11 @@ make build-core CORE_SRC=/absolute/path/to/zeytun-core
 Make variables. `CORE_REF` selects the branch/tag for a new clone; it does not
 switch an existing checkout. The bundled binary path is selected from the host
 architecture. Apple Silicon is the release target; Intel builds are not released.
-CI's `make build-core-ci` omits Naive/CGO and is not a substitute for checking a
-production build when a change affects that integration.
+For a local app build using the same prebuilt core as CI, run
+`python3 scripts/download-core.py --target macos-aarch64` (Windows:
+`python scripts/download-core.py --target windows-x86_64`). This replaces that
+target's resource directory with the pinned release. Source builds remain
+available for core development; CI and Release never invoke them.
 
 ### Before committing: the pre-commit hook
 
@@ -302,13 +305,29 @@ The `frontend-<platform>` artifacts retain each verified build and its matching
 configuration for three days. Desktop jobs consume those artifacts from the
 same workflow run and upload unsigned `desktop-<Rust target>` installers for
 seven days. These are CI inspection artifacts, not published releases or
-notarized/signed updater tests. The macOS CI core uses `make build-core-ci`, which
-omits Naive/CGO; the Release workflow continues to build the production core.
+notarized/signed updater tests. Both CI and Release download the same production
+core from `zeytun-labs/zeytun-core`, pinned by tag, source commit and asset
+SHA-256 in `scripts/core-release.json`. Neither pipeline installs Go, clones
+core source, or compiles the core. Rust compilation still builds the app.
+
+`scripts/download-core.py` verifies the downloaded archive before installing it,
+checks its target/version/source metadata, and includes the matching Cronet DLL
+on Windows. A missing release or checksum failure stops the job; there is no
+source-build fallback. Cached archives are verified again before reuse.
+The Release workflow also verifies and attaches that core's corresponding
+source archive to the app release.
+
+To upgrade core, publish a new `zeytun-core-v*` tag in the core repository using
+its Zeytun core release workflow, then copy its `core-release.json` release
+asset into `scripts/core-release.json` in an app PR. Review the source commit,
+feature tags and checksums, and require both desktop CI jobs to pass. Never
+pin `latest`, a moving branch, or replace existing release assets.
 
 The `src-tauri/tauri.ci.json` overlay disables the frontend rebuild and signing
 artifacts for both desktop platforms. It keeps the shared security policy.
-macOS resources use the Makefile; Windows resources use
-`scripts/native-resources.ps1` with an explicit core source path in the checkout.
+macOS data resources use the Makefile; Windows data resources use the explicit
+`geoip` and `check` actions of `scripts/native-resources.ps1`. Core installation
+on both platforms uses only the pinned downloader.
 Linux native CI can be added once its core resource preparation, native
 integration and packaging are supported; frontend coverage alone does not
 establish native Linux support.
