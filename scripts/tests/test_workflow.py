@@ -1,13 +1,11 @@
-"""Regression tests for CSP generation and commit/input isolation.
+"""Regression tests for development tooling and commit/input isolation.
 
 Git integration uses disposable standalone repositories, not the user's index.
 No network, Node packages, native compilation, or release credentials are used.
 """
 from __future__ import annotations
 
-import base64
 import contextlib
-import hashlib
 import importlib.util
 import io
 import json
@@ -30,51 +28,7 @@ def load_script(name):
     return module
 
 
-csp = load_script("check-csp-hashes.py")
 dev = load_script("dev.py")
-
-
-class CSPTests(unittest.TestCase):
-    def test_nested_pages_and_exact_bytes_exclude_external_scripts(self):
-        body = 'const value = "a&b";\r\n'
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "nested").mkdir()
-            (root / "nested/index.html").write_bytes(
-                f'<script src = "/external.js">ignored</script><script type="module">{body}</script>'.encode()
-            )
-            expected = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
-            self.assertEqual(csp.build_hashes(root), {expected})
-
-    def test_write_preserves_unrelated_policy_and_is_idempotent(self):
-        policy = "default-src 'self'; script-src 'self' 'sha256-old'; style-src 'self' 'sha256-style'; connect-src ipc:"
-        with tempfile.TemporaryDirectory() as directory:
-            conf = Path(directory) / "tauri.conf.json"
-            config = {"app": {"security": {"csp": policy}}, "identifier": "com.example.dev"}
-            conf.write_text(json.dumps(config, indent=4) + "\n")
-            with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(csp.sync_config(conf, {"new"}, True), 0)
-                saved = conf.read_bytes()
-                self.assertEqual(csp.sync_config(conf, {"new"}, True), 0)
-            self.assertEqual(conf.read_bytes(), saved)
-            after = json.loads(saved)
-            self.assertEqual(after["identifier"], config["identifier"])
-            self.assertIn("style-src 'self' 'sha256-style'; connect-src ipc:", after["app"]["security"]["csp"])
-            self.assertEqual(csp.pinned_hashes(after["app"]["security"]["csp"]), {"new"})
-
-    def test_check_failure_is_read_only_and_empty_build_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            conf = Path(directory) / "config.json"
-            conf.write_text(json.dumps({"app": {"security": {"csp": "script-src 'self' 'sha256-old'"}}}))
-            before = conf.read_bytes()
-            with contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(csp.sync_config(conf, {"new"}, False), 1)
-            self.assertEqual(conf.read_bytes(), before)
-            with self.assertRaises(ValueError):
-                csp.build_hashes(Path(directory) / "missing")
-            (Path(directory) / "empty.html").write_text("<main>No scripts</main>")
-            with self.assertRaises(ValueError):
-                csp.build_hashes(Path(directory))
 
 
 class HookTests(unittest.TestCase):

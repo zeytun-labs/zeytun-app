@@ -48,7 +48,7 @@ function Build-Core {
     Write-Host "Building zeytun-core.exe for $Target..." -ForegroundColor Cyan
 
     $tags = "with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_tailscale,with_ccm,with_ocm,with_cloudflared,with_naive_outbound,with_purego,with_usbip,with_openvpn,with_openconnect,badlinkname,tfogo_checklinkname0"
-    $ldflags = "-X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w"
+    $ldflags = "-X github.com/sagernet/sing-box/constant.Version=$CoreVersion -X runtime.godebugDefault=multipathtcp=0,tlssha1=1 -checklinkname=0 -s -w"
 
     if (-not (Test-Path $CoreDestDir)) {
         New-Item -ItemType Directory -Path $CoreDestDir -Force | Out-Null

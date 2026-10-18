@@ -132,8 +132,11 @@ generated output is not evidence that a check was run or a behavior was verified
 ## Development setup
 
 Clone **this public repository** directly. All commands below run from its root;
-no private parent repository or sibling checkout is required. The native target
-is macOS (Apple Silicon releases). Frontend checks also run on Linux.
+no private parent repository or sibling checkout is required. CI checks the
+frontend on Linux, macOS and Windows, and native desktop builds on macOS Apple
+Silicon and Windows x64. The Make-based native development commands below target
+macOS; Windows native resource preparation uses `scripts/native-resources.ps1`.
+Linux native desktop builds are not currently part of the supported build path.
 
 ### Prerequisites
 
@@ -188,7 +191,7 @@ Run `make` or `make help` to list commands.
 | `make dev-web` | Start Vite only |
 | `make build` | Build a local app/DMG with fresh frontend/CSP, without updater signing secrets |
 | `make prepare` | Type-check, test, build the frontend, and refresh generated CSP hashes |
-| `make ci-frontend` | Run frontend and tooling checks exactly as CI does, including CSP verification |
+| `make ci-frontend` | Run frontend/tooling checks and verify the committed CSP against the local build |
 | `make check-rs` | Run Rust format check, Clippy, and tests with CI flags |
 | `make ci` | Run both frontend and Rust checks |
 | `make fmt` | Format Rust before staging it |
@@ -263,22 +266,58 @@ initialization script and SvelteKit's hydration bootstrap. The bootstrap turns
 rendered HTML into the interactive app. Its SHA-256 hash can change when the
 frontend output changes, even if you did not edit a script tag directly.
 
-The generated hashes in `src-tauri/tauri.conf.json` must match the exact built
-script bytes. Otherwise the webview can block hydration. `make prepare` and the
-hook refresh the hashes; CI's `make ci-frontend` verifies them without modifying
-the configuration. This keeps the policy restrictive without manual hash
-copying or enabling `unsafe-inline` for scripts.
+The generated hashes must match the exact built script bytes. Otherwise the
+webview can block hydration. `make prepare` and the hook refresh the hashes in
+`src-tauri/tauri.conf.json`; `make ci-frontend` verifies them against a local build
+without modifying the configuration.
+
+Frontend asset names and the bootstrap that imports them can differ between
+operating systems, so a hash generated on one OS need not match another OS's
+build. Each CI frontend job refreshes only the generated script hashes in its
+disposable checkout, verifies them, and uploads the frontend with the matching
+Tauri configuration. Desktop jobs restore the artifact for their own platform
+and verify the hashes again before native compilation. The frontend is not
+rebuilt during packaging. All other CSP directives, sources and configuration
+remain as reviewed. Script hashes are never copied manually or replaced with
+`unsafe-inline`.
 
 ## Checks
 
-CI runs on pull requests and pushes to `main` and `windows`. The Windows job
-checks frontend types/tests and generated CSP hashes, runs Rust formatting,
-Clippy and tests on `windows-latest`, and builds an unsigned NSIS installer.
-It uses `scripts/native-resources.ps1` to build the Windows core and download
-GeoIP. No release or signing secrets are needed. The CI-only
-`src-tauri/tauri.windows-ci.json` overlay skips rebuilding the already-verified
-frontend and disables updater signing artifacts; it does not change the shared
-security policy. Generated CSP hashes must be committed before CI runs.
+CI runs on pull requests and pushes to `main` and `windows`, and can be started
+manually. Its jobs are:
+
+| Check | Platforms | Coverage |
+|---|---|---|
+| Shared checks | Linux, once | Version consistency, development/release tooling tests, Rust formatting |
+| Frontend | Linux, macOS, Windows | Locked dependencies, type-checks, frontend tests, portable CSP tests, production frontend build and CSP generation/verification |
+| Desktop | macOS Apple Silicon, Windows x64 | Native resources, restored frontend/CSP verification, Clippy, Rust tests, unsigned app/DMG or NSIS build |
+| CI passed | Aggregates all jobs | Fails if any prerequisite fails, is cancelled, or is skipped |
+
+Matrices use `fail-fast: false` so a failure on one platform does not cancel the
+other platform checks. Actions are pinned to commit SHAs; the workflow has only
+read access to repository contents and needs no release or signing secrets.
+All Cargo lint, test and bundle commands use `--locked`.
+
+The `frontend-<platform>` artifacts retain each verified build and its matching
+configuration for three days. Desktop jobs consume those artifacts from the
+same workflow run and upload unsigned `desktop-<Rust target>` installers for
+seven days. These are CI inspection artifacts, not published releases or
+notarized/signed updater tests. The macOS CI core uses `make build-core-ci`, which
+omits Naive/CGO; the Release workflow continues to build the production core.
+
+The `src-tauri/tauri.ci.json` overlay disables the frontend rebuild and signing
+artifacts for both desktop platforms. It keeps the shared security policy.
+macOS resources use the Makefile; Windows resources use
+`scripts/native-resources.ps1` with an explicit core source path in the checkout.
+Linux native CI can be added once its core resource preparation, native
+integration and packaging are supported; frontend coverage alone does not
+establish native Linux support.
+
+For branch protection or repository rulesets, require the stable **CI passed**
+status check. Its job uses `always()` and explicitly requires every job result
+to be `success`, including all matrix entries. Configure this check in GitHub
+repository settings after its first run; workflow changes alone do not enable
+branch protection. Replace any required checks using the previous job names.
 
 Use `make ci-frontend` for frontend/tooling changes, `make check-rs` for Rust,
 and `make ci` before a PR that affects both. Rust checks require the core and

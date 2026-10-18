@@ -77,7 +77,7 @@ def updated_csp(csp: str, hashes: set[str]) -> str:
 
 
 def sync_config(conf: Path, built: set[str], write: bool) -> int:
-    source = conf.read_text()
+    source = conf.read_bytes().decode("utf-8")
     config = json.loads(source)
     csp = config["app"]["security"]["csp"]
     pinned = pinned_hashes(csp)
@@ -91,7 +91,7 @@ def sync_config(conf: Path, built: set[str], write: bool) -> int:
         new = json.dumps(replacement, ensure_ascii=False)
         if source.count(old) != 1:
             raise ValueError("Cannot locate the CSP string unambiguously in tauri.conf.json.")
-        conf.write_text(source.replace(old, new, 1))
+        conf.write_bytes(source.replace(old, new, 1).encode("utf-8"))
         print(f"Updated CSP script-src hashes in {conf}")
         return 0
     print("CSP script-src hashes out of date", file=sys.stderr)

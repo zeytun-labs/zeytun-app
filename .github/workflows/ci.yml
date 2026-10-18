@@ -13,95 +13,204 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  frontend:
+  checks:
+    name: Shared checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4.1.0
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: make ci-frontend
-
-  rust:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25.5"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: swatinem/rust-cache@v2.8.0
-        with:
-          workspaces: src-tauri
-      - name: Install protobuf
-        run: brew install protobuf
-      - name: Build zeytun-core
-        env:
-          GOTOOLCHAIN: local
-        run: |
-          make build-core-ci CORE_VERSION=zeytun-ci
-          make geoip
-      - run: make check-rs
-
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Keep source line endings consistent with Linux and macOS builds
-        run: git config --global core.autocrlf false
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4.1.0
-      - uses: actions/setup-node@v4.4.0
-        with:
-          node-version: 22
-          cache: pnpm
-      - uses: actions/setup-python@v5
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-go@v5
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
-          go-version: "1.25.5"
-          cache: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: swatinem/rust-cache@v2.8.0
-        with:
-          workspaces: src-tauri
-      - name: Install protobuf
-        run: choco install protoc --yes --no-progress
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+          components: rustfmt
       - name: Check versions
         run: python scripts/dev.py version
+      - name: Test development and release tooling
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
-      - name: Check frontend
+
+  frontend:
+    name: Frontend (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            name: Linux
+            runner: ubuntu-latest
+          - platform: macos
+            name: macOS
+            runner: macos-15
+          - platform: windows
+            name: Windows
+            runner: windows-latest
+    steps:
+      - name: Keep checkout line endings consistent across platforms
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check frontend types
         run: pnpm check
       - name: Test frontend
         run: pnpm test
-      - name: Build frontend and verify CSP
+      - name: Test portable CSP tooling
+        run: python -m unittest discover -s scripts/tests -p 'test_csp.py'
+      - name: Build frontend and prepare its CSP
         run: |
           pnpm build
+          # Hashes belong to this platform's output, not another runner's build.
+          # The synchronizer preserves every other policy directive and setting.
+          python scripts/check-csp-hashes.py --write
           python scripts/check-csp-hashes.py
+      - name: Save verified frontend and matching Tauri configuration
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontend-${{ matrix.platform }}
+          path: |
+            build/
+            src-tauri/tauri.conf.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 3
+
+  desktop:
+    name: Desktop (${{ matrix.name }})
+    needs: [checks, frontend]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            name: macOS
+            runner: macos-15
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+            installer: dmg/*.dmg
+          - platform: windows
+            name: Windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            installer: nsis/*-setup.exe
+    steps:
+      - name: Keep checkout line endings consistent across platforms
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.5"
+          # The core is cloned below; there is no go.sum in the app checkout.
+          cache: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+      - name: Install protobuf (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Install protobuf (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc --yes --no-progress
+      - name: Install frontend dependencies for the Tauri CLI
+        run: pnpm install --frozen-lockfile
+      - name: Restore this platform's verified frontend and CSP
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: frontend-${{ matrix.platform }}
+          path: .
+      - name: Verify restored CSP before native compilation
+        run: python scripts/check-csp-hashes.py
+      - name: Prepare macOS native resources
+        if: runner.os == 'macOS'
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          make build-core-ci CORE_VERSION=zeytun-ci TARGET=macos-aarch64
+          make geoip TARGET=macos-aarch64
+          make resources-check repair-dev disk TARGET=macos-aarch64
       - name: Prepare Windows native resources
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
           GOTOOLCHAIN: local
-        run: ./scripts/native-resources.ps1 -CoreSrc "$env:GITHUB_WORKSPACE/.cache/zeytun-core"
-      - name: Lint Windows Rust targets
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets --all-features -- -D warnings -A clippy::result_large_err
-      - name: Test Windows Rust targets
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --all-targets --features updater-tools
-      - name: Build unsigned Windows installer
-        # Reuse the frontend whose CSP was verified above. No release secrets are needed.
-        run: pnpm exec tauri build --ci --no-sign --bundles nsis --config src-tauri/tauri.windows-ci.json -- --locked
+        run: ./scripts/native-resources.ps1 -CoreSrc "$env:GITHUB_WORKSPACE/.cache/zeytun-core" -CoreVersion zeytun-ci
+      - name: Lint Rust targets
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --all-targets --all-features -- -D warnings -A clippy::result_large_err
+      - name: Test Rust targets
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --all-targets --features updater-tools
+      - name: Build unsigned desktop bundles
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+          BUNDLE_FORMATS: ${{ matrix.bundles }}
+        # The CI overlay reuses the verified frontend and requires no signing secrets.
+        run: pnpm exec tauri build --ci --no-sign --target "$RUST_TARGET" --bundles "$BUNDLE_FORMATS" --config src-tauri/tauri.ci.json -- --locked
+      - name: Save unsigned installer for inspection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/${{ matrix.installer }}
+          if-no-files-found: error
+          retention-days: 7
+
+  ci:
+    name: CI passed
+    if: ${{ always() }}
+    needs: [checks, frontend, desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every check and matrix entry to succeed
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          DESKTOP_RESULT: ${{ needs.desktop.result }}
+        run: |
+          test "$CHECKS_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$DESKTOP_RESULT" = success
