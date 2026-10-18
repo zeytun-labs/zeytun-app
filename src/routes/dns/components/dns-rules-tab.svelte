@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { createActionQueue } from "$lib/composables/action-queue";
+  import { useRowSelection } from "$lib/composables/row-selection.svelte";
+  import SelectionRegion from "$lib/components/rule/selection-region.svelte";
+  import RuleSelectionToolbar from "$lib/components/rule/rule-selection-toolbar.svelte";
   import { coreUpdateDnsRules } from "$lib/core/api";
   import { dnsRuleTargetExists } from "$lib/core/dns-servers";
   import type { DnsRuleDto, RuleSet } from "$lib/core/types";
@@ -24,6 +28,7 @@
   let editingRule = $state<DnsRuleItem | null>(null);
 
   const action = useAsyncAction();
+  const writes = createActionQueue(() => profileStore.profile?.id);
   const dnsServers = $derived(profileStore.profile?.dns?.servers ?? []);
   const enabledRuleSets = $derived(
     ((profileStore.profile?.rule_sets ?? []) as RuleSet[]).filter(
@@ -42,6 +47,8 @@
       }),
     ),
   );
+  const selection = useRowSelection(() => dnsRules.map((r) => r.id), () => profileStore.profile?.id);
+  const selectedRules = $derived(dnsRules.filter((r) => selection.ids.includes(r.id)));
   const filteredRules = $derived.by(() => {
     const query = search.trim().toLowerCase();
     if (!query) return dnsRules;
@@ -73,10 +80,7 @@
     if (!profile) throw new Error("No active profile is available.");
 
     await coreUpdateDnsRules(next);
-    const dns = profile.dns ?? {};
-    dns.rules = next;
-    profile.dns = dns;
-    profileStore.pendingRestart = true;
+    await profileStore.refresh();
   }
 
   function openCreateDialog() {
@@ -98,6 +102,10 @@
   }
 
   async function saveRule(data: Omit<DnsRuleItem, "id" | "enabled">) {
+    await writes.run(() => saveRuleDraft(data));
+  }
+
+  async function saveRuleDraft(data: Omit<DnsRuleItem, "id" | "enabled">) {
     const targetExists = dnsRuleTargetExists(data.target, dnsServers);
     if (!targetExists) {
       throw new Error("Select an available DNS server, Local (System), or Block.");
@@ -142,41 +150,41 @@
     await persistRules(next);
   }
 
-  async function deleteRule(id: string) {
-    if (action.saving || profileStore.loading || !dnsRules.some((rule) => rule.id === id)) return;
-    const next = (profileStore.profile?.dns?.rules ?? []).filter(
-      (rule) => rule.id !== id,
-    );
-
-    await action.run(async () => {
-      await persistRules(next);
-      if (selectedId === id) selectedId = next[0]?.id ?? null;
-    });
+  async function deleteRules(ids: string[]) {
+    if (action.saving || profileStore.loading) return;
+    await action.run(() => writes.run(async () => {
+      await persistRules((profileStore.profile?.dns?.rules ?? []).filter((r) => !ids.includes(r.id)));
+      selection.replace(selection.ids.filter((id) => !ids.includes(id)));
+    }));
   }
 
-  async function toggleEnabled(id: string, enabled: boolean) {
+  async function deleteRule(id: string) { await deleteRules([id]); }
+
+  async function setEnabled(ids: string[], enabled: boolean) {
     if (action.saving) return;
-    const next = (profileStore.profile?.dns?.rules ?? []).map((rule) =>
-      rule.id === id ? { ...rule, enabled } : rule,
-    );
-    await action.run(() => persistRules(next));
+    await action.run(() => writes.run(() => persistRules(
+      (profileStore.profile?.dns?.rules ?? []).map((r) => ids.includes(r.id) ? { ...r, enabled } : r),
+    )), undefined, { quiet: true });
   }
+
+  async function toggleEnabled(id: string, enabled: boolean) { await setEnabled([id], enabled); }
 
   /** Final is the fallback resolver; specific rules and Hosts keep priority. */
   async function changeFinal(target: string | null) {
     if (action.saving) return;
-    await action.run(async () => {
+    await action.run(() => writes.run(async () => {
       const profile = profileStore.profile;
       if (!profile) throw new Error("No active profile is available.");
       await profileStore.updateProfile({
         id: profile.id,
         dns: { ...profile.dns, final_server: target },
       });
-    });
+    }));
   }
 </script>
 
-<div class="flex min-w-0 flex-col gap-4">
+<div class="flex min-w-0 flex-col gap-3">
+
   <div class="min-w-0 overflow-x-auto">
     {#if profileStore.loading}
       <div class="flex min-w-170 flex-col gap-3 p-4">
@@ -190,6 +198,7 @@
           rules={filteredRules}
           dnsServers={profileStore.profile?.dns?.servers ?? []}
           selectedId={selectedId}
+          {selection}
           onSelect={(id) => (selectedId = id)}
           onEdit={openEditDialog}
           onDelete={deleteRule}
@@ -204,6 +213,13 @@
       </div>
     {/if}
   </div>
+  <SelectionRegion open={selectedRules.length > 0}>
+    <RuleSelectionToolbar selectedCount={selectedRules.length} itemLabel="DNS rule"
+      canEnable={selectedRules.some((r) => r.enabled === false)}
+      canDisable={selectedRules.some((r) => r.enabled !== false)} saving={action.saving}
+      onEnable={() => setEnabled(selection.ids, true)} onDisable={() => setEnabled(selection.ids, false)}
+      onDelete={() => deleteRules(selection.ids)} />
+  </SelectionRegion>
 </div>
 
 <DnsRuleDialog

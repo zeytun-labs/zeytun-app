@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { useRowSelection } from "$lib/composables/row-selection.svelte";
+  import { Checkbox } from "$lib/components/ui/checkbox";
+  import SelectionRegion from "$lib/components/rule/selection-region.svelte";
+  import RuleSelectionToolbar from "$lib/components/rule/rule-selection-toolbar.svelte";
   import { onMount } from "svelte";
   import { toast } from "svelte-sonner";
   import * as Dialog from "$lib/components/ui/dialog/index.js";
@@ -63,6 +67,8 @@
       name: s.name,
     })),
   );
+
+  const selection = useRowSelection(() => rawServers.map((s) => s.tag), () => profileStore.profile?.id);
 
   // Creating and editing use the same form; editing never replaces a server tag.
   let dialogOpen = $state(false);
@@ -179,27 +185,25 @@
     }
   }
 
-  async function removeServer(tag: string) {
+  async function removeServers(tags: string[]) {
     if (isSaving || profileStore.loading) return;
     operationError = null;
     const dns = profileStore.profile?.dns;
-    if (!dns || !rawServers.some((server) => server.tag === tag)) return;
-    const referenceError = dnsServerDeleteError(dns, tag);
-    if (referenceError) {
-      operationError = referenceError;
-      return;
+    if (!dns) return;
+    // Check the entire selection before writing; referenced resolvers stay intact.
+    for (const server of rawServers.filter((s) => tags.includes(s.tag))) {
+      const referenceError = dnsServerDeleteError(dns, server.tag);
+      if (referenceError) { operationError = `${server.name}: ${referenceError}`; return; }
     }
     isSaving = true;
     try {
-      await persistServers(rawServers.filter((server) => server.tag !== tag));
-      if (selectedId === tag) selectedId = null;
-      toast.success("DNS server removed.");
-    } catch (error) {
-      operationError = errorMessage(error);
-    } finally {
-      isSaving = false;
-    }
+      await persistServers(rawServers.filter((server) => !tags.includes(server.tag)));
+      selection.replace(selection.ids.filter((tag) => !tags.includes(tag)));
+    } catch (error) { operationError = errorMessage(error); }
+    finally { isSaving = false; }
   }
+
+  async function removeServer(tag: string) { await removeServers([tag]); }
 
   function protocolColor(protocol: DnsProtocol) {
     switch (protocol) {
@@ -238,13 +242,18 @@
 {#snippet serverRow(server: UIItem)}
   <DnsRowActions
     label={`DNS server ${server.name}`}
-    selected={selectedId === server.tag}
+    selected={selection.ids.includes(server.tag)}
     disabled={isSaving || profileStore.loading}
-    class="group h-12 grid grid-cols-[80px_160px_1fr_160px_40px] sm:grid-cols-[80px_200px_1fr_180px_40px] items-center rounded-xl hover:bg-card/70 data-[state=selected]:bg-card/70 transition-colors cursor-pointer px-2"
-    onSelect={() => { selectedId = server.tag; }}
+    class="group h-12 grid grid-cols-[32px_80px_160px_1fr_160px_40px] sm:grid-cols-[32px_80px_200px_1fr_180px_40px] items-center rounded-xl hover:bg-card/70 data-[state=selected]:bg-card/70 transition-colors cursor-pointer px-2"
+    onSelect={(event) => { selectedId = server.tag; selection.select(server.tag, event); }}
+    onContextSelect={() => { selectedId = server.tag; selection.select(server.tag); }}
     onEdit={() => openEditDialog(server.tag)}
     onDelete={() => { void removeServer(server.tag); }}
   >
+    <div class="flex items-center justify-center">
+      <Checkbox aria-label={`Select DNS server ${server.name}`} disabled={isSaving}
+        checked={selection.ids.includes(server.tag)} onCheckedChange={(checked) => selection.toggle(server.tag, checked)} />
+    </div>
     <!-- Protocol badge -->
     <div class="px-2 flex items-center">
       <Badge class={cn("font-mono", protocolColor(server.protocol))}>
@@ -277,7 +286,8 @@
   </DnsRowActions>
 {/snippet}
 
-<div class="w-full text-sm px-2 pb-2 flex flex-col">
+<div class="w-full text-sm px-2 pb-2 flex flex-col gap-3">
+
   {#if operationError}
     <p role="alert" class="m-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">{operationError}</p>
   {/if}
@@ -317,32 +327,45 @@
       </Empty.Root>
     </div>
   {:else}
-    <div
-      class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[80px_160px_1fr_160px_40px] sm:grid-cols-[80px_200px_1fr_180px_40px] px-2 border-b border-border/70"
-    >
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
-        Type
+    <div>
+      <div
+        class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[32px_80px_160px_1fr_160px_40px] sm:grid-cols-[32px_80px_200px_1fr_180px_40px] px-2 border-b border-border/70"
+      >
+        <div class="h-8 flex items-center justify-center">
+          <Checkbox aria-label="Select all DNS servers" disabled={isSaving}
+            checked={rawServers.length > 0 && selection.ids.length === rawServers.length}
+            indeterminate={selection.ids.length > 0 && selection.ids.length < rawServers.length}
+            onCheckedChange={(checked) => selection.selectAll(checked)} />
+        </div>
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
+          Type
+        </div>
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
+          Name
+        </div>
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
+          Address
+        </div>
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
+          Routing
+        </div>
+        <div class="sr-only">Actions</div>
       </div>
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
-        Name
+      <div class="space-y-0 text-sm">
+        {#each allServers as server, i (server.tag)}
+          {@render serverRow(server)}
+          {#if i < allServers.length - 1}
+            <div class="h-px w-full bg-border/40"></div>
+          {/if}
+        {/each}
       </div>
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
-        Address
-      </div>
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
-        Routing
-      </div>
-      <div class="sr-only">Actions</div>
-    </div>
-    <div class="space-y-0 text-sm">
-      {#each allServers as server, i (server.tag)}
-        {@render serverRow(server)}
-        {#if i < allServers.length - 1}
-          <div class="h-px w-full bg-border/40"></div>
-        {/if}
-      {/each}
     </div>
   {/if}
+  <SelectionRegion open={selection.ids.length > 0}>
+    <RuleSelectionToolbar selectedCount={selection.ids.length} itemLabel="DNS server" showStatus={false}
+      canEnable={false} canDisable={false} saving={isSaving} onEnable={() => {}} onDisable={() => {}}
+      onDelete={() => removeServers(selection.ids)} />
+  </SelectionRegion>
 </div>
 
 <!-- The existing server tag is retained when editing. -->

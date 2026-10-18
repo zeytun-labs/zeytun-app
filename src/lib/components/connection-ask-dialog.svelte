@@ -270,9 +270,6 @@
         dest_host: current.dest_host,
         group_by: current.group_by,
       });
-      if (remember && !reject && !useFinal) {
-        await profileStore.refresh();
-      }
       queue = queue.filter((q) => q.id !== decidingId);
       if (queue[0]) resetDraft();
       // empty → $effect scheduleHide after out transition
@@ -368,7 +365,7 @@
               </Select.Trigger>
               <Select.Content>
                 <Select.Group>
-                  {#each options as opt}
+                  {#each options as opt (opt.tag)}
                     <Select.Item value={opt.tag} label={opt.name}
                       >{opt.name}</Select.Item
                     >

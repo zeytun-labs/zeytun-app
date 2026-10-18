@@ -1,4 +1,7 @@
 <script lang="ts">
+  import type { RowSelection } from "$lib/composables/row-selection.svelte";
+  import { Checkbox } from "$lib/components/ui/checkbox";
+  import DnsRowActions from "./dns-row-actions.svelte";
   import type { RuleSet } from "$lib/core/types";
   import { Badge, type BadgeVariant } from "$lib/components/ui/badge/index.js";
   import { notificationStore } from "$lib/stores/notifications.svelte";
@@ -11,6 +14,9 @@
   interface Props {
     ruleSets: RuleSet[];
     selectedId: string | null;
+    selection: RowSelection<string>;
+    disabled?: boolean;
+    onDelete: (id: string) => void;
     getActionName: (tag: string) => string;
     onSelect: (id: string) => void;
     onEdit: (id: string) => void;
@@ -21,6 +27,9 @@
   let {
     ruleSets,
     selectedId,
+    selection,
+    disabled = false,
+    onDelete,
     getActionName,
     onSelect,
     onEdit,
@@ -75,7 +84,13 @@
 </script>
 
 <div class="w-full text-sm">
-  <div class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[44px_100px_1fr_120px_1fr_160px_160px_1fr] px-2 border-b border-border/70">
+  <div class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[32px_44px_80px_minmax(0,1fr)_100px_minmax(0,1fr)_120px_120px_minmax(0,1fr)_40px] px-2 border-b border-border/70">
+    <div class="h-8 flex items-center justify-center">
+      <Checkbox aria-label="Select all rulesets" {disabled}
+        checked={ruleSets.length > 0 && selection.ids.length === ruleSets.length}
+        indeterminate={selection.ids.length > 0 && selection.ids.length < ruleSets.length}
+        onCheckedChange={(checked) => selection.selectAll(checked)} />
+    </div>
     <div class="h-8 flex items-center font-medium text-muted-foreground"></div>
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Type</div>
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Name</div>
@@ -84,6 +99,7 @@
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Download via</div>
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Action</div>
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Comment</div>
+    <div class="sr-only">Actions</div>
   </div>
   <div class="p-0">
     {#if ruleSets.length === 0}
@@ -111,17 +127,26 @@
     {:else}
       {#each ruleSets as rs (rs.id)}
         {@const st = statusOf(rs)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          data-state={selectedId === rs.id ? "selected" : undefined}
-          class="h-11 grid grid-cols-[44px_100px_1fr_120px_1fr_160px_160px_1fr] items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors cursor-pointer {!rs.enabled ? 'opacity-50' : ''}"
-          onclick={() => onSelect(rs.id)}
-          ondblclick={() => onEdit(rs.id)}
+        <DnsRowActions
+          label={`ruleset ${rs.name || rs.tag}`}
+          selected={selection.ids.includes(rs.id)}
+          {disabled}
+          class="h-11 grid grid-cols-[32px_44px_80px_minmax(0,1fr)_100px_minmax(0,1fr)_120px_120px_minmax(0,1fr)_40px] items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors cursor-pointer {!rs.enabled ? 'opacity-50' : ''}"
+          onSelect={(event) => { onSelect(rs.id); selection.select(rs.id, event); }}
+          onContextSelect={() => { onSelect(rs.id); selection.select(rs.id); }}
+          onEdit={() => onEdit(rs.id)}
+          onDelete={() => onDelete(rs.id)}
+          enabled={rs.enabled}
+          onToggleEnabled={() => onToggleEnabled?.(rs.id, !rs.enabled)}
         >
+          <div class="flex items-center justify-center">
+            <Checkbox aria-label={`Select ruleset ${rs.name || rs.tag}`} {disabled}
+              checked={selection.ids.includes(rs.id)} onCheckedChange={(checked) => selection.toggle(rs.id, checked)} />
+          </div>
           <div class="px-2 flex items-center justify-center">
             <CellEnabled
               checked={rs.enabled}
+              {disabled}
               onChange={(v) => onToggleEnabled?.(rs.id, v)}
             />
           </div>
@@ -153,7 +178,7 @@
           <div class="px-2 text-muted-foreground/60 italic truncate" title={rs.comment || ""}>
             {rs.comment || "—"}
           </div>
-        </div>
+        </DnsRowActions>
         <div class="h-px bg-border/40 mx-2 last:hidden" aria-hidden="true"></div>
       {/each}
     {/if}
