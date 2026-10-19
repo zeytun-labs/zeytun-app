@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { RowSelection } from "$lib/composables/row-selection.svelte";
+  import { Checkbox } from "$lib/components/ui/checkbox";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import type {
@@ -25,6 +27,7 @@
     rules: DnsRuleItem[];
     dnsServers?: DnsServer[];
     selectedId: string | null;
+    selection: RowSelection<string>;
     onSelect: (id: string) => void;
     onEdit: (id: string) => void;
     onDelete: (id: string) => void;
@@ -42,6 +45,7 @@
     rules,
     dnsServers = [],
     selectedId,
+    selection,
     onSelect,
     onEdit,
     onDelete,
@@ -54,7 +58,7 @@
     disabled = false,
   }: Props = $props();
 
-  const GRID = "grid-cols-[44px_110px_1fr_160px_1fr_40px]";
+  const GRID = "grid-cols-[32px_44px_110px_1fr_160px_1fr_40px]";
 
   function targetBadgeStyle(target: DnsRuleTarget) {
     return target === "block"
@@ -97,6 +101,12 @@
   <div
     class="sticky top-0 uppercase text-xs bg-background z-20 grid {GRID} px-2 border-b border-border/70"
   >
+    <div class="h-8 flex items-center justify-center">
+      <Checkbox aria-label="Select all visible DNS rules" {disabled}
+        checked={rules.length > 0 && rules.every((r) => selection.ids.includes(r.id))}
+        indeterminate={rules.some((r) => selection.ids.includes(r.id)) && !rules.every((r) => selection.ids.includes(r.id))}
+        onCheckedChange={(checked) => selection.selectAll(checked, rules.map((r) => r.id))} />
+    </div>
     <div class="h-8 flex items-center font-medium text-muted-foreground"></div>
     <div class="h-8 flex items-center font-medium text-muted-foreground px-2">
       Type
@@ -117,13 +127,20 @@
       {#if i > 0}<div class="h-px w-full bg-border/40"></div>{/if}
       <DnsRowActions
         label={`DNS rule ${r.value}`}
-        selected={selectedId === r.id}
+        selected={selection.ids.includes(r.id)}
         {disabled}
         class="h-12 grid {GRID} items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors px-2 cursor-pointer {r.enabled === false ? 'opacity-50' : ''}"
-        onSelect={() => onSelect(r.id)}
+        onSelect={(event) => { onSelect(r.id); selection.select(r.id, event, rules.map((r) => r.id)); }}
+        onContextSelect={() => { onSelect(r.id); selection.select(r.id); }}
+        enabled={r.enabled !== false}
+        onToggleEnabled={() => onToggleEnabled?.(r.id, r.enabled === false)}
         onEdit={() => onEdit(r.id)}
         onDelete={() => onDelete(r.id)}
       >
+        <div class="flex items-center justify-center">
+          <Checkbox aria-label={`Select DNS rule ${r.value}`} {disabled}
+            checked={selection.ids.includes(r.id)} onCheckedChange={(checked) => selection.toggle(r.id, checked)} />
+        </div>
         <div class="px-2 flex items-center justify-center">
           <CellEnabled
             checked={r.enabled !== false}
@@ -167,6 +184,7 @@
       class="h-12 grid {GRID} items-center bg-muted/20 px-2"
       title={finalDescription}
     >
+      <div></div>
       <div class="px-2 flex items-center justify-center">
         <CellEnabled checked disabled onChange={() => {}} />
       </div>

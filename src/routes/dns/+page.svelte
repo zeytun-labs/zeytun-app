@@ -10,7 +10,6 @@
   import {
     Add01Icon,
     Search01Icon,
-    Delete01Icon,
   } from "@hugeicons/core-free-icons";
   import { profileStore } from "$lib/stores/profile.svelte";
 
@@ -18,8 +17,6 @@
   let triggerAddServer = $state<(() => void) | undefined>(undefined);
   let triggerAddRule = $state<(() => void) | undefined>(undefined);
   let triggerAddHost = $state<(() => void) | undefined>(undefined);
-  let triggerDeleteHost = $state<(() => void) | undefined>(undefined);
-  let selectedHostId = $state<string | null>(null);
   let searchRule = $state("");
 
   onMount(async () => {
@@ -72,18 +69,6 @@
             </Button>
           {/if}
           {#if activeTab === "hosts"}
-            {#if selectedHostId}
-              <Button
-                size="icon"
-                variant="destructive"
-                class="animate-in fade-in zoom-in-90 duration-200"
-                disabled={!selectedHostId}
-                onclick={() => triggerDeleteHost?.()}
-              >
-                <HugeiconsIcon icon={Delete01Icon} class="size-4" />
-                <span class="sr-only">Delete selected host</span>
-              </Button>
-            {/if}
             <Button
               variant="outline"
               class="bg-card/70! text-muted-foreground hover:text-foreground"
@@ -139,8 +124,6 @@
     <TabsContent value="hosts" class="min-w-0">
         <DnsLocalHostsTab
           bind:triggerAdd={triggerAddHost}
-          bind:triggerDelete={triggerDeleteHost}
-          bind:selectedId={selectedHostId}
         />
     </TabsContent>
 

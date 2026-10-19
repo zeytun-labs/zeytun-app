@@ -1474,16 +1474,23 @@ impl CoreManager {
         }
     }
 
-    fn push_permanent_rules_overlay(&self) -> Result<(), crate::error::CommandError> {
+    fn push_permanent_rules_overlay(&mut self) -> Result<(), crate::error::CommandError> {
         let Some(clash) = self.lifecycle.clash_api() else {
             return Ok(());
         };
+        let (saved, revision) = self.db.profile_snapshot(&self.profile.id)?;
         self.sync_live_policy_selections(clash);
         let payload=crate::core::compiler::runtime_profile_compiler::RuntimeProfileCompiler::live_rules_payload(&self.profile,true).map_err(crate::error::CommandError::Internal)?;
         let body = payload["permanent"].to_string();
         clash.put_permanent_rules(&body).map_err(|e| {
             crate::error::CommandError::Internal(format!("permanent-rules push: {e:?}"))
         })?;
+        self.lifecycle.acknowledge_live_rules(
+            &self.profile,
+            &saved,
+            revision,
+            crate::core::lifecycle::LiveRulesLayer::Permanent,
+        );
         Ok(())
     }
 
@@ -1566,16 +1573,23 @@ impl CoreManager {
         Ok(true)
     }
 
-    fn push_temp_rules_overlay(&self) -> Result<(), crate::error::CommandError> {
+    fn push_temp_rules_overlay(&mut self) -> Result<(), crate::error::CommandError> {
         let Some(clash) = self.lifecycle.clash_api() else {
             return Ok(());
         };
+        let (saved, revision) = self.db.profile_snapshot(&self.profile.id)?;
         self.sync_live_policy_selections(clash);
         let payload=crate::core::compiler::runtime_profile_compiler::RuntimeProfileCompiler::live_rules_payload(&self.profile,true).map_err(crate::error::CommandError::Internal)?;
         let body = payload["temp"].to_string();
         clash
             .put_temp_rules(&body)
             .map_err(|e| crate::error::CommandError::Internal(format!("temp-rules push: {e:?}")))?;
+        self.lifecycle.acknowledge_live_rules(
+            &self.profile,
+            &saved,
+            revision,
+            crate::core::lifecycle::LiveRulesLayer::Temp,
+        );
         Ok(())
     }
 
@@ -2198,6 +2212,9 @@ fn validate_dns_rules(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod live_apply_tests;
 
 #[cfg(test)]
 mod tests {

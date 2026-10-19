@@ -50,7 +50,7 @@
 <Tooltip.Provider>
   <Tooltip.Root>
     <Tooltip.Trigger
-      class="flex w-full min-w-0 cursor-default items-center gap-1.5 text-left"
+      class="inline-flex w-fit max-w-full min-w-0 cursor-default items-center gap-1.5 text-left"
     >
       {#if resolved?.iconPath}
         <img

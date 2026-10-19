@@ -1,4 +1,10 @@
 <script lang="ts">
+  import { createActionQueue } from "$lib/composables/action-queue";
+  import { useRowSelection } from "$lib/composables/row-selection.svelte";
+  import SelectionRegion from "$lib/components/rule/selection-region.svelte";
+  import RuleSelectionToolbar from "$lib/components/rule/rule-selection-toolbar.svelte";
+  import DnsRowActions from "$lib/components/rule/dns-row-actions.svelte";
+  import { Checkbox } from "$lib/components/ui/checkbox";
   import { toast } from "svelte-sonner";
   import * as Card from "$lib/components/ui/card";
   import * as Empty from "$lib/components/ui/empty/index.js";
@@ -20,15 +26,8 @@
   import { profileStore } from "$lib/stores/profile.svelte";
   import { errorMessage } from "$lib/errors";
 
-    let {
-    triggerAdd = $bindable(),
-    triggerDelete = $bindable(),
-    selectedId = $bindable(null),
-  } = $props<{
-    triggerAdd?: () => void;
-    triggerDelete?: () => void;
-    selectedId?: string | null;
-  }>();
+  let { triggerAdd = $bindable() } = $props<{ triggerAdd?: () => void }>();
+  const writes = createActionQueue(() => profileStore.profile?.id);
 
   let isSaving = $state(false);
   let operationError = $state<string | null>(null);
@@ -43,16 +42,10 @@
     profileStore.profile?.dns?.hosts ?? [],
   );
 
-    $effect(() => {
-    triggerAdd = openCreateDialog;
-    triggerDelete = async () => {
-      if (selectedId) {
-        await deleteHost(selectedId);
-        selectedId = null;
-      }
-    };
-  });
-  
+  const selection = useRowSelection(() => hosts.map((h) => h.id), () => profileStore.profile?.id);
+  const selectedHosts = $derived(hosts.filter((h) => selection.ids.includes(h.id)));
+  $effect(() => { triggerAdd = openCreateDialog; });
+
   function normalizeDomain(value: string): string {
     return value.trim().toLowerCase().replace(/\.$/, "");
   }
@@ -122,13 +115,16 @@
     if (!profile) throw new Error("No active profile is available.");
 
     await coreUpdateDnsHosts(next);
-    const dns = profile.dns ?? {};
-    dns.hosts = next;
-    profile.dns = dns;
-    profileStore.pendingRestart = true;
+    await profileStore.refresh();
   }
 
   async function saveHost(event: SubmitEvent) {
+    event.preventDefault();
+    if (isSaving) return;
+    await writes.run(() => saveHostDraft(event));
+  }
+
+  async function saveHostDraft(event: SubmitEvent) {
     event.preventDefault();
     if (isSaving) return;
 
@@ -192,41 +188,35 @@
     }
   }
 
-  async function deleteHost(id: string) {
+  async function deleteHosts(ids: string[]) {
     if (isSaving) return;
     isSaving = true;
     operationError = null;
     try {
-      await persistHosts(hosts.filter((host) => host.id !== id));
-      toast.success("Local Hosts entry deleted.");
+      await writes.run(() => persistHosts(hosts.filter((host) => !ids.includes(host.id))));
+      selection.replace(selection.ids.filter((id) => !ids.includes(id)));
     } catch (error) {
-      console.error("Failed to delete Local Hosts entry:", error);
-      operationError = `Could not delete the Local Hosts entry: ${errorMessage(error)}`;
+      operationError = `Could not delete Local Hosts entries: ${errorMessage(error)}`;
       toast.error(operationError);
-    } finally {
-      isSaving = false;
+    } finally { isSaving = false; }
+  }
+
+  async function setHostsEnabled(ids: string[], enabled: boolean) {
+    if (isSaving) return;
+    operationError = null;
+    try {
+      await writes.run(() => persistHosts(hosts.map((host) => ids.includes(host.id) ? { ...host, enabled } : host)));
+    } catch (error) {
+      operationError = `Could not update Local Hosts entries: ${errorMessage(error)}`;
+      toast.error(operationError);
     }
   }
 
-  async function toggleHost(id: string, enabled: boolean) {
-    if (isSaving) return;
-    isSaving = true;
-    operationError = null;
-    try {
-      await persistHosts(
-        hosts.map((host) => (host.id === id ? { ...host, enabled } : host)),
-      );
-    } catch (error) {
-      console.error("Failed to toggle Local Hosts entry:", error);
-      operationError = `Could not update the Local Hosts entry: ${errorMessage(error)}`;
-      toast.error(operationError);
-    } finally {
-      isSaving = false;
-    }
-  }
+
 </script>
 
-<div class="flex flex-col w-full text-sm">
+<div class="flex flex-col gap-3 w-full text-sm">
+
   {#if operationError}
     <div class="mb-3 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
       {operationError}
@@ -260,41 +250,58 @@
       </Empty.Root>
     </div>
   {:else}
-    <div
-      class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[60px_1fr_1fr] px-2 border-b border-border/70"
-    >
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2"></div>
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Domain</div>
-      <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Address</div>
-    </div>
-    <div class="flex flex-col">
-      {#each hosts as host, i (host.id)}
-        {#if i > 0}<div class="h-px w-full bg-border/40"></div>{/if}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          data-state={selectedId === host.id ? "selected" : undefined}
-          class="h-12 grid grid-cols-[60px_1fr_1fr] items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors px-2 cursor-pointer {host.enabled ? '' : 'opacity-50'}"
-          onclick={() => { selectedId = host.id; }}
-          ondblclick={() => openEditDialog(host)}
-        >
-          <div class="px-2 flex items-center justify-center">
-            <CellEnabled
-              checked={host.enabled}
-              disabled={isSaving}
-              onChange={(enabled) => toggleHost(host.id, enabled)}
-            />
-          </div>
-          <div class="px-2 truncate font-mono font-medium text-foreground" title={host.domain}>
-            {host.domain}
-          </div>
-          <div class="px-2 truncate font-mono text-muted-foreground" title={host.address}>
-            {host.address}
-          </div>
+    <div>
+      <div
+        class="sticky top-0 uppercase text-xs bg-background z-20 grid grid-cols-[32px_60px_1fr_1fr_40px] px-2 border-b border-border/70"
+      >
+        <div class="h-8 flex items-center justify-center">
+          <Checkbox aria-label="Select all hosts" disabled={isSaving}
+            checked={hosts.length > 0 && selection.ids.length === hosts.length}
+            indeterminate={selection.ids.length > 0 && selection.ids.length < hosts.length}
+            onCheckedChange={(checked) => selection.selectAll(checked)} />
         </div>
-      {/each}
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2"></div>
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Domain</div>
+        <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Address</div>
+        <div class="sr-only">Actions</div>
+      </div>
+      <div class="flex flex-col">
+        {#each hosts as host, i (host.id)}
+          {#if i > 0}<div class="h-px w-full bg-border/40"></div>{/if}
+          <DnsRowActions label={`host ${host.domain}`} selected={selection.ids.includes(host.id)} disabled={isSaving}
+            class="h-12 grid grid-cols-[32px_60px_1fr_1fr_40px] items-center rounded-xl hover:bg-muted/30 data-[state=selected]:bg-muted/40 transition-colors px-2 cursor-pointer {host.enabled ? '' : 'opacity-50'}"
+            onSelect={(event) => selection.select(host.id, event)} onContextSelect={() => selection.select(host.id)}
+            onEdit={() => openEditDialog(host)} onDelete={() => deleteHosts([host.id])}
+            enabled={host.enabled} onToggleEnabled={() => setHostsEnabled([host.id], !host.enabled)}
+          >
+            <div class="flex items-center justify-center">
+              <Checkbox aria-label={`Select host ${host.domain}`} disabled={isSaving}
+                checked={selection.ids.includes(host.id)} onCheckedChange={(checked) => selection.toggle(host.id, checked)} />
+            </div>
+            <div class="px-2 flex items-center justify-center">
+              <CellEnabled
+                checked={host.enabled}
+                disabled={isSaving}
+                onChange={(enabled) => setHostsEnabled([host.id], enabled)}
+              />
+            </div>
+            <div class="px-2 truncate font-mono font-medium text-foreground" title={host.domain}>
+              {host.domain}
+            </div>
+            <div class="px-2 truncate font-mono text-muted-foreground" title={host.address}>
+              {host.address}
+            </div>
+          </DnsRowActions>
+        {/each}
+      </div>
     </div>
   {/if}
+  <SelectionRegion open={selectedHosts.length > 0}>
+    <RuleSelectionToolbar selectedCount={selectedHosts.length} itemLabel="host" saving={isSaving}
+      canEnable={selectedHosts.some((h) => !h.enabled)} canDisable={selectedHosts.some((h) => h.enabled)}
+      onEnable={() => setHostsEnabled(selection.ids, true)} onDisable={() => setHostsEnabled(selection.ids, false)}
+      onDelete={() => deleteHosts(selection.ids)} />
+  </SelectionRegion>
 </div>
 
 <Dialog.Root bind:open={dialogOpen}>

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { HugeiconsIcon } from "@hugeicons/svelte";
-  import { Delete01Icon, Edit01Icon, MoreVerticalIcon } from "@hugeicons/core-free-icons";
+  import { Delete01Icon, Edit01Icon, MoreVerticalIcon, PlayIcon, PauseIcon } from "@hugeicons/core-free-icons";
   import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import { cn } from "$lib/utils";
@@ -14,13 +14,19 @@
     onSelect,
     onEdit,
     onDelete,
+    onContextSelect,
+    onToggleEnabled,
+    enabled = true,
     children,
   }: {
     label: string;
     selected?: boolean;
     disabled?: boolean;
     class?: string;
-    onSelect: () => void;
+    onSelect: (event?: MouseEvent) => void;
+    onContextSelect?: () => void;
+    onToggleEnabled?: () => void;
+    enabled?: boolean;
     onEdit: () => void;
     onDelete: () => void;
     children: Snippet;
@@ -39,15 +45,16 @@
   }
 </script>
 
-<ContextMenu.Root>
+<ContextMenu.Root onOpenChange={(open) => { if (open && !disabled) (onContextSelect ?? onSelect)(); }}>
   <ContextMenu.Trigger
+    {disabled}
     role="group"
     tabindex={disabled ? -1 : 0}
     aria-label={`${label}. Press Enter to edit, or open the actions menu.`}
     aria-disabled={disabled}
     data-state={selected ? "selected" : undefined}
     class={cn("w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50", className)}
-    onclick={(event) => { if (!disabled && isRowContent(event)) onSelect(); }}
+    onclick={(event) => { if (!disabled && isRowContent(event)) onSelect(event); }}
     ondblclick={(event) => { if (isRowContent(event)) edit(); }}
     onkeydown={(event) => {
       if (event.target === event.currentTarget && event.key === "Enter") {
@@ -67,10 +74,15 @@
           <HugeiconsIcon icon={MoreVerticalIcon} class="size-4" />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="end" class="w-40 max-h-[min(16rem,var(--bits-dropdown-menu-content-available-height,16rem))] overscroll-contain">
-          <DropdownMenu.Item {disabled} onclick={edit}>
+          <DropdownMenu.Item {disabled} onSelect={edit}>
             <HugeiconsIcon icon={Edit01Icon} />Edit
           </DropdownMenu.Item>
-          <DropdownMenu.Item {disabled} variant="destructive" onclick={remove}>
+          {#if onToggleEnabled}
+            <DropdownMenu.Item {disabled} onSelect={onToggleEnabled}>
+              <HugeiconsIcon icon={enabled ? PauseIcon : PlayIcon} />{enabled ? "Disable" : "Enable"}
+            </DropdownMenu.Item>
+          {/if}
+          <DropdownMenu.Item {disabled} variant="destructive" onSelect={remove}>
             <HugeiconsIcon icon={Delete01Icon} />Delete
           </DropdownMenu.Item>
         </DropdownMenu.Content>
@@ -78,10 +90,15 @@
     </div>
   </ContextMenu.Trigger>
   <ContextMenu.Content class="w-40 max-h-[min(16rem,var(--bits-context-menu-content-available-height,16rem))] overscroll-contain">
-    <ContextMenu.Item {disabled} onclick={edit}>
+    <ContextMenu.Item {disabled} onSelect={edit}>
       <HugeiconsIcon icon={Edit01Icon} />Edit
     </ContextMenu.Item>
-    <ContextMenu.Item {disabled} variant="destructive" onclick={remove}>
+    {#if onToggleEnabled}
+      <ContextMenu.Item {disabled} onSelect={onToggleEnabled}>
+        <HugeiconsIcon icon={enabled ? PauseIcon : PlayIcon} />{enabled ? "Disable" : "Enable"}
+      </ContextMenu.Item>
+    {/if}
+    <ContextMenu.Item {disabled} variant="destructive" onSelect={remove}>
       <HugeiconsIcon icon={Delete01Icon} />Delete
     </ContextMenu.Item>
   </ContextMenu.Content>

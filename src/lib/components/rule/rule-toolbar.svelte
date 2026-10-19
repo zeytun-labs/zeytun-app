@@ -3,7 +3,6 @@
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import * as Select from "$lib/components/ui/select/index.js";
   import {
-    MinusSignIcon,
     PlusSignIcon,
     Tick02Icon,
   } from "@hugeicons/core-free-icons";
@@ -16,7 +15,6 @@
     search: string;
     saving: boolean;
     hasProfile: boolean;
-    canDelete: boolean;
     canPromote: boolean;
     tab: "rules" | "temp" | "rulesets";
     // Ruleset specific
@@ -27,7 +25,6 @@
     onAddRule: () => void;
     onAddTempRule: () => void;
     onAddRuleset: () => void;
-    onDelete: () => void;
     onPromote?: () => void;
   }
 
@@ -35,7 +32,6 @@
     search = $bindable(),
     saving,
     hasProfile,
-    canDelete,
     canPromote,
     tab,
     rulesetsOutbound = "direct",
@@ -44,7 +40,6 @@
     onAddRule,
     onAddTempRule,
     onAddRuleset,
-    onDelete,
     onPromote,
   }: Props = $props();
 
@@ -122,14 +117,5 @@
       <DropdownMenu.Item onclick={onAddRuleset}>Ruleset</DropdownMenu.Item>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
-  <Button
-    variant="outline"
-    size="icon"
-    class="bg-card/70!"
-    disabled={!canDelete || saving}
-    onclick={onDelete}
-  >
-    <HugeiconsIcon icon={MinusSignIcon} />
-    <span class="sr-only">Delete selected</span>
-  </Button>
+
 </div>

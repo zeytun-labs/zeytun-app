@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import type {
   ClashProxiesResponse,
   ClashDelayResult,
@@ -371,7 +372,7 @@ export function coreAutoUpdateGeoipDb() {
   return invoke<GeoipAutoUpdate>("core_auto_update_geoip_db");
 }
 
-export function coreDecideConnectionAsk(input: {
+export async function coreDecideConnectionAsk(input: {
   id: string;
   outbound: string;
   reject: boolean;
@@ -381,7 +382,14 @@ export function coreDecideConnectionAsk(input: {
   dest_host?: string | null;
   group_by?: string | null;
 }) {
-  return invoke<void>("core_decide_connection_ask", input);
+  await invoke<void>("core_decide_connection_ask", input);
+  // Each webview owns a separate profile store. Notify every window after
+  // permanent or session rules change so an open rules page refreshes too.
+  if (!input.reject && input.process_path) {
+    await emit("profile-updated").catch((error) => {
+      console.error("Connection Ask profile notification failed", error);
+    });
+  }
 }
 
 export function coreOpenConnectionAskWindow() {

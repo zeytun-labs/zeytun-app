@@ -14,6 +14,10 @@
   import { notificationStore } from "$lib/stores/notifications.svelte";
   import { useAsyncAction } from "$lib/composables/use-async-action.svelte";
 
+  import { createActionQueue } from "$lib/composables/action-queue";
+  import { useRowSelection } from "$lib/composables/row-selection.svelte";
+  import SelectionRegion from "$lib/components/rule/selection-region.svelte";
+  import RuleSelectionToolbar from "$lib/components/rule/rule-selection-toolbar.svelte";
   import RuleToolbar from "$lib/components/rule/rule-toolbar.svelte";
   import RuleTable from "$lib/components/rule/rule-table.svelte";
   import RuleDialog, {
@@ -35,6 +39,8 @@
 
   let search = $state("");
   let selectedRuleId = $state<number | null>(null);
+  let selectedRuleIds = $state<number[]>([]);
+  let selectedTempRuleIds = $state<number[]>([]);
   let selectedTempRuleId = $state<number | null>(null);
   let selectedRulesetId = $state<string | null>(null);
 
@@ -57,6 +63,7 @@
   });
 
   const action = useAsyncAction();
+  const writes = createActionQueue(() => profileStore.profile?.id);
 
   const rules = $derived((profileStore.profile?.rules ?? []) as Rule[]);
   const tempRules = $derived([
@@ -186,11 +193,30 @@
   });
 
 
-  const selectedRuleIsFinal = $derived(
-    rules.find((r) => r.id === selectedRuleId)?.kind === "FINAL",
-  );
+  const selectedRules = $derived(rules.filter((r) => r.kind !== "FINAL" && selectedRuleIds.includes(r.id)));
+  const selectedTempRules = $derived(tempRules.filter((r) => selectedTempRuleIds.includes(r.id)));
+  const rulesetSelection = useRowSelection(() => ruleSets.map((r) => r.id), () => profileStore.profile?.id);
+  const selectedRuleSets = $derived(ruleSets.filter((r) => rulesetSelection.ids.includes(r.id)));
+  const selectedRows = $derived(tab === "temp" ? selectedTempRules : tab === "rules" ? selectedRules : selectedRuleSets);
+  const canEnableSelected = $derived(selectedRows.some((r) => r.enabled === false));
+  const canDisableSelected = $derived(selectedRows.some((r) => r.enabled !== false));
 
+  const selectionScope = $derived(profileStore.profile?.id);
+  $effect(() => {
+    selectionScope;
+    selectedRuleIds = [];
+    selectedTempRuleIds = [];
+  });
 
+  // Drop selected IDs that no longer exist after an external refresh.
+  $effect(() => {
+    const ids = selectedRules.map((r) => r.id);
+    if (ids.length !== selectedRuleIds.length) selectedRuleIds = ids;
+  });
+  $effect(() => {
+    const ids = selectedTempRules.map((r) => r.id);
+    if (ids.length !== selectedTempRuleIds.length) selectedTempRuleIds = ids;
+  });
 
   $effect(() => {
     const sets = ruleSets;
@@ -222,15 +248,7 @@
   });
 
 
-  const canDelete = $derived(
-    tab === "rulesets"
-      ? selectedRulesetId !== null
-      : tab === "temp"
-        ? selectedTempRuleId !== null
-        : selectedRuleId !== null && !selectedRuleIsFinal,
-  );
-
-  const canPromote = $derived(tab === "temp" && selectedTempRuleId !== null);
+  const canPromote = $derived(tab === "temp" && selectedTempRules.length === 1);
 
   onMount(async () => {
     await refreshProfile();
@@ -253,28 +271,26 @@
 
   async function persistRules(next: Rule[]) {
     if (!profileStore.profile) return;
-    await action.run(async () => {
-      await coreUpdateRules(next);
-      profileStore.profile!.rules = next;
-    });
+    await action.run(() => writes.run(async () => {
+      await coreUpdateRules(next.map((r) => ({ ...r, enabled: rules.find((current) => current.id === r.id)?.enabled ?? r.enabled })));
+      await profileStore.refresh();
+    }));
   }
 
   async function persistTempRules(next: TempRule[]) {
     if (!profileStore.profile) return;
-    await action.run(async () => {
-      await coreUpdateTempRules(next);
-      profileStore.profile!.temp_rules = next.filter((r) => !r.session);
-      profileStore.profile!.session_rules = next.filter((r) => r.session);
-    });
+    await action.run(() => writes.run(async () => {
+      await coreUpdateTempRules(next.map((r) => ({ ...r, enabled: tempRules.find((current) => current.id === r.id)?.enabled ?? r.enabled })));
+      await profileStore.refresh();
+    }));
   }
 
   async function persistRuleSets(next: RuleSet[]) {
-    if (!profileStore.profile) {
-      throw new Error("No active profile is available.");
-    }
-    await coreUpdateRulesets(next);
-    profileStore.profile.rule_sets = next;
-    profileStore.pendingRestart = true;
+    if (!profileStore.profile) throw new Error("No active profile is available.");
+    await writes.run(async () => {
+      await coreUpdateRulesets(next.map((r) => ({ ...r, enabled: ruleSets.find((current) => current.id === r.id)?.enabled ?? r.enabled })));
+      await profileStore.refresh();
+    });
   }
 
   function handleAddClick() {
@@ -303,6 +319,7 @@
     const rule = rules.find((r) => r.id === ruleId);
     if (!rule) return;
     selectedRuleId = ruleId;
+    selectedRuleIds = rule.kind === "FINAL" ? [] : [ruleId];
     dialogTemp = false;
     dialogMode = "edit";
     editingRule = rule;
@@ -313,6 +330,7 @@
     const rule = tempRules.find((r) => r.id === ruleId);
     if (!rule) return;
     selectedTempRuleId = ruleId;
+    selectedTempRuleIds = [ruleId];
     dialogTemp = true;
     dialogMode = "edit";
     editingRule = rule;
@@ -329,40 +347,42 @@
     rulesetDialogOpen = true;
   }
 
-  async function deleteSelectedRule() {
-    if (selectedRuleId === null || selectedRuleIsFinal) return;
-    const next = rules.filter((r) => r.id !== selectedRuleId);
-    selectedRuleId = next[0]?.id ?? null;
-    profileStore.profile!.rules = next;
-    await persistRules(next);
+  async function deleteRules(ids: number[]) {
+    if (!profileStore.profile || action.saving) return;
+    await action.run(() => writes.run(async () => {
+      await coreUpdateRules(rules.filter((r) => r.kind === "FINAL" || !ids.includes(r.id)));
+      await profileStore.refresh();
+      selectedRuleIds = selectedRuleIds.filter((id) => !ids.includes(id));
+    }));
   }
 
-  async function deleteSelectedTempRule() {
-    if (selectedTempRuleId === null) return;
-    const next = tempRules.filter((r) => r.id !== selectedTempRuleId);
-    selectedTempRuleId = next[0]?.id ?? null;
-    await persistTempRules(next);
+  async function deleteTempRules(ids: number[]) {
+    if (!profileStore.profile || action.saving) return;
+    await action.run(() => writes.run(async () => {
+      await coreUpdateTempRules(tempRules.filter((r) => !ids.includes(r.id)));
+      await profileStore.refresh();
+      selectedTempRuleIds = selectedTempRuleIds.filter((id) => !ids.includes(id));
+    }));
   }
 
-
-  async function deleteSelectedRuleset() {
-    if (!selectedRulesetId) return;
-    const next = ruleSets.filter((r) => r.id !== selectedRulesetId);
-    await action.run(async () => {
-      await persistRuleSets(next);
-      selectedRulesetId = next[0]?.id ?? null;
-    });
+  async function deleteRulesets(ids: string[]) {
+    if (!profileStore.profile || action.saving) return;
+    await action.run(() => writes.run(async () => {
+      await coreUpdateRulesets(ruleSets.filter((r) => !ids.includes(r.id)));
+      await profileStore.refresh();
+      rulesetSelection.replace(rulesetSelection.ids.filter((id) => !ids.includes(id)));
+    }));
   }
 
   async function handleDelete() {
-    if (tab === "rulesets") await deleteSelectedRuleset();
-    else if (tab === "temp") await deleteSelectedTempRule();
-    else await deleteSelectedRule();
+    if (tab === "rulesets") await deleteRulesets(rulesetSelection.ids);
+    else if (tab === "temp") await deleteTempRules(selectedTempRules.map((r) => r.id));
+    else await deleteRules(selectedRules.map((r) => r.id));
   }
 
   async function handlePromote() {
-    if (selectedTempRuleId === null) return;
-    const id = selectedTempRuleId;
+    if (selectedTempRules.length !== 1) return;
+    const id = selectedTempRules[0].id;
     await action.run(async () => {
       await corePromoteTempRule(id);
       await profileStore.refresh();
@@ -499,34 +519,51 @@
     await persistRuleSets(next);
   }
 
-  async function toggleRuleEnabled(id: number, enabled: boolean) {
-    const next = rules.map((r) => (r.id === id ? { ...r, enabled } : r));
-    profileStore.profile!.rules = next;
-    await persistRules(next);
+  async function setRulesEnabled(ids: number[], enabled: boolean) {
+    if (!profileStore.profile || action.saving) return;
+    await action.run(() => writes.run(async () => {
+      const targets = rules.filter((r) => r.kind !== "FINAL" && ids.includes(r.id) && (r.enabled !== false) !== enabled);
+      if (targets.length === 0) return;
+      await coreUpdateRules(rules.map((r) => targets.some((target) => target.id === r.id) ? { ...r, enabled } : r));
+      await profileStore.refresh();
+    }), undefined, { quiet: true });
   }
 
-  async function toggleTempEnabled(id: number, enabled: boolean) {
-    const next = tempRules.map((r) => (r.id === id ? { ...r, enabled } : r));
-    profileStore.profile!.temp_rules = next;
-    await persistTempRules(next);
+  async function setTempRulesEnabled(ids: number[], enabled: boolean) {
+    if (!profileStore.profile || action.saving) return;
+    await action.run(() => writes.run(async () => {
+      const targets = tempRules.filter((r) => ids.includes(r.id) && (r.enabled !== false) !== enabled);
+      if (targets.length === 0) return;
+      await coreUpdateTempRules(tempRules.map((r) => targets.some((target) => target.id === r.id) ? { ...r, enabled } : r));
+      await profileStore.refresh();
+    }), undefined, { quiet: true });
   }
 
-
-  async function toggleRulesetEnabled(id: string, enabled: boolean) {
-    if (action.saving) return;
-    const next = ruleSets.map((r) => (r.id === id ? { ...r, enabled } : r));
-    await action.run(() => persistRuleSets(next));
+  async function setRulesetsEnabled(ids: string[], enabled: boolean) {
+    if (!profileStore.profile || action.saving) return;
+    await action.run(() => writes.run(async () => {
+      await coreUpdateRulesets(ruleSets.map((r) => ids.includes(r.id) ? { ...r, enabled } : r));
+      await profileStore.refresh();
+    }), undefined, { quiet: true });
   }
+
+  async function setSelectedEnabled(enabled: boolean) {
+    if (tab === "temp") await setTempRulesEnabled(selectedTempRules.map((r) => r.id), enabled);
+    else if (tab === "rules") await setRulesEnabled(selectedRules.map((r) => r.id), enabled);
+    else await setRulesetsEnabled(rulesetSelection.ids, enabled);
+  }
+
+  async function toggleRuleEnabled(id: number, enabled: boolean) { await setRulesEnabled([id], enabled); }
+  async function toggleTempEnabled(id: number, enabled: boolean) { await setTempRulesEnabled([id], enabled); }
+  async function toggleRulesetEnabled(id: string, enabled: boolean) { await setRulesetsEnabled([id], enabled); }
 
   async function reorderRules(newRules: Rule[]) {
     if (search.trim().length > 0) return;
-    profileStore.profile!.rules = newRules;
     await persistRules(newRules);
   }
 
   async function reorderTempRules(newRules: TempRule[]) {
     if (search.trim().length > 0) return;
-    profileStore.profile!.temp_rules = newRules;
     await persistTempRules(newRules);
   }
 </script>
@@ -561,7 +598,6 @@
           bind:search
           saving={action.saving}
           hasProfile={!!profileStore.profile}
-          {canDelete}
           {canPromote}
           {tab}
           rulesetsOutbound={globalDownloadPolicy}
@@ -570,7 +606,6 @@
           onAddRule={handleAddClick}
           onAddTempRule={handleAddTempClick}
           onAddRuleset={handleAddRuleset}
-          onDelete={handleDelete}
           onPromote={handlePromote}
         />
       </div>
@@ -595,7 +630,7 @@
                 <div class="h-8 flex items-center font-medium text-muted-foreground">Comment</div>
               </div>
               <div class="p-2 flex flex-col gap-2 animate-in fade-in duration-300">
-                {#each Array(6) as _}
+                {#each Array(6) as _, i (i)}
                   <div class="h-11 grid grid-cols-[32px_44px_192px_200px_160px_1fr] items-center px-2">
                     <div></div>
                     <Skeleton class="size-4 rounded-md" />
@@ -611,6 +646,10 @@
             <RuleTable
               rules={filteredRules}
               selectedRuleId={selectedRuleId}
+              {selectedRuleIds}
+              onSelectionChange={(ids) => (selectedRuleIds = ids)}
+              onDeleteRule={(id) => deleteRules([id])}
+              disabled={action.saving}
               disableReorder={search.trim().length > 0 || action.saving}
               onSelectRule={(id) => (selectedRuleId = id)}
               onEditRule={handleEditClick}
@@ -644,7 +683,7 @@
                 <div class="h-8 flex items-center font-medium text-muted-foreground">Comment</div>
               </div>
               <div class="p-2 flex flex-col gap-2 animate-in fade-in duration-300">
-                {#each Array(4) as _}
+                {#each Array(4) as _, i (i)}
                   <div class="h-11 grid grid-cols-[32px_44px_192px_200px_160px_160px_1fr] items-center px-2">
                     <div></div>
                     <Skeleton class="size-4 rounded-md" />
@@ -661,6 +700,10 @@
             <RuleTable
               rules={filteredTempRules}
               selectedRuleId={selectedTempRuleId}
+              selectedRuleIds={selectedTempRuleIds}
+              onSelectionChange={(ids) => (selectedTempRuleIds = ids)}
+              onDeleteRule={(id) => deleteTempRules([id])}
+              disabled={action.saving}
               showExpires
               disableReorder={search.trim().length > 0 || action.saving}
               onSelectRule={(id) => (selectedTempRuleId = id)}
@@ -697,7 +740,7 @@
                 <div class="h-8 flex items-center font-medium text-muted-foreground px-2">Comment</div>
               </div>
               <div class="p-2 flex flex-col gap-2 animate-in fade-in duration-300">
-                {#each Array(4) as _}
+                {#each Array(4) as _, i (i)}
                   <div class="h-11 grid grid-cols-[44px_100px_1fr_120px_1fr_160px_160px_1fr] items-center px-2">
                     <div class="flex items-center justify-center">
                       <Skeleton class="size-4 rounded-md" />
@@ -717,6 +760,9 @@
             <RulesetTable
               {ruleSets}
               selectedId={selectedRulesetId}
+              selection={rulesetSelection}
+              disabled={action.saving}
+              onDelete={(id) => deleteRulesets([id])}
               {getActionName}
               onSelect={(id) => (selectedRulesetId = id)}
               onEdit={handleEditRuleset}
@@ -727,6 +773,18 @@
         </div>
       </ScrollArea>
     </Tabs.Content>
+    <SelectionRegion open={selectedRows.length > 0}>
+      <RuleSelectionToolbar
+        selectedCount={selectedRows.length}
+        itemLabel={tab === "rulesets" ? "ruleset" : "rule"}
+        canEnable={canEnableSelected}
+        canDisable={canDisableSelected}
+        saving={action.saving}
+        onEnable={() => setSelectedEnabled(true)}
+        onDisable={() => setSelectedEnabled(false)}
+        onDelete={handleDelete}
+      />
+    </SelectionRegion>
   </Tabs.Root>
 </div>
 

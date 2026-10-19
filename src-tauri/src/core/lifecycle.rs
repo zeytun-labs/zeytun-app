@@ -31,6 +31,11 @@ pub struct CoreLifecycle {
     applied: Option<(ZeytunCore, u64)>,
 }
 
+pub(super) enum LiveRulesLayer {
+    Permanent,
+    Temp,
+}
+
 impl CoreLifecycle {
     pub fn new(
         binary_path: impl Into<std::path::PathBuf>,
@@ -263,6 +268,70 @@ impl CoreLifecycle {
 
     pub fn applied_profile(&self) -> Option<&ZeytunCore> {
         self.applied.as_ref().map(|(p, _)| p)
+    }
+
+    /// Acknowledge only the layer accepted by the live API. Writing the full
+    /// saved config to disk does not apply pending inbounds, DNS or outbounds.
+    pub(super) fn acknowledge_live_rules(
+        &mut self,
+        pushed: &ZeytunCore,
+        saved: &ZeytunCore,
+        revision: u64,
+        layer: LiveRulesLayer,
+    ) {
+        if !self.is_running() {
+            return;
+        }
+        let Some((applied, applied_revision)) = self.applied.as_mut() else {
+            return;
+        };
+        if applied.id != pushed.id || applied.id != saved.id {
+            return;
+        }
+        match layer {
+            LiveRulesLayer::Permanent => {
+                // FINAL is route.final in the static config, outside the overlay.
+                let finals: Vec<_> = applied
+                    .rules
+                    .iter()
+                    .filter(|r| matches!(r.kind, crate::core::dto::RuleType::Final))
+                    .cloned()
+                    .collect();
+                applied.rules = pushed
+                    .rules
+                    .iter()
+                    .filter(|r| !matches!(r.kind, crate::core::dto::RuleType::Final))
+                    .cloned()
+                    .chain(finals)
+                    .collect();
+            }
+            LiveRulesLayer::Temp => {
+                applied.temp_rules.clone_from(&pushed.temp_rules);
+                applied.session_rules.clone_from(&pushed.session_rules);
+            }
+        }
+        // Use the same semantic comparison as saved revisions: display metadata
+        // and dynamic mode/selection controls must not create false differences.
+        if crate::core::storage::runtime_intent(applied)
+            == crate::core::storage::runtime_intent(saved)
+        {
+            *applied_revision = revision;
+            self.runtime_status.applied_revision = Some(revision);
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn assume_running_for_test(
+        &mut self,
+        profile: &ZeytunCore,
+        revision: u64,
+        clash: ClashApiClient,
+    ) {
+        self.applied = Some((profile.clone(), revision));
+        self.runtime_status.phase = RuntimePhase::Running;
+        self.runtime_status.applied_profile_id = Some(profile.id.clone());
+        self.runtime_status.applied_revision = Some(revision);
+        self.clash_api = Some(clash);
     }
 
     pub fn update_applied_selection(&mut self, policy_tag: &str, member_tag: &str) {
