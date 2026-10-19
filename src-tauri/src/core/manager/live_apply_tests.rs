@@ -11,7 +11,7 @@ use std::{
 // Exercise real manager commands and HTTP acknowledgements without launching a
 // core, acquiring privileges, or changing any system network settings.
 struct Fixture {
-    manager: CoreManager,
+    manager: std::mem::ManuallyDrop<CoreManager>,
     dir: PathBuf,
     fail_permanent: Arc<AtomicBool>,
     fail_temp: Arc<AtomicBool>,
@@ -104,7 +104,7 @@ impl Fixture {
             ClashApiClient::new(controller, None),
         );
         Self {
-            manager,
+            manager: std::mem::ManuallyDrop::new(manager),
             dir,
             fail_permanent,
             fail_temp,
@@ -135,7 +135,19 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let joined = self.server.take().unwrap().join();
-        let removed = std::fs::remove_dir_all(&self.dir);
+        unsafe {
+            std::mem::ManuallyDrop::drop(&mut self.manager);
+        }
+        let removed = (|| {
+            for _ in 0..10 {
+                match std::fs::remove_dir_all(&self.dir) {
+                    Ok(()) => return Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
+            std::fs::remove_dir_all(&self.dir)
+        })();
         if !std::thread::panicking() {
             joined.unwrap();
             removed.unwrap();
