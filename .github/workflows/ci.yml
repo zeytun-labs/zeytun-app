@@ -7,7 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       build_installers:
-        description: Build and smoke-test unsigned installers as well as native checks
+        description: Build and smoke-test debug installers as well as native checks
+        type: boolean
+        default: false
+      release_installers:
+        description: Also validate optimized installers on both platforms (slow)
         type: boolean
         default: false
   workflow_call:
@@ -17,6 +21,9 @@ on:
         type: boolean
         default: false
       build_installers:
+        type: boolean
+        default: false
+      release_installers:
         type: boolean
         default: false
 
@@ -60,6 +67,7 @@ jobs:
         env:
           CI_FULL_VALIDATION: ${{ inputs.full_validation || false }}
           CI_BUILD_INSTALLERS: ${{ inputs.build_installers || false }}
+          CI_RELEASE_INSTALLERS: ${{ inputs.release_installers || false }}
         run: python scripts/ci-plan.py
       - name: Check versions
         run: python scripts/dev.py version
@@ -137,6 +145,7 @@ jobs:
     env:
       RUST_TARGET: ${{ matrix.target }}
       BUNDLE_FORMATS: ${{ matrix.bundles }}
+      BUILD_PROFILE: ${{ matrix.profile }}
     steps:
       - name: Keep checkout line endings consistent
         run: git config --global core.autocrlf false
@@ -147,36 +156,48 @@ jobs:
         with:
           rust-target: ${{ matrix.target }}
           core-target: ${{ matrix.core_target }}
-          cache-group: native-v2
+          cache-group: native-${{ matrix.profile }}-v3
       - name: Lint Rust targets
         if: matrix.checks
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --all-targets --all-features -- -D warnings -A clippy::result_large_err
       - name: Test production Rust paths
         if: matrix.checks
         run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --all-targets --features updater-tools,ci-smoke
-      - name: Test the updater laboratory feature
-        if: matrix.checks && matrix.platform == 'macos'
-        run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --test updater_security --features updater-lab
       - name: Test the local DNS runtime
         if: matrix.checks && matrix.platform == 'macos'
         run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --test dns_policy --features updater-tools,ci-smoke -- --ignored
-      - name: Build the native app
-        if: '!matrix.package'
-        run: tauri build --ci --debug --no-bundle --no-sign --target "$RUST_TARGET" --features updater-tools,ci-smoke --config src-tauri/tauri.ci.json -- --locked
-      - name: Build unsigned installers using the same prepared runner
-        if: matrix.package
-        run: tauri build --ci --no-sign --target "$RUST_TARGET" --bundles "$BUNDLE_FORMATS" --features ci-smoke --config src-tauri/tauri.ci.json -- --locked
+      - name: Build the native app and selected installers
+        env:
+          BUILD_INSTALLER: ${{ matrix.package }}
+        run: |
+          args=(--ci --no-sign --target "$RUST_TARGET" --config src-tauri/tauri.ci.json)
+          if [[ "$BUILD_PROFILE" == debug ]]; then
+            args+=(--debug --features updater-tools,ci-smoke)
+          else
+            args+=(--features ci-smoke)
+          fi
+          if [[ "$BUILD_INSTALLER" == true ]]; then
+            args+=(--bundles "$BUNDLE_FORMATS")
+          else
+            args+=(--no-bundle)
+          fi
+          tauri build "${args[@]}" -- --locked
       - name: Smoke-test embedded frontend, WebView, IPC and bundled core
         env:
           SMOKE_PACKAGE: ${{ matrix.package }}
           SMOKE_PLATFORM: ${{ matrix.platform }}
-        run: python scripts/ci-smoke.py --target "$RUST_TARGET" --platform "$SMOKE_PLATFORM" --package "$SMOKE_PACKAGE"
+        run: python scripts/ci-smoke.py --target "$RUST_TARGET" --platform "$SMOKE_PLATFORM" --package "$SMOKE_PACKAGE" --profile "$BUILD_PROFILE"
+      # Keep the alternate feature set last so it cannot invalidate production
+      # test artifacts before DNS checks or the native build.
+      - name: Test the updater laboratory feature
+        if: matrix.checks && matrix.platform == 'macos'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --test updater_security --features updater-lab
       - name: Save unsigned installer for inspection
         if: matrix.package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: desktop-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/${{ matrix.installer }}
+          name: desktop-${{ matrix.target }}-${{ matrix.profile }}
+          path: src-tauri/target/${{ matrix.target }}/${{ matrix.profile }}/bundle/${{ matrix.installer }}
           if-no-files-found: error
           retention-days: 7
       - name: Save runtime diagnostics

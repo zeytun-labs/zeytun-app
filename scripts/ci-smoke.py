@@ -85,6 +85,7 @@ def main() -> None:
     parser.add_argument("--target")
     parser.add_argument("--platform", choices=("macos", "windows"), required=True)
     parser.add_argument("--package", choices=("true", "false"))
+    parser.add_argument("--profile", choices=("debug", "release"), default="debug")
     parser.add_argument("--verify-resources", type=Path)
     args = parser.parse_args()
     if args.verify_resources:
@@ -92,18 +93,18 @@ def main() -> None:
         return
     if not args.target or args.package is None:
         parser.error("--target and --package are required for an application smoke test")
-    artifacts = ROOT / "src-tauri/target" / args.target
+    artifacts = ROOT / "src-tauri/target" / args.target / args.profile
     results = ROOT / ".cache/smoke-results"
     results.mkdir(parents=True, exist_ok=True)
     if args.package == "true":
         pattern = "dmg/*.dmg" if args.platform == "macos" else "nsis/*-setup.exe"
-        bundle = one((artifacts / "release/bundle").glob(pattern))
+        bundle = one((artifacts / "bundle").glob(pattern))
         with tempfile.TemporaryDirectory(prefix="zeytun-ci-") as directory:
             with installed_bundle(bundle, args.platform, Path(directory)) as (executable, resources):
                 check_core(resources, args.platform)
                 handshake(executable, results / "installed.json")
     else:
-        executable = artifacts / "debug" / ("Zeytun.exe" if args.platform == "windows" else "Zeytun")
+        executable = artifacts / ("Zeytun.exe" if args.platform == "windows" else "Zeytun")
         check_core(ROOT / "src-tauri/resources", args.platform)
         handshake(executable, results / "unbundled.json")
 

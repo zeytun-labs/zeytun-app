@@ -34,6 +34,14 @@ runs:
       id: rust
       shell: bash
       run: python -c "import tomllib; print('version=' + tomllib.load(open('rust-toolchain.toml', 'rb'))['toolchain']['channel'])" >> "$GITHUB_OUTPUT"
+    - name: Isolate the pinned compiler from runner image toolchains
+      shell: bash
+      env:
+        CI_RUSTUP_HOME: ${{ runner.tool_cache }}/zeytun-rustup
+      run: |
+        # rust-cache hashes every installed toolchain. A dedicated, stable path
+        # prevents unrelated preinstalled Rust versions from splitting the cache.
+        echo "RUSTUP_HOME=$CI_RUSTUP_HOME" >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       with:
         toolchain: ${{ steps.rust.outputs.version }}

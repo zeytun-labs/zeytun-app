@@ -62,12 +62,25 @@ class SelectionTests(unittest.TestCase):
                 self.assertEqual(entries[0]["platform"], platform)
                 self.assertTrue(entries[0]["package"])
 
-    def test_build_inputs_and_unknown_files_get_packaging_coverage(self):
-        for path in ("Makefile", "proto/started_service.proto", "package.json", "src-tauri/Cargo.lock",
+    def test_build_inputs_and_unknown_files_get_debug_packaging_coverage(self):
+        for path in ("Makefile",
                      "src-tauri/tauri.release.json", "scripts/ci-resources.json", "scripts/ci-smoke.py",
                      ".github/tauri-cli/pnpm-lock.yaml", ".github/workflows/release.yml", "new-build.config"):
             with self.subTest(path=path):
-                self.assertTrue(all(e["package"] for e in plan.select_plan([path])["matrix"]["include"]))
+                entries = plan.select_plan([path])["matrix"]["include"]
+                self.assertTrue(all(e["package"] and e["profile"] == "debug" for e in entries))
+
+    def test_compiler_and_dependency_changes_validate_binaries_without_packaging(self):
+        for path in ("proto/started_service.proto", "src-tauri/Cargo.lock",
+                     "src-tauri/Cargo.toml", "rust-toolchain.toml"):
+            with self.subTest(path=path):
+                entries = plan.select_plan([path])["matrix"]["include"]
+                self.assertEqual(len(entries), 2)
+                self.assertTrue(all(e["checks"] and not e["package"] and e["profile"] == "debug" for e in entries))
+        entries = plan.select_plan(["package.json"])["matrix"]["include"]
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(all(not e["checks"] and not e["package"] for e in entries))
+        self.assertFalse(plan.select_plan([".github/workflows/resource-health.yml"])["native"])
 
     def test_generated_hash_changes_do_not_hide_security_or_packaging_changes(self):
         self.assertFalse(plan.tauri_settings_changed(config("old"), config("new")))
@@ -76,14 +89,23 @@ class SelectionTests(unittest.TestCase):
         for after in (config().replace(b"'self'", b"'unsafe-inline'"), config(version="2.0.0"), b"{}", None):
             self.assertTrue(plan.tauri_settings_changed(config(), after))
         result = plan.select_plan([plan.TAURI_CONFIG, "src-tauri/Cargo.lock"], config_changed=False)
-        self.assertTrue(all(e["package"] for e in result["matrix"]["include"]))
+        self.assertTrue(all(e["checks"] and not e["package"] for e in result["matrix"]["include"]))
 
     def test_release_validation_does_not_build_an_unsigned_release_again(self):
         result = plan.select_plan([], full=True)
         self.assertTrue(result["frontend_tests"])
         self.assertTrue(all(e["checks"] and not e["package"] for e in result["matrix"]["include"]))
         result = plan.select_plan([], full=True, installers=True)
-        self.assertTrue(all(e["package"] for e in result["matrix"]["include"]))
+        self.assertTrue(all(e["package"] and e["profile"] == "debug" for e in result["matrix"]["include"]))
+
+    def test_optimized_installers_are_explicit_and_force_full_validation(self):
+        for paths in ([], ["README.md"], ["src-tauri/nsis/custom.nsh"]):
+            with self.subTest(paths=paths):
+                result = plan.select_plan(paths, release_installers=True)
+                self.assertTrue(result["frontend_tests"])
+                entries = result["matrix"]["include"]
+                self.assertEqual(len(entries), 2)
+                self.assertTrue(all(e["checks"] and e["package"] and e["profile"] == "release" for e in entries))
 
     def test_invalid_input_cannot_silently_disable_checks(self):
         for value in ("", "unexpected", None):
@@ -173,7 +195,8 @@ class HistoryTests(unittest.TestCase):
             event = root / "event.json"
             event.write_text("{}")
             output = root / "output"
-            env = {"GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output), "CI_BUILD_INSTALLERS": "false"}
+            env = {"GITHUB_EVENT_PATH": str(event), "GITHUB_OUTPUT": str(output),
+                   "CI_BUILD_INSTALLERS": "false", "CI_RELEASE_INSTALLERS": "false"}
             for name, full in (("workflow_dispatch", "false"), ("push", "true")):
                 output.write_text("")
                 with patch.dict(os.environ, dict(env, GITHUB_EVENT_NAME=name, CI_FULL_VALIDATION=full)):

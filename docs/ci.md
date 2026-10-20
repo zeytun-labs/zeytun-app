@@ -4,7 +4,8 @@ Pull requests run CI against GitHub's merge commit. Pushes to `main` validate th
 merged change. Feature branches, including `windows`, do not also run push CI.
 Version tags run Release, which calls the same CI workflow for that exact revision
 before any signing credentials are made available. Manual CI runs validate all
-platforms; installer builds are an explicit option.
+platforms; debug installer builds and optimized installer validation are explicit
+options. Routine PR and `main` checks never compile an optimized release.
 
 ## Jobs and change selection
 
@@ -13,8 +14,11 @@ platforms; installer builds are an explicit option.
 | Documentation or tooling tests | Versions and Python tests | Skipped | Skipped | Skipped |
 | UI or static assets | Same | Types, tests, build, CSP | Embed and launch on both platforms | Skipped |
 | Rust sources/tests | Same, plus Rust formatting | Build and CSP | Clippy, Rust tests and launch on both platforms | Skipped |
-| Platform-specific bundle inputs | Same | Build and CSP | Build and launch affected platform | Affected platform |
-| Dependencies, build configuration or CI | Same, plus formatting when needed | As selected by the planner | Affected native checks | Affected platforms |
+| Frontend dependencies/configuration | Same | Types, tests, build, CSP | Embed and launch on both platforms | Skipped |
+| Rust dependencies/toolchain or protobuf | Same, plus Rust formatting | Build and CSP; frontend checks for protobuf | Clippy, Rust tests and launch on both platforms | Skipped |
+| Platform-specific bundle inputs | Same | Build and CSP | Build and launch affected platform | Debug, affected platform |
+| Bundle resources, configuration or build workflows | Same, plus formatting when needed | As selected by the planner | Affected native checks | Debug, affected platforms |
+| Explicit optimized installer validation | Full | Full, once | Full on both platforms | Optimized, both platforms |
 | Release revision | Full | Full, once | Full on both platforms | Production macOS bundle in Release |
 
 `scripts/ci-plan.py` compares the entire tested PR to the merge commit's first
@@ -23,6 +27,26 @@ multi-commit pushes. Deletions are included and renames are treated as a deletio
 and addition. Unknown build inputs select full coverage. Generated CSP hash-only
 changes do not force native work. `Makefile`, protobuf inputs, CLI locks and release
 configuration are build inputs.
+
+All automatic native builds use the debug profile, including selected DMG/NSIS
+installers. Tests, the unbundled app and debug installers use the same
+`updater-tools,ci-smoke` feature set. Local DNS checks follow the production-path
+tests; the updater-lab variant runs last to avoid switching back and recompiling
+the test library. Debug assertions remain enabled.
+
+Before merging changes whose behavior depends on release optimization or
+`debug_assertions`, run optimized validation on the latest PR branch revision:
+
+```sh
+gh workflow run ci.yml --ref YOUR_BRANCH -f release_installers=true
+```
+
+This option forces full checks and optimized installer smoke tests on both
+platforms, even when `build_installers` is false. Check that the successful run's
+head SHA matches the PR before merging; the ordinary `CI passed` check does not
+enforce this additional maintainer check. To test debug installers explicitly,
+use `-f build_installers=true` instead. CI artifacts include their profile in the
+name and use the isolated CI app identity; they are not distribution releases.
 
 `CI passed` accepts a skipped job only when the planner explicitly deselected it.
 Every selected matrix entry must succeed. Require this check in the `main` branch
@@ -43,6 +67,9 @@ Native runners install only the separately locked Tauri CLI, rather than the UI'
 full dependency tree. A regression check keeps that CLI version aligned with the
 root lockfile. When an installer is selected, it is built on the runner that just
 ran the native checks; a separate packaging job does not repeat preparation.
+The debug installer tests installation and embedded assets without paying for
+a second optimized compilation. Production Release still builds optimized
+artifacts and performs its signing and bundle checks.
 
 ## Runtime smoke coverage
 
@@ -82,11 +109,24 @@ changes the production snapshot or commits files.
 
 Protoc, core and GeoIP archives have independent content-based cache keys. The
 GeoIP archive can be shared across operating systems. Rust dependency caches are
-separated by target and by native-validation versus production-release usage;
+separated by target, debug versus optimized validation, and production release;
 they are saved only after successful jobs. They do not attempt to reuse a macOS
 binary on Windows or a debug binary as an optimized release. Cache misses are
 safe; they affect duration rather than correctness. Old cache generations may
 be deleted after a replacement run succeeds.
+
+The pinned compiler is installed into a dedicated `RUSTUP_HOME` under the runner
+tool cache before restoring Rust dependencies. The cache action considers every
+installed toolchain, so isolating this directory prevents unused compiler
+versions in different hosted runner images from changing the key. Only the
+project's pinned toolchain is present there. This is runner-local setup; it does
+not change contributors' Rust installations. Dependency caching still leaves the
+application and test binaries to be compiled, and a cold run remains slower.
+
+When comparing CI duration, record the Rust cache hit/miss, native build profile
+and selected jobs. Compare the first run and a rerun of the same revision; include
+cache restore/save time and report queue time separately. An installer-enabled
+PR is a heavier workload than a source-only or documentation-only PR.
 
 CI omits debugger symbols from development/test profiles to reduce cache size and
 linking time, while retaining debug assertions and overflow checks. Production

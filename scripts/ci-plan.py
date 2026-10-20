@@ -50,10 +50,12 @@ def boolean(value: object) -> bool:
     raise ValueError(f"Expected true or false, got {value!r}")
 
 
-def select_plan(changed: list[str], *, full=False, installers=False, config_changed=True) -> dict:
+def select_plan(changed: list[str], *, full=False, installers=False,
+                release_installers=False, config_changed=True) -> dict:
+    full = full or release_installers
     native_checks: set[str] = set(PLATFORMS) if full else set()
     native: set[str] = set(native_checks)
-    packages: set[str] = set(PLATFORMS) if installers else set()
+    packages: set[str] = set(PLATFORMS) if installers or release_installers else set()
     frontend_tests = full
     rust = full
     for path in changed:
@@ -73,8 +75,15 @@ def select_plan(changed: list[str], *, full=False, installers=False, config_chan
         elif path.startswith("proto/"):
             frontend_tests = rust = True
             native_checks.update(PLATFORMS)
-            packages.update(PLATFORMS)
-        elif path in FRONTEND_CONFIG or path in {"Makefile", "rust-toolchain.toml"} or path.startswith((".github/actions/", ".github/workflows/", ".github/tauri-cli/")):
+        elif path in FRONTEND_CONFIG:
+            frontend_tests = True
+            native.update(PLATFORMS)
+        elif path in {"rust-toolchain.toml", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock"}:
+            rust = True
+            native_checks.update(PLATFORMS)
+        elif path == ".github/workflows/resource-health.yml":
+            pass  # This workflow only checks remote resource availability.
+        elif path == "Makefile" or path.startswith((".github/actions/", ".github/workflows/", ".github/tauri-cli/")):
             frontend_tests = rust = True
             native_checks.update(PLATFORMS)
             packages.update(PLATFORMS)
@@ -96,12 +105,15 @@ def select_plan(changed: list[str], *, full=False, installers=False, config_chan
             native_checks.update(PLATFORMS)
             packages.update(PLATFORMS)
     native.update(native_checks | packages)
-    entries = [dict(platform=p, **PLATFORMS[p], checks=p in native_checks, package=p in packages)
+    profile = "release" if release_installers else "debug"
+    entries = [dict(platform=p, **PLATFORMS[p], checks=p in native_checks,
+                    package=p in packages, profile=profile)
                for p in PLATFORMS if p in native]
     return dict(frontend=frontend_tests or bool(native), frontend_tests=frontend_tests,
                 native=bool(native), rust=rust,
                 # Keep a valid matrix even when the job is intentionally skipped.
-                matrix={"include": entries or [dict(platform="macos", **PLATFORMS["macos"], checks=False, package=False)]})
+                matrix={"include": entries or [dict(platform="macos", **PLATFORMS["macos"],
+                                                   checks=False, package=False, profile=profile)]})
 
 
 def git(*args: str) -> bytes:
@@ -136,6 +148,8 @@ def main() -> None:
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
     full = boolean(os.environ.get("CI_FULL_VALIDATION", "false")) or event_name == "workflow_dispatch"
     installers = boolean(os.environ.get("CI_BUILD_INSTALLERS", "false"))
+    release_installers = boolean(os.environ.get("CI_RELEASE_INSTALLERS", "false"))
+    full = full or release_installers
     if full:
         changed, config_changed = [], True
     else:
@@ -143,7 +157,8 @@ def main() -> None:
         if event_name == "push" and not changed:
             # Empty or unavailable push history gets full validation, never a false green.
             full = True
-    plan = select_plan(changed, full=full, installers=installers, config_changed=config_changed)
+    plan = select_plan(changed, full=full, installers=installers,
+                       release_installers=release_installers, config_changed=config_changed)
     with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
         for key, value in plan.items():
             output.write(f"{key}={json.dumps(value, separators=(',', ':'))}\n")
