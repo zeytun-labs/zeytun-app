@@ -28,7 +28,7 @@ and addition. Unknown build inputs select full coverage. Generated CSP hash-only
 changes do not force native work. `Makefile`, protobuf inputs, CLI locks and release
 configuration are build inputs.
 
-All automatic native builds use the debug profile, including selected DMG/NSIS
+Automatic PR and `main` native builds use the debug profile, including selected DMG/NSIS
 installers. Tests, the unbundled app and debug installers use the same
 `updater-tools,ci-smoke` feature set. Local DNS checks follow the production-path
 tests; the updater-lab variant runs last to avoid switching back and recompiling

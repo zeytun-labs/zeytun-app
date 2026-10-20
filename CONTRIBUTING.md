@@ -273,70 +273,51 @@ frontend output changes, even if you did not edit a script tag directly.
 
 The generated hashes must match the exact built script bytes. Otherwise the
 webview can block hydration. `make prepare` and the hook refresh the hashes in
-`src-tauri/tauri.conf.json`; `make ci-frontend` verifies them against a local build
-without modifying the configuration.
+`src-tauri/tauri.conf.json`; `make ci-frontend` also generates and verifies the
+hashes against its own production frontend build.
 
 Frontend asset names and the bootstrap that imports them can differ between
 operating systems, so a hash generated on one OS need not match another OS's
-build. Each CI frontend job refreshes only the generated script hashes in its
-disposable checkout, verifies them, and uploads the frontend with the matching
-Tauri configuration. Desktop jobs restore the artifact for their own platform
-and verify the hashes again before native compilation. The frontend is not
+build. CI builds the frontend once on Linux, refreshes only the generated script
+hashes in its disposable checkout, and uploads the frontend with the matching
+Tauri configuration. Both native platforms restore this same artifact and
+verify the hashes again before native compilation. The frontend is not
 rebuilt during packaging. All other CSP directives, sources and configuration
 remain as reviewed. Script hashes are never copied manually or replaced with
 `unsafe-inline`.
 
 ## Checks
 
-CI runs on pull requests, pushes to `main` and `windows`, and `v*` tags. It can
-also be started manually. Routine checks and installer builds are separate jobs:
-
-
-| Check | Platforms | Coverage |
-|---|---|---|
-| Shared checks | Linux, once | Version consistency, development/release tooling tests, Rust formatting |
-| Frontend | Linux, macOS, Windows | Locked dependencies, type-checks, frontend tests, portable CSP tests, production frontend build and CSP generation/verification |
-| Desktop | macOS Apple Silicon, Windows x64 | Native resources, restored frontend/CSP verification, Clippy, Rust tests, debug smoke build without installers |
-| Installer | macOS Apple Silicon, Windows x64, when required | Full optimized Release build and unsigned app/DMG or NSIS packaging |
-| CI passed | Aggregates all jobs | Requires every routine check and any required installer build to succeed |
+CI runs on pull requests and pushes to `main`. Feature branches, including
+`windows`, do not also run push CI. Version tags run Release, which calls CI for
+the exact release revision before signing. Both workflows support manual runs.
+The required `CI passed` check aggregates every job selected for the change.
 
 Matrices use `fail-fast: false` so a failure on one platform does not cancel the
 other platform checks. Actions are pinned to commit SHAs; the workflow has only
 read access to repository contents and needs no release or signing secrets.
 All Cargo lint, test and bundle commands in CI use `--locked`.
 
-Ordinary source PRs and pushes to `windows` run the fast path: Clippy, real native
-tests and `tauri build --debug --no-bundle` on both supported desktop platforms.
-This avoids compiling a second, optimized Rust profile and compressing an
-installer on every edit. The smoke build uses the verified production frontend
-and the same CSP as packaging; it does not start a development server.
-
-Full installer builds run on pushes to `main`, `v*` tags, manual runs (the
-`build_installers` input defaults to true), and PRs changing packaging inputs.
-`scripts/ci-plan.py` compares the tested PR merge commit to its base parent,
-including deleted/renamed paths, without the GitHub changed-files API limit.
-Packaging inputs include Cargo manifests/lockfile, the Rust toolchain, Tauri
-settings, build scripts, icons, capabilities, bundled resources, core pins,
-frontend dependency manifests and CI configuration. A generated script hash
-refresh alone does not request installers; other CSP or Tauri setting changes do.
-Installer jobs run in parallel with Desktop checks rather than waiting for them.
-Tag-triggered signed app publication still belongs to the Release workflow;
-CI's installers are unsigned inspection artifacts.
+The frontend runs once on Linux. Selected native checks run on macOS Apple
+Silicon and Windows x64, including real WebView/IPC smoke tests. Routine builds
+use the debug profile; changes to packaging inputs also build and install debug
+DMG/NSIS packages on the same prepared runners. A second optimized compilation
+is reserved for explicit `release_installers=true` validation and production
+Release. Manual CI inputs default to false; `build_installers=true` requests
+debug installers. For the selection matrix, pre-merge optimized checks, runtime
+coverage and limitations, see [CI and releases](docs/ci.md).
 
 `rust-toolchain.toml` pins the same exact Rust version for local work, checks and
-Release. Upgrade it deliberately in a PR; moving `stable` updates no longer
-invalidate the cache unexpectedly. Native setup lives in
-`.github/actions/prepare-desktop`. Fast checks retain the existing `desktop`
-cache namespace; installer builds and Release use a separate `package` cache.
-Both save dependencies after failed builds as well as successful ones. A cache
-miss still requires compilation, and the first build in the new installer cache
-will populate it. Cache reuse does not guarantee a fixed runtime.
+Release. Native setup lives in `.github/actions/prepare-desktop` and isolates
+the pinned toolchain from other compiler versions preinstalled on runners.
+Dependency caches are separated by platform and build profile and saved only
+after successful jobs. A cache miss still requires compilation.
 
-The `frontend-<platform>` artifacts retain each verified build and its matching
-configuration for three days. Desktop jobs consume those artifacts from the
-same workflow run. When requested, Installer jobs upload unsigned
-`desktop-<Rust target>` installers for seven days. These are CI inspection artifacts, not published releases or
-notarized/signed updater tests. Both CI and Release download the same production
+The `frontend` artifact retains the build and its matching configuration for
+three days. Native jobs consume it from the same workflow run. Selected
+installers are retained as `desktop-<Rust target>-<profile>` for seven days.
+These use the isolated CI identity and are inspection artifacts, not published
+releases or notarized/signed updater tests. Both CI and Release download the same production
 core from `zeytun-labs/zeytun-core`, pinned by tag, source commit and asset
 SHA-256 in `scripts/core-release.json`. Neither pipeline installs Go, clones
 core source, or compiles the core. Rust compilation still builds the app.
