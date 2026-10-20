@@ -88,6 +88,12 @@ binary on Windows or a debug binary as an optimized release. Cache misses are
 safe; they affect duration rather than correctness. Old cache generations may
 be deleted after a replacement run succeeds.
 
+CI omits debugger symbols from development/test profiles to reduce cache size and
+linking time, while retaining debug assertions and overflow checks. Production
+release optimization is unchanged. The updater verifier uses the same optimized
+Apple Silicon target as the release bundle instead of rebuilding a second set of
+host/debug dependencies after packaging.
+
 ## Release scope
 
 Release produces an Apple Silicon macOS app/DMG with the existing signing policy
