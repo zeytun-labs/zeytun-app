@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+import urllib.error
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location("download_core", ROOT / "scripts/download-core.py")
@@ -85,6 +86,14 @@ class CoreDownloadTests(unittest.TestCase):
         self.assertEqual(cached.read_bytes(), data)
         with patch.object(core.urllib.request, "urlopen", side_effect=AssertionError("cache should be reused")):
             core.install_core(self.lock, "windows-x86_64", self.destination, self.cache)
+
+    def test_transient_download_failure_is_retried_before_atomic_install(self):
+        data = self.archive()
+        with patch.object(core.time, "sleep"), patch.object(core.urllib.request, "urlopen",
+             side_effect=[urllib.error.URLError("503"), io.BytesIO(data)]) as request:
+            core.install_core(self.lock, "windows-x86_64", self.destination, self.cache)
+            self.assertEqual(request.call_count, 2)
+        self.assertTrue((self.destination / "libcronet.dll").is_file())
 
     def test_unsafe_archive_paths_and_incomplete_runtime_are_rejected(self):
         for mutate in (

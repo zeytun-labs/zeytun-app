@@ -23,6 +23,8 @@ required-features = ["updater-tools"]
 [features]
 updater-tools = []
 updater-lab = []
+# Isolated WebView/IPC runner; never enabled in production releases.
+ci-smoke = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -92,7 +92,7 @@ check-rs: resources-check repair-dev disk fmt-check ## Run the same Clippy and R
 	@cd src-tauri && cargo clippy --all-targets --all-features -- -D warnings -A clippy::result_large_err
 	@cd src-tauri && cargo test --all-targets --features updater-tools
 
-ci-frontend: version check-tooling check build-web csp-check test ## Verify frontend and CSP without changing tracked files
+ci-frontend: version check-tooling check test frontend-release csp-check ## Validate frontend and generate CSP for this exact build
 
 ci: ci-frontend check-rs ## Run all local CI checks before opening a PR
 

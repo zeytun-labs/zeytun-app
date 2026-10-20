@@ -132,9 +132,11 @@ generated output is not evidence that a check was run or a behavior was verified
 ## Development setup
 
 Clone **this public repository** directly. All commands below run from its root;
-no private parent repository or sibling checkout is required. CI checks the
-frontend on Linux, macOS and Windows, and native desktop builds on macOS Apple
-Silicon and Windows x64. The Make-based native development commands below target
+no private parent repository or sibling checkout is required. CI builds and checks
+one shared frontend on Linux, then validates native desktop builds on macOS Apple
+Silicon and Windows x64. Both platforms exercise that same frontend in their actual
+WebView. See [CI and releases](docs/ci.md) for job selection, resource pins, and
+release validation. The Make-based native development commands below target
 macOS; Windows native resource preparation uses `scripts/native-resources.ps1`.
 Linux native desktop builds are not currently part of the supported build path.
 
@@ -191,7 +193,7 @@ Run `make` or `make help` to list commands.
 | `make dev-web` | Start Vite only |
 | `make build` | Build a local app/DMG with fresh frontend/CSP, without updater signing secrets |
 | `make prepare` | Type-check, test, build the frontend, and refresh generated CSP hashes |
-| `make ci-frontend` | Run frontend/tooling checks and verify the committed CSP against the local build |
+| `make ci-frontend` | Run frontend/tooling checks and generate and verify CSP for the local build |
 | `make check-rs` | Run Rust format check, Clippy, and tests with CI flags |
 | `make ci` | Run both frontend and Rust checks |
 | `make fmt` | Format Rust before staging it |

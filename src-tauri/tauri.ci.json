@@ -1,4 +1,5 @@
 {
+  "identifier": "com.zeytun.app.ci",
   "build": {
     "beforeBuildCommand": ""
   },

@@ -1,3 +1,5 @@
+#[cfg(feature = "ci-smoke")]
+pub mod ci_smoke;
 pub mod crash_dump;
 pub mod error;
 
@@ -1862,6 +1864,11 @@ fn crash_dump_dismiss() {
     crate::crash_dump::mark_dumps_seen();
 }
 
+// Keep one context expansion: macOS embeds a single Info.plist linker symbol.
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -2059,7 +2066,7 @@ pub fn run() {
             crash_dump_read,
             crash_dump_dismiss
         ])
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application");
 
     app.run(move |app_handle, event| {

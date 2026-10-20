@@ -1,18 +1,18 @@
-name: Prepare desktop checks
-description: Restore verified frontend and pinned core with the shared native toolchain
+name: Prepare desktop
+description: Restore a verified frontend, locked CLI, compiler and native resources
 inputs:
-  platform:
-    description: Frontend artifact platform
-    required: true
   rust-target:
     description: Native Rust target triple
     required: true
   core-target:
-    description: Pinned core release target
+    description: Pinned core and protoc platform
     required: true
   cache-group:
-    description: Separate fast-check and Release dependency caches
+    description: Separate native validation and production release compiler caches
     required: true
+  core-source:
+    description: Also download corresponding core source for a release
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -21,9 +21,15 @@ runs:
       with:
         node-version: 22
         cache: pnpm
+        cache-dependency-path: .github/tauri-cli/pnpm-lock.yaml
+    - name: Install only the locked native CLI
+      shell: bash
+      run: |
+        pnpm --dir .github/tauri-cli install --ignore-workspace --frozen-lockfile
+        echo "$GITHUB_WORKSPACE/.github/tauri-cli/node_modules/.bin" >> "$GITHUB_PATH"
     - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
       with:
-        python-version: "3.12"
+        python-version: '3.12'
     - name: Read pinned Rust version
       id: rust
       shell: bash
@@ -37,40 +43,51 @@ runs:
       with:
         workspaces: src-tauri
         shared-key: ${{ inputs.rust-target }}-${{ inputs.cache-group }}
-        cache-on-failure: true
-    - name: Install protobuf (macOS)
-      if: runner.os == 'macOS'
-      shell: bash
-      run: brew install protobuf
-    - name: Install protobuf (Windows)
-      if: runner.os == 'Windows'
-      shell: bash
-      run: choco install protoc --yes --no-progress
-    - name: Install frontend dependencies for the Tauri CLI
-      shell: bash
-      run: pnpm install --frozen-lockfile
-    - name: Restore this platform's verified frontend and CSP
-      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-      with:
-        name: frontend-${{ inputs.platform }}
-        path: .
-    - name: Verify restored CSP before native compilation
-      shell: bash
-      run: python scripts/check-csp-hashes.py
-    - name: Download pinned production core
+        cache-on-failure: false
+    - name: Read resource cache identities
+      id: resources
       env:
         CORE_TARGET: ${{ inputs.core-target }}
       shell: bash
-      run: python scripts/download-core.py --target "$CORE_TARGET"
-    - name: Prepare macOS data resources
-      if: runner.os == 'macOS'
+      run: python scripts/ci-resources.py keys --target "$CORE_TARGET"
+    - name: Cache pinned protoc archive
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .cache/protoc-downloads
+        key: protoc-v1-${{ inputs.core-target }}-${{ steps.resources.outputs.protoc }}
+    - name: Install and verify the pinned Protocol Buffers compiler
+      env:
+        CORE_TARGET: ${{ inputs.core-target }}
+      shell: bash
+      run: python scripts/ci-resources.py protoc --target "$CORE_TARGET"
+    - name: Restore verified frontend and matching production CSP
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: frontend
+        path: .
+    - name: Verify restored CSP
+      shell: bash
+      run: python scripts/check-csp-hashes.py
+    - name: Cache pinned core archives
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .cache/core-downloads
+        key: core-v1-${{ inputs.core-target }}-${{ inputs.core-source }}-${{ hashFiles('scripts/core-release.json') }}
+    - name: Download and validate the pinned production core
+      env:
+        CORE_TARGET: ${{ inputs.core-target }}
+        CORE_SOURCE: ${{ inputs.core-source }}
       shell: bash
       run: |
-        make geoip TARGET=macos-aarch64
-        make resources-check repair-dev disk TARGET=macos-aarch64
-    - name: Prepare Windows data resources
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        ./scripts/native-resources.ps1 -Action geoip
-        ./scripts/native-resources.ps1 -Action check
+        args=()
+        if [[ "$CORE_SOURCE" == true ]]; then args+=(--source-output zeytun-core-source.tar.gz); fi
+        python scripts/download-core.py --target "$CORE_TARGET" "${args[@]}"
+    - name: Cache the pinned GeoIP snapshot
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: .cache/geoip-downloads
+        key: geoip-v1-${{ steps.resources.outputs.geoip }}
+        enableCrossOsArchive: true
+    - name: Install and validate the pinned GeoIP snapshot
+      shell: bash
+      run: python scripts/ci-resources.py geoip
