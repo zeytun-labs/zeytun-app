@@ -92,7 +92,9 @@ class SelectionTests(unittest.TestCase):
 
     def test_minimal_cli_matches_the_root_lockfile(self):
         import re
-        cli = json.loads((ROOT / ".github/tauri-cli/package.json").read_text())["dependencies"]["@tauri-apps/cli"]
+        cli_manifest = json.loads((ROOT / ".github/tauri-cli/package.json").read_text())
+        self.assertEqual(cli_manifest["packageManager"], json.loads((ROOT / "package.json").read_text())["packageManager"])
+        cli = cli_manifest["dependencies"]["@tauri-apps/cli"]
         locked = re.search(r"      '@tauri-apps/cli':\n        specifier: [^\n]+\n        version: ([^\n]+)", (ROOT / "pnpm-lock.yaml").read_text())
         self.assertIsNotNone(locked)
         self.assertEqual(cli, locked[1])

@@ -49,8 +49,6 @@ jobs:
           core-source: 'true'
       - name: Validate release settings
         id: metadata
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           make version
@@ -59,15 +57,20 @@ jobs:
             echo "::error::Tag must match app version: v$version"
             exit 1
           fi
-          if [[ "$DRY_RUN" != true && -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
-            echo "::error::The existing TAURI_SIGNING_PRIVATE_KEY is required; do not rotate the public key."
-            exit 1
-          fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then
             echo 'prerelease=true' >> "$GITHUB_OUTPUT"
           else
             echo 'prerelease=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Require the existing updater signing key
+        if: env.DRY_RUN != 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo '::error::The existing TAURI_SIGNING_PRIVATE_KEY is required; do not rotate the public key.'
+            exit 1
           fi
       - name: Build app and DMG without updater signing
         if: env.DRY_RUN == 'true'
@@ -97,7 +100,7 @@ jobs:
           python3 scripts/ci-smoke.py --verify-resources "$app/Contents/Resources" --platform macos
       - name: Save dry-run installers for inspection
         if: env.DRY_RUN == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-darwin-aarch64
           path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
