@@ -1,0 +1,12 @@
+{
+  "identifier": "com.zeytun.app.ci",
+  "build": {
+    "beforeBuildCommand": ""
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": null
+    }
+  }
+}

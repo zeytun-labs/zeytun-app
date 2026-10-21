@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "protoc": {
+    "version": "33.0",
+    "assets": {
+      "macos-aarch64": {
+        "url": "https://github.com/protocolbuffers/protobuf/releases/download/v33.0/protoc-33.0-osx-aarch_64.zip",
+        "sha256": "3cf55dd47118bd2efda9cd26b74f8bbbfcf5beb1bf606bc56ad4c001b543f6d3"
+      },
+      "windows-x86_64": {
+        "url": "https://github.com/protocolbuffers/protobuf/releases/download/v33.0/protoc-33.0-win64.zip",
+        "sha256": "3742cd49c8b6bd78b6760540367eb0ff62fa70a1032e15dafe131bfaf296986a"
+      }
+    }
+  },
+  "geoip": {
+    "url": "https://download.db-ip.com/free/dbip-country-lite-2026-10.mmdb.gz",
+    "sha256": "4cd44536ddfd40fec7eca94a233f7d19f38d470e6522e653cb8d27001f5fe177",
+    "license": "CC BY 4.0",
+    "attribution": "DB-IP Country Lite, https://db-ip.com/db/download/ip-to-country-lite"
+  }
+}

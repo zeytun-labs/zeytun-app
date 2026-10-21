@@ -29,6 +29,7 @@
     if (t === "wifi" || t === "wi-fi") return Wifi02Icon;
     if (t === "cellular") return SmartPhone01Icon;
     if (t === "thunderbolt") return ZapIcon;
+    if (t === "unknown" || localNetworkInfo?.name === "UNKNOWN") return UnavailableIcon;
     return PlugSocketIcon;
   });
 

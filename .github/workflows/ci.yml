@@ -5,46 +5,224 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      build_installers:
+        description: Build and smoke-test debug installers as well as native checks
+        type: boolean
+        default: false
+      release_installers:
+        description: Also validate optimized installers on both platforms (slow)
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      full_validation:
+        description: Validate every platform for this exact revision
+        type: boolean
+        default: false
+      build_installers:
+        type: boolean
+        default: false
+      release_installers:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI needs assertions and runtime checks, but not multi-gigabyte debugger symbols.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
+  checks:
+    name: Shared checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      frontend: ${{ steps.plan.outputs.frontend }}
+      frontend_tests: ${{ steps.plan.outputs.frontend_tests }}
+      native: ${{ steps.plan.outputs.native }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4.1.0
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Plan checks for the tested revision
+        id: plan
+        env:
+          CI_FULL_VALIDATION: ${{ inputs.full_validation || false }}
+          CI_BUILD_INSTALLERS: ${{ inputs.build_installers || false }}
+          CI_RELEASE_INSTALLERS: ${{ inputs.release_installers || false }}
+        run: python scripts/ci-plan.py
+      - name: Check versions
+        run: python scripts/dev.py version
+      - name: Validate a release tag before starting builds
+        if: github.ref_type == 'tag'
+        run: |
+          python - <<'PY'
+          import json, os
+          version = json.load(open('src-tauri/tauri.conf.json'))['version']
+          if os.environ['GITHUB_REF_NAME'] != f'v{version}':
+              raise SystemExit(f'Tag must match app version: v{version}')
+          PY
+      - name: Test development and release tooling
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Read pinned Rust version
+        if: steps.plan.outputs.rust == 'true'
+        id: rust
+        run: python -c "import tomllib; print('version=' + tomllib.load(open('rust-toolchain.toml', 'rb'))['toolchain']['channel'])" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        if: steps.plan.outputs.rust == 'true'
+        with:
+          toolchain: ${{ steps.rust.outputs.version }}
+          components: rustfmt
+      - name: Check Rust formatting
+        if: steps.plan.outputs.rust == 'true'
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+
+  frontend:
+    name: Frontend
+    needs: checks
+    if: needs.checks.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - run: pnpm install --frozen-lockfile
-      - run: make ci-frontend
+      - name: Check frontend types
+        if: needs.checks.outputs.frontend_tests == 'true'
+        run: pnpm check
+      - name: Test frontend
+        if: needs.checks.outputs.frontend_tests == 'true'
+        run: pnpm test
+      - name: Build the shared frontend and generate its CSP
+        run: make frontend-release csp-check
+      - name: Save frontend and its matching production configuration
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frontend
+          path: |
+            build/
+            src-tauri/tauri.conf.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 3
 
-  rust:
-    runs-on: macos-14
+  native:
+    name: Native (${{ matrix.name }})
+    needs: [checks, frontend]
+    if: needs.checks.outputs.native == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.checks.outputs.matrix) }}
+    env:
+      RUST_TARGET: ${{ matrix.target }}
+      BUNDLE_FORMATS: ${{ matrix.bundles }}
+      BUILD_PROFILE: ${{ matrix.profile }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-go@v5
+      - name: Keep checkout line endings consistent
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          go-version: "1.25.5"
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-desktop
         with:
-          components: rustfmt, clippy
-      - uses: swatinem/rust-cache@v2.8.0
-        with:
-          workspaces: src-tauri
-      - name: Install protobuf
-        run: brew install protobuf
-      - name: Build zeytun-core
+          rust-target: ${{ matrix.target }}
+          core-target: ${{ matrix.core_target }}
+          cache-group: native-${{ matrix.profile }}-v3
+      - name: Lint Rust targets
+        if: matrix.checks
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --all-targets --all-features -- -D warnings -A clippy::result_large_err
+      - name: Test production Rust paths
+        if: matrix.checks
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --all-targets --features updater-tools,ci-smoke
+      - name: Test the local DNS runtime
+        if: matrix.checks && matrix.platform == 'macos'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --test dns_policy --features updater-tools,ci-smoke -- --ignored
+      - name: Build the native app and selected installers
         env:
-          GOTOOLCHAIN: local
+          BUILD_INSTALLER: ${{ matrix.package }}
         run: |
-          make build-core-ci CORE_VERSION=zeytun-ci
-          make geoip
-      - run: make check-rs
+          args=(--ci --no-sign --target "$RUST_TARGET" --config src-tauri/tauri.ci.json)
+          if [[ "$BUILD_PROFILE" == debug ]]; then
+            args+=(--debug --features updater-tools,ci-smoke)
+          else
+            args+=(--features ci-smoke)
+          fi
+          if [[ "$BUILD_INSTALLER" == true ]]; then
+            args+=(--bundles "$BUNDLE_FORMATS")
+          else
+            args+=(--no-bundle)
+          fi
+          tauri build "${args[@]}" -- --locked
+      - name: Smoke-test embedded frontend, WebView, IPC and bundled core
+        env:
+          SMOKE_PACKAGE: ${{ matrix.package }}
+          SMOKE_PLATFORM: ${{ matrix.platform }}
+        run: python scripts/ci-smoke.py --target "$RUST_TARGET" --platform "$SMOKE_PLATFORM" --package "$SMOKE_PACKAGE" --profile "$BUILD_PROFILE"
+      # Keep the alternate feature set last so it cannot invalidate production
+      # test artifacts before DNS checks or the native build.
+      - name: Test the updater laboratory feature
+        if: matrix.checks && matrix.platform == 'macos'
+        run: cargo test --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --locked --test updater_security --features updater-lab
+      - name: Save unsigned installer for inspection
+        if: matrix.package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ matrix.target }}-${{ matrix.profile }}
+          path: src-tauri/target/${{ matrix.target }}/${{ matrix.profile }}/bundle/${{ matrix.installer }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-${{ matrix.platform }}
+          path: .cache/smoke-results/
+          if-no-files-found: ignore
+          retention-days: 3
+
+  ci:
+    name: CI passed
+    if: ${{ always() }}
+    needs: [checks, frontend, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Require every selected check to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python scripts/ci-gate.py

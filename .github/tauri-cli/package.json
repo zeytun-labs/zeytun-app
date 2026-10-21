@@ -1,0 +1,8 @@
+{
+  "name": "zeytun-ci-cli",
+  "private": true,
+  "packageManager": "pnpm@10.27.0",
+  "dependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

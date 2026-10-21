@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use base64::Engine;
 use semver::Version;
 use serde_json::{json, Value};

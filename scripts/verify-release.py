@@ -18,7 +18,8 @@ def main() -> None:
     version = json.loads(config.read_text())['version']
     if args.tag != f'v{version}':
         raise ValueError('Release tag does not match production config')
-    subprocess.run(['cargo', 'run', '--locked', '--manifest-path', str(ROOT / 'src-tauri/Cargo.toml'),
+    subprocess.run(['cargo', 'run', '--release', '--target', 'aarch64-apple-darwin', '--locked',
+                    '--manifest-path', str(ROOT / 'src-tauri/Cargo.toml'),
                     '--features', 'updater-tools', '--bin', 'verify-update', '--',
                     '--config', str(config), '--manifest', str(args.manifest.resolve()),
                     '--artifacts', str(args.artifacts.resolve()), '--target', 'darwin-aarch64'], check=True)

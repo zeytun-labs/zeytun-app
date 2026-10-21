@@ -49,7 +49,6 @@ macro_rules! clog {
 }
 
 /// Returns the crash dump directory path. Creates it if missing.
-/// Path: `~/Library/Application Support/com.zeytun.app/crash-dumps/`
 pub fn dump_dir() -> Option<PathBuf> {
     if let Ok(guard) = DUMP_DIR_OVERRIDE.lock() {
         if let Some(ref dir) = *guard {
@@ -57,7 +56,27 @@ pub fn dump_dir() -> Option<PathBuf> {
             return Some(dir.clone());
         }
     }
-    // ponytail: bundle ID separated between debug and release builds
+    default_dump_dir()
+}
+
+#[cfg(target_os = "windows")]
+fn default_dump_dir() -> Option<PathBuf> {
+    let base = std::env::var("APPDATA")
+        .or_else(|_| std::env::var("LOCALAPPDATA"))
+        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}\\AppData\\Roaming")))
+        .ok()?;
+    let app_folder = if cfg!(debug_assertions) {
+        "ZeytunDev"
+    } else {
+        "Zeytun"
+    };
+    let dir = PathBuf::from(base).join(app_folder).join("crash-dumps");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn default_dump_dir() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let bundle_id = if cfg!(debug_assertions) {
         "com.zeytun.app.dev"
@@ -340,7 +359,12 @@ fn os_version() -> String {
     format!("macOS {product} ({build})")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn os_version() -> String {
+    "Windows".to_string()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn os_version() -> String {
     format!("{} (unknown)", std::env::consts::OS)
 }

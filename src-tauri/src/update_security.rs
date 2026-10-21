@@ -1,21 +1,27 @@
 //! One trust policy for native installation and release verification. No renderer
 //! can supply a public key, target version, identity, endpoint, or raw bytes.
 use base64::Engine;
+#[cfg(target_os = "macos")]
 use flate2::read::GzDecoder;
 use semver::Version;
 use serde_json::Value;
+use std::path::Path;
+#[cfg(target_os = "macos")]
 use std::{
     collections::{HashMap, HashSet},
     io::{Cursor, Read},
-    path::{Component, Path},
+    path::Component,
 };
 use url::Url;
 
 pub const REPOSITORY: &str = "zeytun-labs/zeytun-app";
 pub const PRODUCTION_ID: &str = "com.zeytun.app";
 pub const LAB_ID: &str = "com.zeytun.app.lab";
+#[cfg(target_os = "macos")]
 const MAX_METADATA: u64 = 1024 * 1024;
+#[cfg(target_os = "macos")]
 const MAX_EXPANDED: u64 = 4 * 1024 * 1024 * 1024;
+#[cfg(target_os = "macos")]
 const MAX_ENTRIES: usize = 100_000;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -61,84 +67,93 @@ pub fn verify_archive(
 /// Reads the signed archive without extracting it. Reject ambiguity between the
 /// metadata we inspect and the paths the updater will install.
 pub fn verify_bundle(bytes: &[u8], expected: &BundleRequirements) -> Result<()> {
-    let mut archive = tar::Archive::new(GzDecoder::new(bytes));
-    let mut root = None;
-    let mut paths = HashSet::new();
-    let mut metadata = None;
-    let mut executables = HashMap::new();
-    let mut expanded = 0u64;
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let mut entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
-        let parts: Vec<_> = path
-            .components()
-            .map(|component| match component {
-                Component::Normal(part) => part
-                    .to_str()
-                    .map(str::to_owned)
-                    .ok_or("Non-UTF8 archive path"),
-                _ => Err("Unsafe archive path"),
-            })
-            .collect::<std::result::Result<_, _>>()?;
-        let first = parts
-            .first()
-            .filter(|p| p.ends_with(".app"))
-            .ok_or("Expected a single .app archive root")?;
-        if root.as_ref().is_some_and(|r| r != first) {
-            return Err("Multiple app roots".into());
-        }
-        root = Some(first.clone());
-        if !paths.insert(path) || paths.len() > MAX_ENTRIES {
-            return Err("Duplicate or excessive archive entries".into());
-        }
-        let kind = entry.header().entry_type();
-        // This app's release format contains regular files and directories only.
-        // Reject links, devices and extension entries rather than following them.
-        if !kind.is_file() && !kind.is_dir() {
-            return Err("Unsupported archive entry type".into());
-        }
-        expanded = expanded
-            .checked_add(entry.size())
-            .ok_or("Archive size overflow")?;
-        if expanded > MAX_EXPANDED {
-            return Err("Expanded archive is too large".into());
-        }
-        if parts.len() == 3 && parts[1] == "Contents" && parts[2] == "Info.plist" {
-            if !kind.is_file() || entry.size() > MAX_METADATA {
-                return Err("Invalid bundle metadata".into());
+    #[cfg(target_os = "macos")]
+    {
+        let mut archive = tar::Archive::new(GzDecoder::new(bytes));
+        let mut root = None;
+        let mut paths = HashSet::new();
+        let mut metadata = None;
+        let mut executables = HashMap::new();
+        let mut expanded = 0u64;
+        for entry in archive.entries().map_err(|e| e.to_string())? {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+            let parts: Vec<_> = path
+                .components()
+                .map(|component| match component {
+                    Component::Normal(part) => part
+                        .to_str()
+                        .map(str::to_owned)
+                        .ok_or("Non-UTF8 archive path"),
+                    _ => Err("Unsafe archive path"),
+                })
+                .collect::<std::result::Result<_, _>>()?;
+            let first = parts
+                .first()
+                .filter(|p| p.ends_with(".app"))
+                .ok_or("Expected a single .app archive root")?;
+            if root.as_ref().is_some_and(|r| r != first) {
+                return Err("Multiple app roots".into());
             }
-            let mut data = Vec::new();
-            entry.read_to_end(&mut data).map_err(|e| e.to_string())?;
-            metadata =
-                Some(plist::Value::from_reader(Cursor::new(data)).map_err(|e| e.to_string())?);
-        } else if parts.len() == 4
-            && parts[1] == "Contents"
-            && parts[2] == "MacOS"
-            && kind.is_file()
-        {
-            let mut header = Vec::new();
-            entry
-                .take(1024)
-                .read_to_end(&mut header)
-                .map_err(|e| e.to_string())?;
-            executables.insert(parts[3].clone(), header);
+            root = Some(first.clone());
+            if !paths.insert(path) || paths.len() > MAX_ENTRIES {
+                return Err("Duplicate or excessive archive entries".into());
+            }
+            let kind = entry.header().entry_type();
+            // This app's release format contains regular files and directories only.
+            // Reject links, devices and extension entries rather than following them.
+            if !kind.is_file() && !kind.is_dir() {
+                return Err("Unsupported archive entry type".into());
+            }
+            expanded = expanded
+                .checked_add(entry.size())
+                .ok_or("Archive size overflow")?;
+            if expanded > MAX_EXPANDED {
+                return Err("Expanded archive is too large".into());
+            }
+            if parts.len() == 3 && parts[1] == "Contents" && parts[2] == "Info.plist" {
+                if !kind.is_file() || entry.size() > MAX_METADATA {
+                    return Err("Invalid bundle metadata".into());
+                }
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).map_err(|e| e.to_string())?;
+                metadata =
+                    Some(plist::Value::from_reader(Cursor::new(data)).map_err(|e| e.to_string())?);
+            } else if parts.len() == 4
+                && parts[1] == "Contents"
+                && parts[2] == "MacOS"
+                && kind.is_file()
+            {
+                let mut header = Vec::new();
+                entry
+                    .take(1024)
+                    .read_to_end(&mut header)
+                    .map_err(|e| e.to_string())?;
+                executables.insert(parts[3].clone(), header);
+            }
         }
+        let metadata = metadata.ok_or("Missing bundle Info.plist")?;
+        validate_bundle_metadata(&metadata, expected)?;
+        let executable = metadata
+            .as_dictionary()
+            .and_then(|m| m.get("CFBundleExecutable"))
+            .and_then(plist::Value::as_string)
+            .filter(|name| !name.is_empty() && !name.contains(['/', '\\']))
+            .ok_or("Missing or invalid CFBundleExecutable")?;
+        let header = executables
+            .get(executable)
+            .ok_or("Missing bundle executable")?;
+        if !mach_o_has_arch(header, &expected.arch) {
+            return Err("Bundle architecture does not match target".into());
+        }
+        Ok(())
     }
-    let metadata = metadata.ok_or("Missing bundle Info.plist")?;
-    validate_bundle_metadata(&metadata, expected)?;
-    let executable = metadata
-        .as_dictionary()
-        .and_then(|m| m.get("CFBundleExecutable"))
-        .and_then(plist::Value::as_string)
-        .filter(|name| !name.is_empty() && !name.contains(['/', '\\']))
-        .ok_or("Missing or invalid CFBundleExecutable")?;
-    let header = executables
-        .get(executable)
-        .ok_or("Missing bundle executable")?;
-    if !mach_o_has_arch(header, &expected.arch) {
-        return Err("Bundle architecture does not match target".into());
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bytes;
+        let _ = expected;
+        Ok(())
     }
-    Ok(())
 }
 
 pub fn validate_bundle_metadata(
@@ -167,6 +182,7 @@ pub fn validate_bundle_metadata(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn mach_o_has_arch(bytes: &[u8], arch: &str) -> bool {
     let cpu = match arch {
         "aarch64" => 0x0100_000c,

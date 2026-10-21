@@ -128,6 +128,15 @@ def api(port, path, method="GET", data=None):
         return {"error": error.read().decode(), "http_status": error.code}
 
 
+def check_trace(result, expected):
+    # Trace is optional in the pinned core's Clash API, just as in the app's
+    # ClashDnsQueryResponse. Routing is proved by fixture answers and observed
+    # traffic below; validate extra trace metadata when the core supplies it.
+    reported = (result.get("Trace") or {}).get("server")
+    if reported is not None:
+        assert reported == expected, result
+
+
 def main():
     core, source = sys.argv[1:]
     configs = json.loads(pathlib.Path(source).read_text())
@@ -202,16 +211,17 @@ def main():
                             return result
                         direct = query()
                         assert direct["resolved_ips"] == ["203.0.113.11"], direct
-                        assert direct["trace"]["server"] == direct_tag, direct
+                        check_trace(direct, direct_tag)
                         direct_rule = query("routed.example")
-                        assert direct_rule["trace"]["server"] == direct_tag, direct_rule
+                        check_trace(direct_rule, direct_tag)
+                        assert direct_rule["resolved_ips"] == ["203.0.113.11"], direct_rule
                         api(port, "/configs", "PATCH", {"mode":"global"})
                         routed = query("routed.example")
-                        assert routed["trace"]["server"] == chosen_tag, routed
+                        check_trace(routed, chosen_tag)
                         assert routed["resolved_ips"] == ["203.0.113.12"], routed
                         proxied = query()
                         expected = "fakeip" if variant == "fake" else chosen_tag
-                        assert proxied["trace"]["server"] == expected, proxied
+                        check_trace(proxied, expected)
                         if variant == "fake":
                             assert ipaddress.ip_address(proxied["resolved_ips"][0]) in ipaddress.ip_network("198.18.0.0/15"), proxied
                         else:
@@ -232,11 +242,18 @@ def main():
                             assert not failed.get("resolved_ips"), failed
                             assert dns_servers[0].queries == direct_count, "silent Direct fallback"
                             exits[1].fail = False
+                        query_count = sum(server.queries for server in dns_servers)
                         local = query("localhost")
-                        assert local["trace"]["server"] == "local-dns", local
+                        check_trace(local, "local-dns")
                         assert "127.0.0.1" in local["resolved_ips"], local
+                        assert sum(server.queries for server in dns_servers) == query_count, local
                         api(port, "/configs", "PATCH", {"mode":"rule"})
-                        assert query("rule.example")["trace"]["server"] == expected
+                        rule = query("rule.example")
+                        check_trace(rule, expected)
+                        if variant == "fake":
+                            assert ipaddress.ip_address(rule["resolved_ips"][0]) in ipaddress.ip_network("198.18.0.0/15"), rule
+                        else:
+                            assert rule["resolved_ips"] == ["203.0.113.12"], rule
                         print(f"{variant}: Direct -> Global -> Rule, local names, " + ("FakeIP OK" if variant == "fake" else "proxy selection and failure without fallback OK"))
                     finally:
                         process.terminate()

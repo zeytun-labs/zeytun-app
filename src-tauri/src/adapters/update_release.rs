@@ -267,35 +267,43 @@ pub async fn install_release_update(
     let update = checked.update.clone();
     let expected = checked.expected.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        // Recheck the app on disk, too: another update may have completed since
-        // this resource was created. Test/dev executables cannot install apps.
-        let executable = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
-        let app = tauri_plugin_updater::extract_path_from_executable(&executable)
-            .map_err(|e| e.to_string())?;
-        if app.extension().is_none_or(|ext| ext != "app") {
-            return Err("A bundled .app is required for installation".to_owned());
-        }
-        let metadata =
-            plist::Value::from_file(app.join("Contents/Info.plist")).map_err(|e| e.to_string())?;
-        let dict = metadata
-            .as_dictionary()
-            .ok_or("Invalid installed bundle metadata")?;
-        if dict
-            .get("CFBundleIdentifier")
-            .and_then(plist::Value::as_string)
-            != Some(expected.identifier.as_str())
+        #[cfg(target_os = "macos")]
         {
-            return Err("Installed bundle identity changed".into());
+            // Recheck the app on disk, too: another update may have completed since
+            // this resource was created. Test/dev executables cannot install apps.
+            let executable = tauri::utils::platform::current_exe().map_err(|e| e.to_string())?;
+            let app = tauri_plugin_updater::extract_path_from_executable(&executable)
+                .map_err(|e| e.to_string())?;
+            if app.extension().is_none_or(|ext| ext != "app") {
+                return Err("A bundled .app is required for installation".to_owned());
+            }
+            let metadata = plist::Value::from_file(app.join("Contents/Info.plist"))
+                .map_err(|e| e.to_string())?;
+            let dict = metadata
+                .as_dictionary()
+                .ok_or("Invalid installed bundle metadata")?;
+            if dict
+                .get("CFBundleIdentifier")
+                .and_then(plist::Value::as_string)
+                != Some(expected.identifier.as_str())
+            {
+                return Err("Installed bundle identity changed".into());
+            }
+            let current = dict
+                .get("CFBundleShortVersionString")
+                .and_then(plist::Value::as_string)
+                .ok_or("Missing installed version")?;
+            update_security::ensure_newer(
+                &expected.version,
+                &Version::parse(current).map_err(|e| e.to_string())?,
+            )?;
+            update.install(bytes.bytes()).map_err(|e| e.to_string())
         }
-        let current = dict
-            .get("CFBundleShortVersionString")
-            .and_then(plist::Value::as_string)
-            .ok_or("Missing installed version")?;
-        update_security::ensure_newer(
-            &expected.version,
-            &Version::parse(current).map_err(|e| e.to_string())?,
-        )?;
-        update.install(bytes.bytes()).map_err(|e| e.to_string())
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = expected;
+            update.install(bytes.bytes()).map_err(|e| e.to_string())
+        }
     })
     .await
     .map_err(|e| CommandError::Internal(e.to_string()))?

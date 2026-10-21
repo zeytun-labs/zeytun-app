@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+#[cfg(target_os = "macos")]
 fn app_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![
         PathBuf::from("/Applications"),
@@ -31,7 +32,30 @@ fn app_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// All installed `.app` bundle paths (recursive, bounded depth).
+#[cfg(target_os = "windows")]
+fn app_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(pf) = std::env::var("ProgramFiles") {
+        dirs.push(PathBuf::from(pf));
+    }
+    if let Ok(pf86) = std::env::var("ProgramFiles(x86)") {
+        dirs.push(PathBuf::from(pf86));
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("Programs"));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        dirs.push(PathBuf::from(appdata));
+    }
+    dirs
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn app_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// All installed app bundle / executable paths (recursive, bounded depth).
 fn app_bundles() -> &'static Vec<PathBuf> {
     static CACHE: OnceLock<Vec<PathBuf>> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -52,20 +76,55 @@ fn collect_apps(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        #[cfg(target_os = "macos")]
         if path.extension().is_some_and(|e| e == "app") {
             out.push(path);
-        } else if path.is_dir() {
+            continue;
+        }
+        #[cfg(target_os = "windows")]
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        {
+            out.push(path);
+            continue;
+        }
+        if path.is_dir() {
             collect_apps(&path, depth + 1, out);
         }
     }
 }
 
-fn find_bundle_stem(stem: &str) -> Option<&'static PathBuf> {
+fn find_bundle_stem<'a>(stem: &str, bundles: &'a [PathBuf]) -> Option<&'a PathBuf> {
     let want = stem.to_lowercase();
-    app_bundles().iter().find(|p| {
+    bundles.iter().find(|p| {
         p.file_stem()
             .is_some_and(|s| s.to_string_lossy().to_lowercase() == want)
     })
+}
+
+#[cfg(target_os = "windows")]
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let name_exe = if name.to_lowercase().ends_with(".exe") {
+        name.to_string()
+    } else {
+        format!("{name}.exe")
+    };
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(&name_exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(sysroot) = std::env::var("SystemRoot") {
+        let candidate = PathBuf::from(sysroot).join("System32").join(&name_exe);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 /// Helper suffixes, longest first so `strip_suffix` never eats a prefix of a
@@ -84,14 +143,17 @@ const HELPER_SUFFIXES: &[&str] = &[
     " Daemon",
 ];
 
-fn find_bundle(name: &str) -> Option<&'static PathBuf> {
-    let name = name.strip_suffix(".app").unwrap_or(name);
-    if let Some(b) = find_bundle_stem(name) {
+fn find_bundle<'a>(name: &str, bundles: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    let name = name
+        .strip_suffix(".app")
+        .or_else(|| name.strip_suffix(".exe"))
+        .unwrap_or(name);
+    if let Some(b) = find_bundle_stem(name, bundles) {
         return Some(b);
     }
     for suffix in HELPER_SUFFIXES {
         if let Some(stem) = name.strip_suffix(suffix) {
-            if let Some(b) = find_bundle_stem(stem) {
+            if let Some(b) = find_bundle_stem(stem, bundles) {
                 return Some(b);
             }
         }
@@ -109,8 +171,7 @@ fn bundle_display_name(bundle: &Path) -> String {
 
 /// Extract a readable process name from a regex that didn't resolve to an app
 /// bundle. Strips regex escapes/metacharacters and picks the most name-like
-/// token: a token ending in ".app" wins (Telegram from
-/// `^/Applications/Telegram\.app/`), otherwise the longest word.
+/// token: a token ending in ".app" or ".exe" wins, otherwise the longest word.
 fn name_from_regex(value: &str) -> String {
     let cleaned = value.replace(r"\.", ".").replace(r"\/", "/");
     let tokens: Vec<String> = cleaned
@@ -121,8 +182,11 @@ fn name_from_regex(value: &str) -> String {
     if tokens.is_empty() {
         return value.to_string();
     }
-    if let Some(t) = tokens.iter().find(|t| t.ends_with(".app")) {
-        let name = t.trim_end_matches(".app");
+    if let Some(t) = tokens
+        .iter()
+        .find(|t| t.ends_with(".app") || t.ends_with(".exe"))
+    {
+        let name = t.trim_end_matches(".app").trim_end_matches(".exe");
         if !name.is_empty() {
             return name.to_string();
         }
@@ -137,18 +201,41 @@ fn name_from_regex(value: &str) -> String {
 /// Map a rule kind/value to `(display_name, process_path)`. `process_path` is
 /// empty when nothing usable was found (icon extraction is skipped then).
 pub fn resolve_process(kind: &str, value: &str) -> (String, String) {
+    resolve_process_with_bundles(kind, value, || app_bundles())
+}
+
+// Keep discovery lazy in production and inject a deterministic inventory in
+// unit tests instead of recursively scanning the host's installed programs.
+fn resolve_process_with_bundles<'a>(
+    kind: &str,
+    value: &str,
+    bundles: impl Fn() -> &'a [PathBuf],
+) -> (String, String) {
     match kind {
         "PROCESS-NAME" => {
-            let fallback = value.strip_suffix(".app").unwrap_or(value).to_string();
-            match find_bundle(value) {
-                Some(bundle) => (
+            let fallback = value
+                .strip_suffix(".app")
+                .or_else(|| value.strip_suffix(".exe"))
+                .unwrap_or(value)
+                .to_string();
+            if let Some(bundle) = find_bundle(value, bundles()) {
+                return (
                     bundle_display_name(bundle),
                     bundle.to_string_lossy().into_owned(),
-                ),
-                None => (fallback, String::new()),
+                );
             }
+            #[cfg(target_os = "windows")]
+            if let Some(path) = find_in_path(value) {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| fallback.clone());
+                return (name, path.to_string_lossy().into_owned());
+            }
+            (fallback, String::new())
         }
         "PROCESS-PATH" => {
+            #[cfg(target_os = "macos")]
             if let Some(idx) = value.find(".app") {
                 let bundle = &value[..idx + 4];
                 let name = Path::new(bundle)
@@ -156,21 +243,20 @@ pub fn resolve_process(kind: &str, value: &str) -> (String, String) {
                     .unwrap_or(Path::new(bundle).as_os_str())
                     .to_string_lossy()
                     .into_owned();
-                (name, bundle.to_string())
-            } else {
-                let name = Path::new(value)
-                    .file_name()
-                    .filter(|n| !n.is_empty())
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| value.to_string());
-                (name, value.to_string())
+                return (name, bundle.to_string());
             }
+
+            let path = Path::new(value);
+            let name = path
+                .file_stem()
+                .filter(|n| !n.is_empty())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| value.to_string());
+            (name, value.to_string())
         }
         "PROCESS-PATH-REGEX" => {
             if let Ok(re) = regex::Regex::new(value) {
-                // Match the bundle path with and without a trailing slash:
-                // `^/Applications/Telegram\.app/` anchors on the slash.
-                for bundle in app_bundles() {
+                for bundle in bundles() {
                     let path = bundle.to_string_lossy();
                     if re.is_match(&path) || re.is_match(&format!("{path}/")) {
                         return (
@@ -190,34 +276,56 @@ pub fn resolve_process(kind: &str, value: &str) -> (String, String) {
 mod tests {
     use super::*;
 
+    fn resolve_process(kind: &str, value: &str) -> (String, String) {
+        let bundles = [
+            PathBuf::from("/Applications/Google Chrome.app"),
+            PathBuf::from("/Applications/Telegram.app"),
+            PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        ];
+        resolve_process_with_bundles(kind, value, || &bundles)
+    }
+
     #[test]
     fn real_rule_values() {
-        let chrome = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/149.0.7827.201/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper";
-        let (name, path) = resolve_process("PROCESS-PATH", chrome);
-        assert_eq!(name, "Google Chrome");
-        assert_eq!(path, "/Applications/Google Chrome.app");
-
-        let (name, path) = resolve_process("PROCESS-PATH-REGEX", r"^/Applications/Telegram\.app/");
-        assert_eq!(name, "Telegram");
-        if Path::new("/Applications/Telegram.app").exists() {
-            assert_eq!(path, "/Applications/Telegram.app");
-        }
-
-        let (name, path) = resolve_process("PROCESS-NAME", "Telegram");
-        assert_eq!(name, "Telegram");
-        if Path::new("/Applications/Telegram.app").exists() {
-            assert_eq!(path, "/Applications/Telegram.app");
-        }
-
-        let (name, path) = resolve_process("PROCESS-NAME", "Google Chrome Helper (Renderer)");
-        assert_eq!(name, "Google Chrome");
-        if Path::new("/Applications/Google Chrome.app").exists() {
+        #[cfg(target_os = "macos")]
+        {
+            let chrome = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/149.0.7827.201/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper";
+            let (name, path) = resolve_process("PROCESS-PATH", chrome);
+            assert_eq!(name, "Google Chrome");
             assert_eq!(path, "/Applications/Google Chrome.app");
+
+            let (name, path) =
+                resolve_process("PROCESS-PATH-REGEX", r"^/Applications/Telegram\.app/");
+            assert_eq!(name, "Telegram");
+            assert_eq!(path, "/Applications/Telegram.app");
+
+            let (name, path) = resolve_process("PROCESS-NAME", "Telegram");
+            assert_eq!(name, "Telegram");
+            assert_eq!(path, "/Applications/Telegram.app");
+
+            let (name, path) = resolve_process("PROCESS-NAME", "Google Chrome Helper (Renderer)");
+            assert_eq!(name, "Google Chrome");
+            assert_eq!(path, "/Applications/Google Chrome.app");
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe";
+            let (name, path) = resolve_process("PROCESS-PATH", chrome);
+            assert_eq!(name, "chrome");
+            assert_eq!(path, chrome);
         }
     }
 
     #[test]
     fn fallbacks() {
+        #[cfg(target_os = "windows")]
+        {
+            let (name, path) = resolve_process("PROCESS-NAME", "cmd");
+            assert_eq!(name, "cmd");
+            assert!(path.to_lowercase().ends_with("cmd.exe"));
+        }
+
         let (name, path) = resolve_process("PROCESS-PATH-REGEX", r".*nonexistent-app.*");
         assert_eq!(name, "nonexistent-app");
         assert!(path.is_empty());
@@ -229,5 +337,45 @@ mod tests {
         let (name, path) = resolve_process("PROCESS-NAME", "cfprefsd");
         assert_eq!(name, "cfprefsd");
         assert!(path.is_empty());
+    }
+
+    #[test]
+    fn discovery_is_lazy_for_paths_unknown_rules_and_invalid_regexes() {
+        for (kind, value) in [
+            ("PROCESS-PATH", "/usr/bin/curl"),
+            ("DOMAIN", "example.com"),
+            ("PROCESS-PATH-REGEX", "["),
+        ] {
+            resolve_process_with_bundles(kind, value, || panic!("unnecessary app discovery"));
+        }
+    }
+
+    #[test]
+    fn discovery_scans_a_controlled_directory_tree() {
+        let root =
+            std::env::temp_dir().join(format!("zeytun-app-discovery-{}", uuid::Uuid::new_v4()));
+        let nested = root.join("vendor/version");
+        std::fs::create_dir_all(&nested).unwrap();
+        #[cfg(target_os = "macos")]
+        let app = nested.join("Fixture.app");
+        #[cfg(not(target_os = "macos"))]
+        let app = nested.join("fixture.exe");
+        #[cfg(target_os = "macos")]
+        std::fs::create_dir(&app).unwrap();
+        #[cfg(not(target_os = "macos"))]
+        std::fs::write(&app, b"fixture").unwrap();
+        let too_deep = root.join("one/two/three/four/five");
+        std::fs::create_dir_all(&too_deep).unwrap();
+        #[cfg(target_os = "macos")]
+        std::fs::create_dir(too_deep.join("Excluded.app")).unwrap();
+        #[cfg(not(target_os = "macos"))]
+        std::fs::write(too_deep.join("excluded.exe"), b"fixture").unwrap();
+        let mut apps = Vec::new();
+        collect_apps(&root, 0, &mut apps);
+        std::fs::remove_dir_all(&root).unwrap();
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        assert_eq!(apps, vec![app]);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        assert!(apps.is_empty());
     }
 }

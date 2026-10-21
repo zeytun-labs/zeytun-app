@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "repository": "zeytun-labs/zeytun-core",
+  "tag": "zeytun-core-v0.1.0-alpha.1",
+  "commit": "4db9c15b5d46a87f09df98b32c03933f39cee8a9",
+  "assets": {
+    "macos-aarch64": {
+      "name": "zeytun-core-macos-aarch64.zip",
+      "sha256": "4334134fff956f66e4acfbf454beb8e3ad24c89252c631d4b858b5ea8be1675e"
+    },
+    "windows-x86_64": {
+      "name": "zeytun-core-windows-x86_64.zip",
+      "sha256": "f08042feead41643a797d9ef9eec6915382759b896cb3a50db43fc5f68f484cf"
+    }
+  },
+  "source": {
+    "name": "zeytun-core-source.tar.gz",
+    "sha256": "1cdb1407babdc6e5746bc32f78416af4810b8a67f00e31eb3870417ebc3dbb7c"
+  }
+}

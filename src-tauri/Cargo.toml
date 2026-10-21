@@ -1,7 +1,7 @@
 [package]
 name = "zeytun"
 version = "0.1.1-alpha"
-description = "Zeytun macOS desktop client for application-aware network routing"
+description = "Zeytun desktop client for application-aware network routing"
 authors = ["AmirHossein Sadeghi"]
 license = "GPL-3.0-only"
 edition = "2021"
@@ -23,6 +23,8 @@ required-features = ["updater-tools"]
 [features]
 updater-tools = []
 updater-lab = []
+# Isolated WebView/IPC runner; never enabled in production releases.
+ci-smoke = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -39,8 +41,6 @@ base64 = "0.22.1"
 percent-encoding = "2.3.2"
 url = "2.5.8"
 zeytun-config = { git = "https://github.com/zeytun-labs/zeytun-config.git" }
-objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSWindow", "NSToolbar", "NSView", "NSResponder", "NSApplication"] }
 thiserror = "2.0.18"
 strum_macros = "0.28.0"
 strum = "0.28.0"
@@ -53,7 +53,6 @@ tonic = "0.11"
 prost = "0.12"
 tokio-stream = "0.1"
 maxminddb = "0.28.1"
-objc2-foundation = "0.3.2"
 uuid = { version = "1", features = ["v4"] }
 image = "0.25"
 rusttype = "0.9"
@@ -74,3 +73,27 @@ time = "0.3.47"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSWindow", "NSToolbar", "NSView", "NSResponder", "NSApplication"] }
+objc2-foundation = "0.3.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.55"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Networking_WinInet",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_Networking_NetworkListManager",
+    "Win32_System_Com",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }

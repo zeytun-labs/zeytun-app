@@ -36,6 +36,9 @@
   import SettingsDialog from "$lib/components/settings/settings-dialog.svelte";
   import CriticalBanner from "$lib/components/critical-banner.svelte";
   import { Toaster } from "$lib/components/ui/sonner/index.js";
+  import { initFlagPolyfill } from "$lib/utils/flags";
+
+  initFlagPolyfill();
 
   const { children } = $props();
 
@@ -126,6 +129,9 @@
 
       const latest = dumps[0];
       const content = await crashDumpRead(latest).catch(() => null);
+
+      // Mark seen immediately so the alert shows once per crash, not on every restart
+      void crashDumpDismiss();
 
       notificationStore.pushNotification({
         title: "Previous session crashed",

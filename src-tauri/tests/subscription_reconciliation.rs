@@ -10,12 +10,12 @@ fn permissive_parser_must_not_accept_malformed_raw_credentials_or_ports() {
     use base64::{engine::general_purpose::STANDARD, Engine};
     let vmess =
         |value: serde_json::Value| format!("vmess://{}", STANDARD.encode(value.to_string()));
-    let cases = [
-        "ss://aes-128-gcm:synthetic-password@bad.test:99999#Broken".into(),
+    let cases: Vec<String> = vec![
+        "ss://aes-128-gcm:synthetic-password@bad.test:99999#Broken".to_string(),
         vmess(json!({"add":"bad.test","port":99999,"id":"5e3daa0d-9c9a-4f0f-9a1d-6ce35eeb3fc3"})),
         vmess(json!({"add":"bad.test","port":443})),
     ];
-    for broken in cases {
+    for broken in &cases {
         let mut p = profile();
         let before = serde_json::to_value(&p).unwrap();
         let result = SubscriptionManager::apply_update(
@@ -29,7 +29,7 @@ fn permissive_parser_must_not_accept_malformed_raw_credentials_or_ports() {
         );
         assert_eq!(serde_json::to_value(&p).unwrap(), before);
         assert!(zeytun_lib::core::link_parser::proxy_from_link(
-            &broken,
+            broken,
             ProxyOrigin::Manual,
             "manual".into()
         )
@@ -491,9 +491,16 @@ fn atomic_apply_validates_raw_authored_graph_instead_of_normalizing_away_errors(
     );
 }
 
+struct TempDir(std::path::PathBuf);
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 struct DeleteFixture {
     db: zeytun_lib::core::storage::Db,
-    dir: std::path::PathBuf,
+    _dir: TempDir,
 }
 impl DeleteFixture {
     fn new() -> Self {
@@ -505,12 +512,10 @@ impl DeleteFixture {
         db.create_subscription("default", &source("a")).unwrap();
         db.create_subscription("default", &source("b")).unwrap();
         db.save_profile(&delete_profile()).unwrap();
-        Self { db, dir }
-    }
-}
-impl Drop for DeleteFixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).unwrap();
+        Self {
+            db,
+            _dir: TempDir(dir),
+        }
     }
 }
 fn delete_profile() -> ZeytunCore {

@@ -93,6 +93,8 @@ class ReleaseTests(unittest.TestCase):
             argv = run.call_args.args[0]
             self.assertIn('verify-update', argv)
             self.assertIn('--locked', argv)
+            self.assertIn('--release', argv)
+            self.assertEqual(argv[argv.index('--target') + 1], 'aarch64-apple-darwin')
             self.assertTrue(run.call_args.kwargs['check'])
 
     def test_tag_mismatch_fails_before_any_build_or_verification(self):

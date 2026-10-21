@@ -1,3 +1,5 @@
+#[cfg(feature = "ci-smoke")]
+pub mod ci_smoke;
 pub mod crash_dump;
 pub mod error;
 
@@ -334,6 +336,19 @@ fn core_event_list(
 }
 
 #[tauri::command]
+fn app_is_elevated() -> Result<bool, crate::error::CommandError> {
+    Ok(crate::adapters::zeytun_core_process::is_elevated())
+}
+
+#[tauri::command]
+fn app_request_elevation(app: tauri::AppHandle) -> Result<(), crate::error::CommandError> {
+    crate::adapters::zeytun_core_process::relaunch_as_admin()
+        .map_err(crate::error::CommandError::Core)?;
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
 async fn core_get_traffic_analytics(
     filter: String,
     range: Option<String>,
@@ -404,7 +419,7 @@ async fn core_open_connection_ask_window(
         return Ok(());
     }
 
-    let window = WebviewWindowBuilder::new(
+    let _window = WebviewWindowBuilder::new(
         &app,
         "connection-ask",
         WebviewUrl::App("connection-ask".into()),
@@ -424,7 +439,7 @@ async fn core_open_connection_ask_window(
 
     #[cfg(target_os = "macos")]
     {
-        let win_clone = window.clone();
+        let win_clone = _window.clone();
         let _ = app.run_on_main_thread(move || {
             apply_clear_window(&win_clone);
         });
@@ -1298,16 +1313,7 @@ async fn get_process_icon(
         .app_cache_dir()
         .map_err(|e| crate::error::CommandError::Internal(e.to_string()))?;
 
-    // The traffic card's process tab lists names from historical analytics,
-    // which may have no live connection (hence no path). Resolve the app
-    // bundle from the name so the icon still appears.
-    let process_path = if process_path.is_empty() {
-        crate::adapters::process_resolve::resolve_process("PROCESS-NAME", &process_name).1
-    } else {
-        process_path
-    };
-
-    // Perform extraction inside spawn_blocking so AppKit work doesn't block Tokio
+    // Perform extraction inside spawn_blocking so platform work doesn't block Tokio
     tauri::async_runtime::spawn_blocking(move || {
         let path = crate::adapters::process_icon::ensure_process_icon(
             &cache_dir,
@@ -1858,6 +1864,11 @@ fn crash_dump_dismiss() {
     crate::crash_dump::mark_dumps_seen();
 }
 
+// Keep one context expansion: macOS embeds a single Info.plist linker symbol.
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -1865,14 +1876,14 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
+            let _window = app.get_webview_window("main").unwrap();
 
             #[cfg(target_os = "macos")]
-            apply_mac_style(&window);
+            apply_mac_style(&_window);
 
-            if let Some(ask) = app.get_webview_window("connection-ask") {
+            if let Some(_ask) = app.get_webview_window("connection-ask") {
                 #[cfg(target_os = "macos")]
-                apply_clear_window(&ask);
+                apply_clear_window(&_ask);
             }
 
             let app_data_dir = app
@@ -1966,6 +1977,8 @@ pub fn run() {
             core_restart,
             core_status,
             core_event_list,
+            app_is_elevated,
+            app_request_elevation,
             core_get_traffic_analytics,
             core_get_traffic_summary,
             set_hide_on_close,
@@ -2053,7 +2066,7 @@ pub fn run() {
             crash_dump_read,
             crash_dump_dismiss
         ])
-        .build(tauri::generate_context!())
+        .build(app_context())
         .expect("error while building tauri application");
 
     app.run(move |app_handle, event| {

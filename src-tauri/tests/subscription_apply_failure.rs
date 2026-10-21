@@ -79,5 +79,7 @@ fn manager_records_apply_validation_failure_after_rollback_without_losing_succes
     );
     assert!(!after.last_error.unwrap().contains("secret"));
     drop(conn);
-    std::fs::remove_dir_all(dir).unwrap();
+    drop(manager);
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
 }

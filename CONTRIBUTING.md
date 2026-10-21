@@ -132,8 +132,13 @@ generated output is not evidence that a check was run or a behavior was verified
 ## Development setup
 
 Clone **this public repository** directly. All commands below run from its root;
-no private parent repository or sibling checkout is required. The native target
-is macOS (Apple Silicon releases). Frontend checks also run on Linux.
+no private parent repository or sibling checkout is required. CI builds and checks
+one shared frontend on Linux, then validates native desktop builds on macOS Apple
+Silicon and Windows x64. Both platforms exercise that same frontend in their actual
+WebView. See [CI and releases](docs/ci.md) for job selection, resource pins, and
+release validation. The Make-based native development commands below target
+macOS; Windows native resource preparation uses `scripts/native-resources.ps1`.
+Linux native desktop builds are not currently part of the supported build path.
 
 ### Prerequisites
 
@@ -188,7 +193,7 @@ Run `make` or `make help` to list commands.
 | `make dev-web` | Start Vite only |
 | `make build` | Build a local app/DMG with fresh frontend/CSP, without updater signing secrets |
 | `make prepare` | Type-check, test, build the frontend, and refresh generated CSP hashes |
-| `make ci-frontend` | Run frontend and tooling checks exactly as CI does, including CSP verification |
+| `make ci-frontend` | Run frontend/tooling checks and generate and verify CSP for the local build |
 | `make check-rs` | Run Rust format check, Clippy, and tests with CI flags |
 | `make ci` | Run both frontend and Rust checks |
 | `make fmt` | Format Rust before staging it |
@@ -219,8 +224,11 @@ make build-core CORE_SRC=/absolute/path/to/zeytun-core
 Make variables. `CORE_REF` selects the branch/tag for a new clone; it does not
 switch an existing checkout. The bundled binary path is selected from the host
 architecture. Apple Silicon is the release target; Intel builds are not released.
-CI's `make build-core-ci` omits Naive/CGO and is not a substitute for checking a
-production build when a change affects that integration.
+For a local app build using the same prebuilt core as CI, run
+`python3 scripts/download-core.py --target macos-aarch64` (Windows:
+`python scripts/download-core.py --target windows-x86_64`). This replaces that
+target's resource directory with the pinned release. Source builds remain
+available for core development; CI and Release never invoke them.
 
 ### Before committing: the pre-commit hook
 
@@ -263,13 +271,86 @@ initialization script and SvelteKit's hydration bootstrap. The bootstrap turns
 rendered HTML into the interactive app. Its SHA-256 hash can change when the
 frontend output changes, even if you did not edit a script tag directly.
 
-The generated hashes in `src-tauri/tauri.conf.json` must match the exact built
-script bytes. Otherwise the webview can block hydration. `make prepare` and the
-hook refresh the hashes; CI's `make ci-frontend` verifies them without modifying
-the configuration. This keeps the policy restrictive without manual hash
-copying or enabling `unsafe-inline` for scripts.
+The generated hashes must match the exact built script bytes. Otherwise the
+webview can block hydration. `make prepare` and the hook refresh the hashes in
+`src-tauri/tauri.conf.json`; `make ci-frontend` also generates and verifies the
+hashes against its own production frontend build.
+
+Frontend asset names and the bootstrap that imports them can differ between
+operating systems, so a hash generated on one OS need not match another OS's
+build. CI builds the frontend once on Linux, refreshes only the generated script
+hashes in its disposable checkout, and uploads the frontend with the matching
+Tauri configuration. Both native platforms restore this same artifact and
+verify the hashes again before native compilation. The frontend is not
+rebuilt during packaging. All other CSP directives, sources and configuration
+remain as reviewed. Script hashes are never copied manually or replaced with
+`unsafe-inline`.
 
 ## Checks
+
+CI runs on pull requests and pushes to `main`. Feature branches, including
+`windows`, do not also run push CI. Version tags run Release, which calls CI for
+the exact release revision before signing. Both workflows support manual runs.
+The required `CI passed` check aggregates every job selected for the change.
+
+Matrices use `fail-fast: false` so a failure on one platform does not cancel the
+other platform checks. Actions are pinned to commit SHAs; the workflow has only
+read access to repository contents and needs no release or signing secrets.
+All Cargo lint, test and bundle commands in CI use `--locked`.
+
+The frontend runs once on Linux. Selected native checks run on macOS Apple
+Silicon and Windows x64, including real WebView/IPC smoke tests. Routine builds
+use the debug profile; changes to packaging inputs also build and install debug
+DMG/NSIS packages on the same prepared runners. A second optimized compilation
+is reserved for explicit `release_installers=true` validation and production
+Release. Manual CI inputs default to false; `build_installers=true` requests
+debug installers. For the selection matrix, pre-merge optimized checks, runtime
+coverage and limitations, see [CI and releases](docs/ci.md).
+
+`rust-toolchain.toml` pins the same exact Rust version for local work, checks and
+Release. Native setup lives in `.github/actions/prepare-desktop` and isolates
+the pinned toolchain from other compiler versions preinstalled on runners.
+Dependency caches are separated by platform and build profile and saved only
+after successful jobs. A cache miss still requires compilation.
+
+The `frontend` artifact retains the build and its matching configuration for
+three days. Native jobs consume it from the same workflow run. Selected
+installers are retained as `desktop-<Rust target>-<profile>` for seven days.
+These use the isolated CI identity and are inspection artifacts, not published
+releases or notarized/signed updater tests. Both CI and Release download the same production
+core from `zeytun-labs/zeytun-core`, pinned by tag, source commit and asset
+SHA-256 in `scripts/core-release.json`. Neither pipeline installs Go, clones
+core source, or compiles the core. Rust compilation still builds the app.
+
+`scripts/download-core.py` verifies the downloaded archive before installing it,
+checks its target/version/source metadata, and includes the matching Cronet DLL
+on Windows. A missing release or checksum failure stops the job; there is no
+source-build fallback. Cached archives are verified again before reuse.
+The Release workflow also verifies and attaches that core's corresponding
+source archive to the app release.
+
+To upgrade core, publish a new `zeytun-core-v*` tag in the core repository using
+its Zeytun core release workflow, then copy its `core-release.json` release
+asset into `scripts/core-release.json` in an app PR. Review the source commit,
+feature tags and checksums, and require both desktop CI jobs to pass. Never
+pin `latest`, a moving branch, or replace existing release assets.
+
+The `src-tauri/tauri.ci.json` overlay disables the frontend rebuild and signing
+artifacts for both desktop platforms. It keeps the shared security policy.
+macOS data resources use the Makefile; Windows data resources use the explicit
+`geoip` and `check` actions of `scripts/native-resources.ps1`. Core installation
+on both platforms uses only the pinned downloader.
+Linux native CI can be added once its core resource preparation, native
+integration and packaging are supported; frontend coverage alone does not
+establish native Linux support.
+
+For branch protection or repository rulesets, require the stable **CI passed**
+status check. Its job uses `always()` and requires every routine job result to
+be `success`, including all matrix entries. It accepts an Installer `skipped`
+result only when the successful plan explicitly selected `installers=false`;
+required, failed or cancelled packaging cannot be hidden by a skip. Configure this check in GitHub
+repository settings after its first run; workflow changes alone do not enable
+branch protection. Replace any required checks using the previous job names.
 
 Use `make ci-frontend` for frontend/tooling changes, `make check-rs` for Rust,
 and `make ci` before a PR that affects both. Rust checks require the core and

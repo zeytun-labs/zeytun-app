@@ -1,37 +1,54 @@
 name: Release
 
-# Tag pushes prepare a signed draft in this repo; publish after reviewing it.
-# Manual runs default to a build-only smoke test (no release, no signing secrets).
-# Signed releases need the existing updater key in repo secrets:
-#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# Validate the exact tag/manual revision before accessing signing credentials.
+# Production releases remain signed macOS drafts for maintainer review.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Build bundles without signing or creating a release
+        description: Build and verify bundles without signing or creating a release
         type: boolean
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate revision
+    uses: ./.github/workflows/ci.yml
+    with:
+      full_validation: true
+      # The release job builds the production bundle once after validation.
+      build_installers: false
+
   release:
-    runs-on: macos-14
+    name: Build macOS release
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
     env:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/prepare-desktop
+        with:
+          rust-target: aarch64-apple-darwin
+          core-target: macos-aarch64
+          cache-group: release-v2
+          core-source: 'true'
       - name: Validate release settings
         id: metadata
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           make version
@@ -40,50 +57,26 @@ jobs:
             echo "::error::Tag must match app version: v$version"
             exit 1
           fi
-          if [[ "$DRY_RUN" != true && -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
-            echo "::error::Add the existing updater signing key to TAURI_SIGNING_PRIVATE_KEY before releasing. Do not rotate the public key."
-            exit 1
-          fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo 'prerelease=true' >> "$GITHUB_OUTPUT"
           else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo 'prerelease=false' >> "$GITHUB_OUTPUT"
           fi
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.25.5"
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          targets: aarch64-apple-darwin
-      - name: Install protobuf
-        run: brew install protobuf
-      - name: Build zeytun-core
-        env:
-          GOTOOLCHAIN: local
-          CGO_ENABLED: "1"
-        run: |
-          set -euo pipefail
-          make build-core
-          git -C .cache/zeytun-core archive --format=tar.gz --prefix=zeytun-core/ \
-            --output="$GITHUB_WORKSPACE/zeytun-core-source.tar.gz" HEAD
-          make geoip
-      - name: Check frontend
-        run: make ci-frontend
-      - name: Check GeoIP updates against DB-IP
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib adapters::geoip_update::tests -- --include-ignored
-      - name: Smoke-test app and DMG bundles
-        if: env.DRY_RUN == 'true'
-        run: pnpm exec tauri build --target aarch64-apple-darwin --config '{"bundle":{"createUpdaterArtifacts":false}}'
-      - name: Publish to this repo
+      - name: Require the existing updater signing key
         if: env.DRY_RUN != 'true'
-        id: publish
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo '::error::The existing TAURI_SIGNING_PRIVATE_KEY is required; do not rotate the public key.'
+            exit 1
+          fi
+      - name: Build app and DMG without updater signing
+        if: env.DRY_RUN == 'true'
+        run: tauri build --ci --target aarch64-apple-darwin --config src-tauri/tauri.release.json --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
+      - name: Create a signed draft using the verified frontend
+        if: env.DRY_RUN != 'true'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -91,19 +84,29 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: .
+          tauriScript: tauri
           tagName: ${{ steps.metadata.outputs.tag }}
           releaseName: Zeytun v__VERSION__
           releaseDraft: true
           prerelease: ${{ steps.metadata.outputs.prerelease }}
           includeUpdaterJson: true
-          args: --target aarch64-apple-darwin
-      - name: Verify macOS bundle signature
+          args: --ci --target aarch64-apple-darwin --config src-tauri/tauri.release.json -- --locked
+      - name: Verify macOS bundle signature and contents
         run: |
           set -euo pipefail
-          app="src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Zeytun.app"
+          app='src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Zeytun.app'
           test -s "$app/Contents/_CodeSignature/CodeResources"
           codesign --verify --deep --strict "$app"
-      - name: Attach corresponding core source and verify release manifest
+          python3 scripts/ci-smoke.py --verify-resources "$app/Contents/Resources" --platform macos
+      - name: Save dry-run installers for inspection
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-darwin-aarch64
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach corresponding core source and verify the updater manifest
         if: env.DRY_RUN != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

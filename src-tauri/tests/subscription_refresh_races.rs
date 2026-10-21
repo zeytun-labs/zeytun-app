@@ -15,10 +15,17 @@ use zeytun_lib::core::{
     subscription_refresh::{RefreshStatus, RefreshWorkers},
 };
 
+struct TempDir(std::path::PathBuf);
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 struct Fixture {
-    dir: std::path::PathBuf,
     core: Arc<Mutex<CoreManager>>,
     db: Db,
+    _dir: TempDir,
 }
 impl Fixture {
     fn new() -> Self {
@@ -26,19 +33,14 @@ impl Fixture {
         let manager = CoreManager::new(dir.clone(), None, Arc::new(EventBus::headless())).unwrap();
         let db = Db::new(dir.join("core/zeytun.db"));
         Self {
-            dir,
             core: Arc::new(Mutex::new(manager)),
             db,
+            _dir: TempDir(dir),
         }
     }
     fn source(&self, id: &str, url: &str) {
         let s: SubscriptionSource = serde_json::from_value(serde_json::json!({"id":id,"generation":0,"position":0,"settings":{"name":id,"url":url,"enabled":true,"auto_update":true,"update_interval_hours":24}})).unwrap();
         self.db.create_subscription("default", &s).unwrap();
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).unwrap();
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

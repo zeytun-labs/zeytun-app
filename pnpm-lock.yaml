@@ -47,6 +47,9 @@ importers:
       '@tauri-apps/plugin-websocket':
         specifier: ^2.4.2
         version: 2.4.2
+      country-flag-emoji-polyfill:
+        specifier: ^0.1.10
+        version: 0.1.10
       d3-scale:
         specifier: ^4.0.2
         version: 4.0.2
@@ -1063,6 +1066,9 @@ packages:
   cookie@0.6.0:
     resolution: {integrity: sha512-U71cyTamuh1CRNCfpGY6to28lxvNwPG4Guz/EVjgf3Jmzv0vlDp1atT9eS5dDjMYHucpHbWns6Lwf3BKz6svdw==}
     engines: {node: '>= 0.6'}
+
+  country-flag-emoji-polyfill@0.1.10:
+    resolution: {integrity: sha512-5O50p2mq/d8+4AfHz3monRQaBA4TIQ0XcKqJUhCYR6SMsLqlO4m8f87og6R1D68Z1sNXGkjLkcEccuzC6T9i5g==}
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
@@ -2606,6 +2612,8 @@ snapshots:
   commander@7.2.0: {}
 
   cookie@0.6.0: {}
+
+  country-flag-emoji-polyfill@0.1.10: {}
 
   csstype@3.2.3: {}
 
