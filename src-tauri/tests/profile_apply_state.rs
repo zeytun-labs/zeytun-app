@@ -225,6 +225,7 @@ fn unchanged_background_refresh_preserves_registry_order_and_revision() {
         assert_eq!(result.summary.proxies_added, 0);
         assert_eq!(result.summary.proxies_removed, 0);
         assert_eq!(result.summary.proxies_kept, kept);
+        assert_eq!(result.summary.proxies_updated, 0);
         assert_eq!(f.db.config_revision("default").unwrap(), revision);
         assert_eq!(
             after.proxies.iter().map(|p| &p.tag).collect::<Vec<_>>(),
@@ -245,4 +246,73 @@ fn unchanged_background_refresh_preserves_registry_order_and_revision() {
         f.db.config_revision("default").unwrap() > revision,
         "a new endpoint still requires applying the saved graph"
     );
+}
+
+#[test]
+fn reality_rotation_reports_connection_updates_without_changing_node_identity() {
+    let mut f = Fixture::new();
+    f.manager
+        .subscription_create(
+            "default",
+            SubscriptionSettings {
+                name: "Source".into(),
+                url: "https://example.test/sub".into(),
+                enabled: true,
+                auto_update: false,
+                update_interval_hours: 24,
+            },
+        )
+        .unwrap();
+    let original = "vless://00000000-0000-0000-0000-000000000001@198.51.100.1:443?security=reality&fp=chrome&pbk=synthetic_reality_public_key_for_testing_01&sid=11223344&sni=www.example.com&type=tcp#Node";
+    let initial = f
+        .manager
+        .profile_apply_refresh("default", original, SubHeaders::default(), false)
+        .unwrap();
+    assert_eq!(initial.proxies_added, 1);
+    assert_eq!(initial.proxies_updated, 0);
+    let tag = f.manager.profile_get().proxies[0].tag.clone();
+    let mut revision = f.manager.saved_revision("default").unwrap();
+
+    // Identity and display metadata are distinct from connection parameters.
+    let renamed = original.replace("#Node", "#Renamed");
+    let summary = f
+        .manager
+        .profile_apply_refresh("default", &renamed, SubHeaders::default(), false)
+        .unwrap();
+    assert_eq!(summary.proxies_kept, 1);
+    assert_eq!(summary.proxies_updated, 0);
+    assert_eq!(f.manager.saved_revision("default").unwrap(), revision);
+
+    let rotated_id = renamed.replace("sid=11223344", "sid=99887766");
+    let rotated_sni = rotated_id.replace("sni=www.example.com", "sni=alternate.example.com");
+    for updated in [&rotated_id, &rotated_sni] {
+        let summary = f
+            .manager
+            .profile_apply_refresh("default", updated, SubHeaders::default(), false)
+            .unwrap();
+        assert_eq!(summary.proxies_added, 0);
+        assert_eq!(summary.proxies_removed, 0);
+        assert_eq!(summary.proxies_kept, 1);
+        assert_eq!(summary.proxies_updated, 1);
+        assert_eq!(f.manager.profile_get().proxies[0].tag, tag);
+        assert!(f.manager.saved_revision("default").unwrap() > revision);
+        revision = f.manager.saved_revision("default").unwrap();
+        let source = f.manager.subscription_list("default").unwrap().remove(0);
+        assert_eq!(source.last_sync_summary.unwrap().proxies_updated, 1);
+
+        let unchanged = f
+            .manager
+            .profile_apply_refresh("default", updated, SubHeaders::default(), false)
+            .unwrap();
+        assert_eq!(unchanged.proxies_updated, 0);
+        assert_eq!(f.manager.saved_revision("default").unwrap(), revision);
+        assert_eq!(
+            f.manager.subscription_list("default").unwrap()[0]
+                .last_sync_summary
+                .as_ref()
+                .unwrap()
+                .proxies_updated,
+            0
+        );
+    }
 }

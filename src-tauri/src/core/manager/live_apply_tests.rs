@@ -388,6 +388,64 @@ fn live_temp_rules_and_mode_switches_preserve_real_pending_changes() {
 }
 
 #[test]
+fn unchanged_subscription_refresh_preserves_applied_and_pending_state() {
+    for pending in [false, true] {
+        let mut f = Fixture::new();
+        f.manager
+            .subscription_create(
+                "default",
+                crate::core::dto::SubscriptionSettings {
+                    name: "Source".into(),
+                    url: "https://example.test/sub".into(),
+                    enabled: true,
+                    auto_update: false,
+                    update_interval_hours: 24,
+                },
+            )
+            .unwrap();
+        f.manager
+            .profile_apply_refresh(
+                "default",
+                "socks5://node.test:1080#Node",
+                crate::core::subscription::SubHeaders::default(),
+                false,
+            )
+            .unwrap();
+        let applied = f.manager.profile.clone();
+        f.initial_revision = f.manager.saved_revision("default").unwrap();
+        let clash = f.manager.lifecycle.clash_api().unwrap().clone();
+        f.manager
+            .lifecycle
+            .assume_running_for_test(&applied, f.initial_revision, clash);
+        if pending {
+            f.manager.set_listen_port(7070).unwrap();
+        }
+
+        let summary = f
+            .manager
+            .profile_apply_refresh(
+                "default",
+                "socks5://node.test:1080#Renamed",
+                crate::core::subscription::SubHeaders::default(),
+                false,
+            )
+            .unwrap();
+        assert_eq!(summary.proxies_updated, 0);
+        assert_eq!(summary.proxies_added, 0);
+        assert_eq!(summary.proxies_removed, 0);
+        assert!(
+            f.manager.lifecycle.is_running(),
+            "refresh must not restart the core"
+        );
+        if pending {
+            f.assert_pending();
+        } else {
+            f.assert_applied();
+        }
+    }
+}
+
+#[test]
 fn stopped_or_different_applied_profile_is_not_acknowledged() {
     for stopped in [false, true] {
         let mut f = Fixture::new();

@@ -421,10 +421,13 @@
     try {
       const results = await subscriptionsStore.refreshAll();
       const failed = results.filter((r) => r.status === "failed");
+      const description = results.every((result) => result.status === "accepted" && result.summary && result.summary.proxies_added === 0 && result.summary.proxies_removed === 0)
+        ? "No proxy configuration changes."
+        : undefined;
       if (failed.length > 0) {
-        toast.warning(`Refreshed with ${failed.length} failure(s)`);
+        toast.warning(`Refreshed with ${failed.length} failure(s)`, { description });
       } else {
-        toast.success("All subscriptions refreshed");
+        toast.success("All subscriptions refreshed", { description });
       }
     } catch (e: any) {
       toast.error(`Refresh all failed: ${e?.message ?? e}`);

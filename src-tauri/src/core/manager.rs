@@ -639,10 +639,11 @@ impl CoreManager {
         self.events.info(
             "Profile updated",
             format!(
-                "+{} -{} kept={}",
+                "+{} -{} kept={} updated={}",
                 result.summary.proxies_added,
                 result.summary.proxies_removed,
                 result.summary.proxies_kept,
+                result.summary.proxies_updated,
             ),
         );
 
