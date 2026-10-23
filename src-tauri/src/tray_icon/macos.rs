@@ -41,8 +41,8 @@ define_class!(
 
 impl TrafficView {
     fn new(mtm: MainThreadMarker) -> tauri::Result<Retained<Self>> {
-        let download = label(mtm, "0K/s", 30.0, 11.0, 36.0, true);
-        let upload = label(mtm, "0K/s", 30.0, 0.0, 36.0, true);
+        let download = label(mtm, "0K/s", 30.0, 10.0, 36.0, true);
+        let upload = label(mtm, "0K/s", 30.0, 1.0, 36.0, true);
         let this = Self::alloc(mtm).set_ivars(TrafficViewIvars { download, upload });
         // SAFETY: freshly allocated NSView subclass with initialized Rust ivars;
         // invoke the designated superclass initializer on the main thread.
@@ -51,8 +51,8 @@ impl TrafficView {
         };
         this.addSubview(&this.ivars().download);
         this.addSubview(&this.ivars().upload);
-        this.addSubview(&label(mtm, "↓", 22.0, 11.0, 12.0, false));
-        this.addSubview(&label(mtm, "↑", 22.0, 0.0, 12.0, false));
+        this.addSubview(&label(mtm, "↓", 22.0, 10.0, 12.0, false));
+        this.addSubview(&label(mtm, "↑", 22.0, 1.0, 12.0, false));
         let data = NSData::with_bytes(include_bytes!("../../icons/tray.png"));
         let image = NSImage::initWithData(NSImage::alloc(), &data)
             .ok_or_else(|| tauri::Error::AssetNotFound("tray.png".into()))?;

@@ -309,28 +309,23 @@ impl CoreManager {
         &self.profile.id
     }
 
-    /// Create a new profile. If a subscription URL is given, immediately does a
-    /// foreground sync into it. The name is optional: a user-supplied name wins;
-    /// otherwise the subscription's `profile-title` header is used; otherwise a
-    /// generated fallback. Returns the created meta.
+    /// Create a named profile. The IPC adapter syncs any subscription URL after
+    /// releasing the manager lock. Returns the created meta.
     pub fn profile_create(
         &mut self,
         input: CreateProfileInput,
     ) -> Result<ProfileMeta, crate::error::CommandError> {
-        let user_name = input
-            .name
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty());
+        let name = input.name.trim().to_string();
+        if name.is_empty() {
+            return Err(crate::error::CommandError::InvalidInput(
+                "Profile name is required".into(),
+            ));
+        }
         let url = input.subscription_url.filter(|u| !u.trim().is_empty());
-
-        // Provisional name; may be replaced by the profile-title header below.
-        let provisional = user_name
-            .clone()
-            .unwrap_or_else(|| "New Profile".to_string());
-        let id = self.allocate_profile_id(&provisional);
+        let id = self.allocate_profile_id(&name);
         let meta = ProfileMeta {
             id: id.clone(),
-            name: provisional.clone(),
+            name,
             subscription_url: url.clone(),
             last_updated_unix_ms: None,
             is_active: false,

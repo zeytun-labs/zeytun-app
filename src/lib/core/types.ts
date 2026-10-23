@@ -350,8 +350,7 @@ export type ProfileMeta = {
 };
 
 export type CreateProfileInput = {
-  // Optional: user name wins; else the profile-title header; else a fallback.
-  name?: string | null;
+  name: string;
   subscription_url?: string | null;
   skip_auto_update?: boolean;
   update_interval_hours?: number;

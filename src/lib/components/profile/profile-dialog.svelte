@@ -13,7 +13,7 @@
   import ProfileIconPicker from "./profile-icon-picker.svelte";
 
   export interface ProfileDialogValues {
-    name: string | undefined;
+    name: string;
     icon: ProfileIconName | null | undefined;
   }
 
@@ -37,7 +37,7 @@
 
   const form = superForm<ProfileFormSchema>(
     {
-      name: undefined,
+      name: "",
       icon: null,
     },
     {
@@ -46,7 +46,7 @@
       onUpdate({ form: f }) {
         if (f.valid) {
           onSave({
-            name: f.data.name ?? undefined,
+            name: f.data.name,
             icon: f.data.icon ?? null,
           });
         }
@@ -60,7 +60,7 @@
     if (open) {
       reset({
         data: {
-          name: initialName || undefined,
+          name: initialName,
           icon: (initialIcon as ProfileIconName | null) ?? null,
         },
       });
@@ -84,12 +84,7 @@
         <Form.Field {form} name="name">
           <Form.Control>
             {#snippet children({ props })}
-              <Form.Label>
-                Name
-                <span class="text-muted-foreground text-xs font-normal"
-                  >(optional)</span
-                >
-              </Form.Label>
+              <Form.Label>Name</Form.Label>
               <div class="flex gap-2">
                 <ProfileIconPicker
                   value={$formData.icon}
@@ -100,6 +95,8 @@
                   {...props}
                   bind:value={$formData.name}
                   placeholder="Home"
+                  required
+                  maxlength={100}
                 />
               </div>
             {/snippet}

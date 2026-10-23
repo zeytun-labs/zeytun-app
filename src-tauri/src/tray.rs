@@ -22,10 +22,9 @@ const MI_MODE_RULE: &str = "tray-mode-rule";
 const MI_MODE_DIRECT: &str = "tray-mode-direct";
 const MI_SYSTEM_PROXY: &str = "tray-system-proxy";
 const MI_TUN: &str = "tray-tun";
-const MI_CORE: &str = "tray-core";
 const MI_RESTART: &str = "tray-restart";
 const MI_QUIT: &str = "tray-quit";
-const RESTART_INDEX: usize = 10;
+const RESTART_INDEX: usize = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrayState {
@@ -172,7 +171,6 @@ struct TrayMenu {
     checks: HashMap<&'static str, CheckMenuItem<Wry>>,
     status: MenuItem<Wry>,
     mode: Submenu<Wry>,
-    core_control: MenuItem<Wry>,
     restart: MenuItem<Wry>,
     model: Mutex<TrayModel>,
 }
@@ -203,15 +201,6 @@ pub fn build_tray(app: &AppHandle, initial: &TrayState) -> tauri::Result<()> {
     let tun = CheckMenuItemBuilder::with_id(MI_TUN, "TUN Mode")
         .checked(initial.tun)
         .build(app)?;
-    let core_control = MenuItemBuilder::with_id(
-        MI_CORE,
-        if initial.is_running() {
-            "Stop Core"
-        } else {
-            "Start Core"
-        },
-    )
-    .build(app)?;
     let restart = MenuItemBuilder::with_id(MI_RESTART, "Restart Core").build(app)?;
     let quit = MenuItemBuilder::with_id(MI_QUIT, "Quit Zeytun")
         .accelerator("CmdOrCtrl+Q")
@@ -225,8 +214,6 @@ pub fn build_tray(app: &AppHandle, initial: &TrayState) -> tauri::Result<()> {
         .item(&mode)
         .item(&system_proxy)
         .item(&tun)
-        .separator()
-        .item(&core_control)
         .separator()
         .item(&quit)
         .build()?;
@@ -252,7 +239,6 @@ pub fn build_tray(app: &AppHandle, initial: &TrayState) -> tauri::Result<()> {
         checks,
         status,
         mode,
-        core_control,
         restart,
         model: Mutex::new(model),
     });
@@ -287,7 +273,6 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         MI_MODE_DIRECT => run_action(app, TrayAction::Mode(OutboundMode::Direct)),
         MI_SYSTEM_PROXY => run_action(app, TrayAction::SystemProxy),
         MI_TUN => run_action(app, TrayAction::Tun),
-        MI_CORE => run_action(app, TrayAction::ToggleCore),
         MI_RESTART => run_action(app, TrayAction::Restart),
         MI_QUIT => app.exit(0),
         _ => {}
@@ -299,7 +284,6 @@ enum TrayAction {
     Mode(OutboundMode),
     SystemProxy,
     Tun,
-    ToggleCore,
     Restart,
 }
 
@@ -309,7 +293,6 @@ impl TrayAction {
             Self::Mode(_) => "Changing outbound mode",
             Self::SystemProxy => "Changing system proxy",
             Self::Tun => "Changing TUN mode",
-            Self::ToggleCore => "Updating core",
             Self::Restart => "Restarting core",
         }
     }
@@ -324,15 +307,6 @@ impl TrayAction {
             Self::Tun => {
                 let on = matches!(core.profile_get().local_proxy.mode, Some(InboundMode::Tun));
                 core.set_inbound_mode(if on { "mixed" } else { "tun" })
-            }
-            Self::ToggleCore => {
-                if core.is_running() {
-                    core.stop();
-                } else {
-                    core.start()?;
-                    select_global_root(core);
-                }
-                Ok(())
             }
             Self::Restart => {
                 let state = TrayState::from_core(core);
@@ -458,12 +432,6 @@ fn apply_model(app: &AppHandle) {
                 check.set_enabled(enabled)?;
             }
         }
-        menu.core_control.set_text(if model.state.is_running() {
-            "Stop Core"
-        } else {
-            "Start Core"
-        })?;
-        menu.core_control.set_enabled(enabled)?;
         let restart_present = menu.menu.get(MI_RESTART).is_some();
         if model.state.needs_restart() && !restart_present {
             menu.menu.insert(&menu.restart, RESTART_INDEX)?;
