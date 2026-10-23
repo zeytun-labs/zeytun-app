@@ -64,10 +64,7 @@ pub struct UpdateSubscriptionInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProfileInput {
-    /// Optional: user-set name wins; else the `profile-title` header; else a
-    /// generated fallback.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

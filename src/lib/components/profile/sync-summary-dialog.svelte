@@ -86,6 +86,12 @@
           </span>
           <div class="rounded-xl bg-muted/40 border border-border/40 divide-y divide-border/30 overflow-hidden text-xs">
             <div class="flex items-center justify-between px-3.5 py-2.5">
+              <span class="text-muted-foreground">Updated</span>
+              <span class="font-medium tabular-nums {(latchedSummary.proxies_updated ?? 0) > 0 ? 'text-amber-500' : 'text-foreground'}">
+                {latchedSummary.proxies_updated ?? 0}
+              </span>
+            </div>
+            <div class="flex items-center justify-between px-3.5 py-2.5">
               <span class="text-muted-foreground">Orphaned Rules</span>
               <span class="font-medium tabular-nums {latchedSummary.rules_orphaned > 0 ? 'text-amber-500' : 'text-foreground'}">
                 {latchedSummary.rules_orphaned}
@@ -98,6 +104,11 @@
               </span>
             </div>
           </div>
+          {#if (latchedSummary.proxies_updated ?? 0) > 0}
+            <p class="text-xs text-muted-foreground leading-relaxed">
+              Kept includes updated nodes with changed connection settings or restored availability.
+            </p>
+          {/if}
         </div>
 
         <!-- Orphaned Rules Warning -->

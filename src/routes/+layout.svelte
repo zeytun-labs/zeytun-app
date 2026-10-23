@@ -9,7 +9,7 @@
   import { fly } from "svelte/transition";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-  import { coreSetMode, coreStart, crashDumpListUnseen, crashDumpRead, crashDumpDismiss } from "$lib/core/api";
+  import { coreStart, crashDumpListUnseen, crashDumpRead, crashDumpDismiss } from "$lib/core/api";
   import { toast } from "svelte-sonner";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
   import { profileStore } from "$lib/stores/profile.svelte";
@@ -90,10 +90,7 @@
       await profileStore.load();
       startupProgress = 65;
 
-      // Direct mode on every launch, then bring the core up.
-      // lifecycle.start() PATCHes the clash API mode immediately after boot
-      // to override any stale cached mode, so the order here is safe.
-      await coreSetMode("direct");
+      // Start using the active profile's saved outbound mode.
       startupProgress = 80;
 
       await coreStart();
