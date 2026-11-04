@@ -79,6 +79,7 @@ pub fn initial_icon(app: &AppHandle) -> tauri::Result<tauri::image::Image<'stati
     #[cfg(not(target_os = "macos"))]
     app.default_window_icon()
         .cloned()
+        .map(tauri::image::Image::to_owned)
         .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))
 }
 
@@ -96,4 +97,15 @@ pub fn update_traffic(labels: &TrafficLabels) {
     macos::update(labels);
     #[cfg(not(target_os = "macos"))]
     let _ = labels;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_image_to_owned_lifetime() {
+        let raw = vec![0u8; 16];
+        let borrowed = tauri::image::Image::new(&raw, 2, 2);
+        let owned: tauri::image::Image<'static> = borrowed.to_owned();
+        assert_eq!(owned.width(), 2);
+    }
 }
