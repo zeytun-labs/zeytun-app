@@ -81,7 +81,8 @@ impl CoreManager {
         } else {
             // Clear any dangling system proxy settings left by an earlier killed/crashed session
             let _ = crate::adapters::system_proxy::SystemProxyManager.disable();
-            resolve_zeytun_core_binary_path(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
+            install_zeytun_core_binary(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
+                .map_err(crate::error::CommandError::Internal)?
         };
 
         let lifecycle = CoreLifecycle::new(binary_path, config_dir.clone(), events.clone());
@@ -183,11 +184,12 @@ impl CoreManager {
         self.db.save_profile(&self.profile)?;
         self.db.set_active(&self.profile.id)?;
 
-        let binary_path = resolve_zeytun_core_binary_path(
+        let binary_path = install_zeytun_core_binary(
             &self.bin_dir,
             &self.platform_bin_dir,
             self.resource_dir.as_deref(),
-        );
+        )
+        .map_err(crate::error::CommandError::Internal)?;
         self.lifecycle =
             CoreLifecycle::new(binary_path, self.config_dir.clone(), self.events.clone());
 
@@ -1973,36 +1975,76 @@ fn regex_escape(s: &str) -> String {
     out
 }
 
-fn resolve_zeytun_core_binary_path(
+/// Install the bundled core into App Data before it is ever granted setuid
+/// privileges. Tauri rebuilds and code signing both assume its resource bundle
+/// remains writable only by the build/install process, so running the core from
+/// that bundle would make the next dev build fail and invalidate a signed app.
+///
+/// The filename includes the app version. A newly installed app can therefore
+/// receive privileges for its new core without needing to overwrite a previous
+/// root-owned binary.
+fn install_zeytun_core_binary(
     bin_dir: &Path,
     platform_bin_dir: &Path,
     resource_dir: Option<&Path>,
-) -> PathBuf {
+) -> Result<PathBuf, String> {
     let binary_name = if cfg!(target_os = "windows") {
         "zeytun-core.exe"
     } else {
         "zeytun-core"
     };
 
-    if let Some(resource_dir) = resource_dir {
-        if let Some(candidate) = find_zeytun_core_binary_in_resource_dir(resource_dir, binary_name)
-        {
-            return candidate;
-        }
+    let installed_path = platform_bin_dir.join(versioned_core_binary_name(binary_name));
+    if installed_path.exists() {
+        return Ok(installed_path);
     }
 
-    let dev_resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
-    if let Some(candidate) = find_zeytun_core_binary_in_resource_dir(&dev_resource_dir, binary_name)
-    {
-        return candidate;
+    let bundled_core = resource_dir
+        .and_then(|dir| find_zeytun_core_binary_in_resource_dir(dir, binary_name))
+        .or_else(|| {
+            let dev_resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
+            find_zeytun_core_binary_in_resource_dir(&dev_resource_dir, binary_name)
+        });
+
+    if let Some(source) = bundled_core {
+        fs::create_dir_all(platform_bin_dir)
+            .map_err(|e| format!("Cannot create core binary directory: {e}"))?;
+        fs::copy(&source, &installed_path).map_err(|e| {
+            format!(
+                "Cannot install bundled zeytun-core from {}: {e}",
+                source.display()
+            )
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&installed_path, fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("Cannot make installed zeytun-core executable: {e}"))?;
+        }
+
+        return Ok(installed_path);
     }
 
     let platform_candidate = platform_bin_dir.join(binary_name);
     if platform_candidate.exists() {
-        return platform_candidate;
+        return Ok(platform_candidate);
     }
 
-    bin_dir.join(binary_name)
+    Ok(bin_dir.join(binary_name))
+}
+
+fn versioned_core_binary_name(binary_name: &str) -> String {
+    let path = Path::new(binary_name);
+    match (path.file_stem(), path.extension()) {
+        (Some(stem), Some(extension)) => format!(
+            "{}-{}.{}",
+            stem.to_string_lossy(),
+            env!("CARGO_PKG_VERSION"),
+            extension.to_string_lossy()
+        ),
+        _ => format!("{binary_name}-{}", env!("CARGO_PKG_VERSION")),
+    }
 }
 
 fn find_zeytun_core_binary_in_resource_dir(
@@ -2538,12 +2580,13 @@ mod tests {
     }
 
     #[test]
-    fn resolves_bundled_and_dev_core_binary_paths() {
+    fn installs_bundled_core_in_app_data_without_mutating_the_resource() {
         let temp = std::env::temp_dir().join(format!(
             "zeytun-test-{}",
             crate::core::constants::unix_millis()
         ));
-        let bundled_path = temp
+        let resource_dir = temp.join("resources-root");
+        let bundled_path = resource_dir
             .join("resources")
             .join("bin")
             .join(platform_key())
@@ -2551,10 +2594,24 @@ mod tests {
         std::fs::create_dir_all(bundled_path.parent().unwrap()).unwrap();
         std::fs::write(&bundled_path, b"mock").unwrap();
 
+        let platform_bin_dir = temp.join("app-data").join("core").join("bin");
+        let installed_path = install_zeytun_core_binary(
+            &temp.join("app-data").join("core").join("bin"),
+            &platform_bin_dir,
+            Some(&resource_dir),
+        )
+        .unwrap();
+
         assert_eq!(
-            find_zeytun_core_binary_in_resource_dir(&temp, "zeytun-core"),
-            Some(bundled_path)
+            find_zeytun_core_binary_in_resource_dir(&resource_dir, "zeytun-core"),
+            Some(bundled_path.clone())
         );
+        assert_eq!(std::fs::read(&installed_path).unwrap(), b"mock");
+        assert_eq!(
+            installed_path.file_name().unwrap().to_string_lossy(),
+            versioned_core_binary_name("zeytun-core")
+        );
+        assert_ne!(installed_path, bundled_path);
         let _ = std::fs::remove_dir_all(&temp);
     }
 
