@@ -11,7 +11,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 TAURI_CONFIG = "src-tauri/tauri.conf.json"
 PLATFORMS = {
-    "macos": dict(name="macOS", runner="macos-15", target="aarch64-apple-darwin",
+    "macos": dict(name="macOS", runner="macos-14", target="aarch64-apple-darwin",
                   core_target="macos-aarch64", bundles="app,dmg", installer="dmg/*.dmg"),
     "windows": dict(name="Windows", runner="windows-2025", target="x86_64-pc-windows-msvc",
                     core_target="windows-x86_64", bundles="nsis", installer="nsis/*-setup.exe"),
