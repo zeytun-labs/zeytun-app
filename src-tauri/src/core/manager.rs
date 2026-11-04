@@ -2581,6 +2581,11 @@ mod tests {
 
     #[test]
     fn installs_bundled_core_in_app_data_without_mutating_the_resource() {
+        let binary_name = if cfg!(target_os = "windows") {
+            "zeytun-core.exe"
+        } else {
+            "zeytun-core"
+        };
         let temp = std::env::temp_dir().join(format!(
             "zeytun-test-{}",
             crate::core::constants::unix_millis()
@@ -2590,7 +2595,7 @@ mod tests {
             .join("resources")
             .join("bin")
             .join(platform_key())
-            .join("zeytun-core");
+            .join(binary_name);
         std::fs::create_dir_all(bundled_path.parent().unwrap()).unwrap();
         std::fs::write(&bundled_path, b"mock").unwrap();
 
@@ -2603,13 +2608,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            find_zeytun_core_binary_in_resource_dir(&resource_dir, "zeytun-core"),
+            find_zeytun_core_binary_in_resource_dir(&resource_dir, binary_name),
             Some(bundled_path.clone())
         );
         assert_eq!(std::fs::read(&installed_path).unwrap(), b"mock");
         assert_eq!(
             installed_path.file_name().unwrap().to_string_lossy(),
-            versioned_core_binary_name("zeytun-core")
+            versioned_core_binary_name(binary_name)
         );
         assert_ne!(installed_path, bundled_path);
         let _ = std::fs::remove_dir_all(&temp);
