@@ -71,10 +71,52 @@
   const action = useAsyncAction();
 
   // --- Derived ---
-  // With the move to Profiles, the active profile is the single container: all
-  // its proxies show at once (grouping was removed).
   const activeProfile = $derived(profileStore.activeProfile);
   const visibleProxies = $derived(profileStore.proxies);
+  const proxySections = $derived.by(() => {
+    type ProxySection = {
+      id: string;
+      title: string;
+      kind: "subscription" | "manual";
+      proxies: Proxy[];
+    };
+
+    const sources = subscriptionsStore.sources;
+    const sections: ProxySection[] = sources.map((source) => ({
+      id: source.id,
+      title: source.settings.name,
+      kind: "subscription",
+      proxies: visibleProxies.filter(
+        (proxy) => proxy.origin === "subscription" && proxy.source_id === source.id,
+      ),
+    }));
+    const otherSubscriptionProxies = visibleProxies.filter(
+      (proxy) =>
+        proxy.origin === "subscription" &&
+        !sources.some((source) => source.id === proxy.source_id),
+    );
+
+    if (otherSubscriptionProxies.length > 0) {
+      sections.push({
+        id: "other-subscriptions",
+        title: "Other subscriptions",
+        kind: "subscription",
+        proxies: otherSubscriptionProxies,
+      });
+    }
+
+    const manualProxies = visibleProxies.filter((proxy) => proxy.origin === "manual");
+    if (manualProxies.length > 0 || sections.length === 0) {
+      sections.push({
+        id: "manual",
+        title: "Manual proxies",
+        kind: "manual",
+        proxies: manualProxies,
+      });
+    }
+
+    return sections;
+  });
   const canSelectProxy = $derived(profileStore.outboundMode === "global" || profileStore.outboundMode === "rule");
 
   // --- Lifecycle ---
@@ -421,10 +463,13 @@
     try {
       const results = await subscriptionsStore.refreshAll();
       const failed = results.filter((r) => r.status === "failed");
+      const description = results.every((result) => result.status === "accepted" && result.summary && result.summary.proxies_added === 0 && result.summary.proxies_removed === 0)
+        ? "No proxy configuration changes."
+        : undefined;
       if (failed.length > 0) {
-        toast.warning(`Refreshed with ${failed.length} failure(s)`);
+        toast.warning(`Refreshed with ${failed.length} failure(s)`, { description });
       } else {
-        toast.success("All subscriptions refreshed");
+        toast.success("All subscriptions refreshed", { description });
       }
     } catch (e: any) {
       toast.error(`Refresh all failed: ${e?.message ?? e}`);
@@ -508,21 +553,26 @@
         onDeletePolicy={deletePolicy}
       />
 
-      <ProxyGrid
-        proxies={visibleProxies}
-        {canSelectProxy}
-        groupName={activeProfile.name}
-        onProxyClick={handleProxyClick}
-        onEditProxy={(proxy) =>
-          openProxyDialog(
-            proxy.protocol === "chain" ? "edit-chain" : "edit",
-            proxy,
-          )}
-        onSelectProxy={selectProxy}
-        onTestProxy={runUrlTestSingle}
-        onDeleteProxy={requestDeleteProxy}
-        onAddProxy={() => openProxyDialog("proxy")}
-      />
+      {#each proxySections as section (section.id)}
+        <ProxyGrid
+          sectionId={section.id}
+          proxies={section.proxies}
+          allProxies={visibleProxies}
+          sectionTitle={section.title}
+          sectionKind={section.kind}
+          {canSelectProxy}
+          onProxyClick={handleProxyClick}
+          onEditProxy={(proxy) =>
+            openProxyDialog(
+              proxy.protocol === "chain" ? "edit-chain" : "edit",
+              proxy,
+            )}
+          onSelectProxy={selectProxy}
+          onTestProxy={runUrlTestSingle}
+          onDeleteProxy={requestDeleteProxy}
+          onAddProxy={() => openProxyDialog("proxy")}
+        />
+      {/each}
     </div>
   {:else}
     <div

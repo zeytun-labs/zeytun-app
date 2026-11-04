@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Proxy } from "$lib/core/types";
   import { cn, formatLatency, getLatencyColor } from "$lib/utils";
-  import { subscriptionsStore } from "$lib/stores/subscriptions.svelte";
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import { InternetIcon, Link04Icon } from "@hugeicons/core-free-icons";
   interface Props {
@@ -38,19 +37,6 @@
           .trim()
       : proxy.title,
   );
-
-  const sourceName = $derived.by(() => {
-    if (proxy.origin === "subscription") {
-      if (proxy.source_id) {
-        const s = subscriptionsStore.sources.find(
-          (src) => src.id === proxy.source_id,
-        );
-        return s?.settings.name ?? "Subscription";
-      }
-      return "Subscription";
-    }
-    return "";
-  });
 
   function proxyLabel(tag: string) {
     return allProxies.find((p) => p.tag === tag)?.title || tag;
@@ -95,15 +81,6 @@
           class="text-muted-foreground text-xs font-mono flex items-center gap-1.5"
         >
           <span>{proxy.protocol.toUpperCase()}</span>
-          {#if sourceName.length > 0}
-            <span>—</span>
-          {/if}
-          <span
-            class="inline-flex items-center gap-1 truncate text-[11px] max-w-30"
-            title={`Source: ${sourceName}`}
-          >
-            <span class="truncate">{sourceName}</span>
-          </span>
           {#if !proxy.available}
             <span
               class="rounded bg-destructive/15 px-1 py-0.2 text-[9px] text-destructive font-sans font-medium"

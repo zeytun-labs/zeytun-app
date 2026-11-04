@@ -279,14 +279,18 @@ async fn core_proxy_create(
 #[tauri::command]
 async fn core_start(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
-    let (status, is_global, clash_api) = with_core_blocking(&state, |core| {
+    let (status, is_global, clash_api, snapshot) = with_core_blocking(&state, |core| {
         let status = core.start()?;
         let is_global = matches!(core.profile_get().outbound_mode, OutboundMode::Global);
         let clash_api = core.clash_api_client();
-        Ok((status, is_global, clash_api))
+        let snapshot = tray::TrayState::from_core(core);
+        Ok((status, is_global, clash_api, snapshot))
     })
     .await?;
+
+    tray::sync_tray_ui(&app, snapshot);
 
     if is_global {
         if let Some(clash_api) = clash_api {
@@ -309,15 +313,29 @@ async fn core_start(
 #[tauri::command]
 async fn core_stop(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
-    with_core_blocking(&state, |core| Ok(core.stop())).await
+    let (status, snapshot) = with_core_blocking(&state, |core| {
+        let status = core.stop();
+        Ok((status, tray::TrayState::from_core(core)))
+    })
+    .await?;
+    tray::sync_tray_ui(&app, snapshot);
+    Ok(status)
 }
 
 #[tauri::command]
 async fn core_restart(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
-    with_core_blocking(&state, |core| core.restart()).await
+    let (status, snapshot) = with_core_blocking(&state, |core| {
+        let status = core.restart()?;
+        Ok((status, tray::TrayState::from_core(core)))
+    })
+    .await?;
+    tray::sync_tray_ui(&app, snapshot);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -531,7 +549,7 @@ async fn core_profile_switch(
 ) -> Result<(), crate::error::CommandError> {
     let snapshot = with_core_blocking(&state, move |core| {
         core.profile_switch(&profile_id)?;
-        Ok(tray::TrayState::from_profile(core.profile_get()))
+        Ok(tray::TrayState::from_core(core))
     })
     .await?;
     tray::sync_tray_ui(&app, snapshot);
@@ -761,7 +779,7 @@ async fn core_set_mode(
 ) -> Result<(), crate::error::CommandError> {
     let snapshot = with_core_blocking(&state, move |core| {
         core.set_mode(mode)?;
-        Ok(tray::TrayState::from_profile(core.profile_get()))
+        Ok(tray::TrayState::from_core(core))
     })
     .await?;
     tray::sync_tray_ui(&app, snapshot);
@@ -776,7 +794,7 @@ async fn core_set_inbound_mode(
 ) -> Result<(), crate::error::CommandError> {
     let snapshot = with_core_blocking(&state, move |core| {
         core.set_inbound_mode(&mode)?;
-        Ok(tray::TrayState::from_profile(core.profile_get()))
+        Ok(tray::TrayState::from_core(core))
     })
     .await?;
     tray::sync_tray_ui(&app, snapshot);
@@ -791,7 +809,7 @@ async fn core_set_system_proxy(
 ) -> Result<(), crate::error::CommandError> {
     let snapshot = with_core_blocking(&state, move |core| {
         core.set_system_proxy(enabled)?;
-        Ok(tray::TrayState::from_profile(core.profile_get()))
+        Ok(tray::TrayState::from_core(core))
     })
     .await?;
     tray::sync_tray_ui(&app, snapshot);
@@ -1956,8 +1974,8 @@ pub fn run() {
             // Seed the tray checkmarks from the loaded profile, then build it.
             let init = {
                 let state = app.state::<AppState>();
-                let core = tauri::async_runtime::block_on(state.core.lock());
-                tray::TrayState::from_profile(core.profile_get())
+                let mut core = tauri::async_runtime::block_on(state.core.lock());
+                tray::TrayState::from_core(&mut core)
             };
             tray::build_tray(app.handle(), &init)?;
 

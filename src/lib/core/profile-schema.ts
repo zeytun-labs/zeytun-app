@@ -4,9 +4,9 @@ import { PROFILE_ICON_NAMES } from "./profile-icons";
 export const profileFormSchema = z.object({
   name: z
     .string()
-    .max(100, "Name is too long")
-    .optional()
-    .transform((v) => (v?.trim() ? v.trim() : undefined)),
+    .trim()
+    .min(1, "Name is required")
+    .max(100, "Name is too long"),
   icon: z.enum(PROFILE_ICON_NAMES).nullable().optional(),
 });
 

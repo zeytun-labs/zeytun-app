@@ -188,7 +188,11 @@ impl Proxy {
 pub struct SyncSummary {
     pub proxies_added: usize,
     pub proxies_removed: usize,
+    /// Retained identities, including nodes counted in `proxies_updated`.
     pub proxies_kept: usize,
+    /// Retained identities whose connection settings or availability changed.
+    #[serde(default)]
+    pub proxies_updated: usize,
     pub rules_orphaned: usize,
     pub at_unix_ms: i64,
     #[serde(default)]

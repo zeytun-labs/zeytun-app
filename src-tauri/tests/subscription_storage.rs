@@ -38,6 +38,7 @@ fn fixture() -> std::path::PathBuf {
             proxies_added: 1,
             proxies_removed: 0,
             proxies_kept: 0,
+            proxies_updated: 0,
             rules_orphaned: 0,
             at_unix_ms: 17,
             errors: vec![],

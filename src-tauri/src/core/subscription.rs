@@ -217,6 +217,7 @@ impl SubscriptionManager {
                 proxies_added: 0,
                 proxies_removed: 0,
                 proxies_kept: 0,
+                proxies_updated: 0,
                 rules_orphaned: 0,
                 at_unix_ms: crate::core::constants::unix_millis(),
                 errors: vec![error],
@@ -245,6 +246,7 @@ impl SubscriptionManager {
                         proxies_added: 0,
                         proxies_removed: 0,
                         proxies_kept: 0,
+                        proxies_updated: 0,
                         rules_orphaned: 0,
                         at_unix_ms: crate::core::constants::unix_millis(),
                         errors: vec![format!("fetch failed: {e}")],
@@ -310,12 +312,18 @@ impl SubscriptionManager {
         let mut incoming = Vec::new();
         let mut proxies_added = 0;
         let mut proxies_kept = 0;
+        let mut proxies_updated = 0;
         for mut node in staged.nodes {
             let key = Self::proxy_stable_key(&node);
             if !seen.insert(key.clone()) {
                 continue;
             }
             if let Some(old) = existing.get(&key) {
+                if !old.available
+                    || Self::proxy_connection_key(old) != Self::proxy_connection_key(&node)
+                {
+                    proxies_updated += 1;
+                }
                 node.tag = old.tag.clone();
                 node.enabled = old.enabled;
                 proxies_kept += 1;
@@ -426,6 +434,7 @@ impl SubscriptionManager {
                 proxies_added,
                 proxies_removed,
                 proxies_kept,
+                proxies_updated,
                 rules_orphaned: 0,
                 at_unix_ms: crate::core::constants::unix_millis(),
                 errors: Vec::new(),
@@ -613,12 +622,25 @@ impl SubscriptionManager {
     /// these volatile fields so upstream rotation does not churn node identity.
     fn server_stable_key(server: &ProxyServer) -> String {
         let mut normalized = server.clone();
-        normalized.tag = String::new();
-        normalized.name = String::new();
         Self::normalize_tls_for_key(&mut normalized.protocol);
-        match serde_json::to_value(&normalized) {
+        Self::server_connection_key(normalized)
+    }
+
+    /// Compare connection parameters separately from identity. Rotated Reality
+    /// credentials retain their node tag but still need applying to the core.
+    fn proxy_connection_key(proxy: &Proxy) -> String {
+        match link_parser::proxy_to_proxy_server(proxy) {
+            Ok(server) => Self::server_connection_key(server),
+            Err(_) => format!("raw:{}", proxy.link.trim()),
+        }
+    }
+
+    fn server_connection_key(mut server: ProxyServer) -> String {
+        server.tag.clear();
+        server.name.clear();
+        match serde_json::to_value(&server) {
             Ok(value) => value.to_string(),
-            Err(_) => format!("{}:{}", normalized.address, normalized.port),
+            Err(_) => format!("{}:{}", server.address, server.port),
         }
     }
 

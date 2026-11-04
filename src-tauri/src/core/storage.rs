@@ -2247,6 +2247,7 @@ fn sync_summary_roundtrips_and_mark_read_clears_only_the_flag() {
         proxies_added: 3,
         proxies_removed: 1,
         proxies_kept: 5,
+        proxies_updated: 0,
         rules_orphaned: 2,
         at_unix_ms: 1_700_000_000_000,
         errors: vec![],

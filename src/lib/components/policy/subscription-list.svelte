@@ -87,7 +87,11 @@
     try {
       const res = await subscriptionsStore.refresh(source.id);
       if (res.status === "accepted") {
-        toast.success(`Synced "${source.settings.name}"`);
+        toast.success(`Synced "${source.settings.name}"`, {
+          description: res.summary && res.summary.proxies_added === 0 && res.summary.proxies_removed === 0
+            ? "No proxy configuration changes."
+            : undefined,
+        });
       } else {
         const errDetail = res.summary?.errors?.join("; ");
         toast.error(`Sync failed for "${source.settings.name}"`, {

@@ -68,7 +68,7 @@
     if (dialogKind === "create") {
       await action.run(async () => {
         await profileStore.createProfile({
-          name: values.name ?? null,
+          name: values.name,
           icon: values.icon ?? null,
         });
         dialogOpen = false;
@@ -78,7 +78,7 @@
       await action.run(async () => {
         await profileStore.updateProfile({
           id,
-          name: values.name ?? null,
+          name: values.name,
           icon: values.icon ?? null,
         });
         dialogOpen = false;
