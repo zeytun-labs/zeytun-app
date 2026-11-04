@@ -31,7 +31,7 @@ jobs:
   release:
     name: Build macOS release
     needs: validate
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 60
     permissions:
       contents: write
