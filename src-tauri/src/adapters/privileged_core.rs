@@ -122,6 +122,31 @@ pub fn remove_stale_setuid_cores(dir: &Path) -> Vec<PathBuf> {
     removed
 }
 
+/// Delete files in the unprivileged runtime config directory that the user
+/// no longer owns. Older builds ran the setuid core there, so root created
+/// `cache.db`; the unprivileged core then fails at startup with
+/// "open cache.db: permission denied". These are caches the core recreates,
+/// and the directory is the user's, so unlinking needs no privilege. Only
+/// regular files directly in `dir` are touched. Returns what was removed.
+#[cfg(unix)]
+pub fn remove_foreign_owned_files(dir: &Path) -> Vec<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let own_uid = unsafe { libc::getuid() };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut removed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let foreign = fs::symlink_metadata(&path)
+            .is_ok_and(|meta| meta.file_type().is_file() && meta.uid() != own_uid);
+        if foreign && fs::remove_file(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    removed
+}
+
 #[cfg(target_os = "macos")]
 pub fn privileged_core_path() -> PathBuf {
     Path::new(PRIVILEGED_ROOT)
@@ -370,6 +395,17 @@ mod tests {
             Some(embedded) => assert_eq!(expected, embedded.to_ascii_lowercase()),
             None => assert_eq!(expected, ABC_SHA256),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keeps_files_the_user_owns() {
+        let dir = ScratchDir::new();
+        let cache = dir.path().join("cache.db");
+        fs::write(&cache, b"db").unwrap();
+        assert!(remove_foreign_owned_files(dir.path()).is_empty());
+        assert!(cache.exists());
+        assert!(remove_foreign_owned_files(&dir.path().join("missing")).is_empty());
     }
 
     #[test]

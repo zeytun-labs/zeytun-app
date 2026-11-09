@@ -84,6 +84,14 @@ impl CoreManager {
             // proxy the user configured themselves is never touched.
             crate::adapters::system_proxy::SystemProxyManager::set_state_dir(&core_dir);
             let _ = crate::adapters::system_proxy::SystemProxyManager.disable();
+            // Older builds ran a root core in app data, leaving root-owned
+            // caches (cache.db) the unprivileged core can't open.
+            #[cfg(unix)]
+            for path in crate::adapters::privileged_core::remove_foreign_owned_files(
+                &config_dir.join("zeytun-core"),
+            ) {
+                events.info("Removed stale root-owned file", path.display().to_string());
+            }
             install_zeytun_core_binary(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
                 .map_err(crate::error::CommandError::Internal)?
         };
