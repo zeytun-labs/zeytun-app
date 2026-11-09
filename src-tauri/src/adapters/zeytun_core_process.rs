@@ -103,6 +103,49 @@ fn linux_has_net_admin_cap(binary: &std::path::Path) -> bool {
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("cap_net_admin"))
 }
 
+/// How long to keep retrying a start that fails only because a previous root
+/// core's sockets still hold our ports: 2*MSL on macOS (30s) plus margin.
+#[cfg(target_os = "macos")]
+const PORT_RELEASE_WAIT: Duration = Duration::from_secs(35);
+#[cfg(any(target_os = "macos", test))]
+const PORT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(any(target_os = "macos", test))]
+fn is_port_in_use_error(error: &str) -> bool {
+    error.contains("address already in use")
+}
+
+/// Re-run `attempt` while it fails with "address already in use", until it
+/// succeeds, fails differently, or `budget` runs out. `first` is the result
+/// of the attempt already made.
+#[cfg(any(target_os = "macos", test))]
+fn retry_while_port_in_use(
+    first: Result<(), String>,
+    budget: Duration,
+    attempt: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    retry_while_port_in_use_every(first, budget, PORT_RETRY_INTERVAL, attempt)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn retry_while_port_in_use_every(
+    first: Result<(), String>,
+    budget: Duration,
+    interval: Duration,
+    mut attempt: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut result = first;
+    while let Err(error) = &result {
+        if !is_port_in_use_error(error) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(interval);
+        result = attempt();
+    }
+    result
+}
+
 impl ZeytunCoreProcessManager {
     pub fn new(binary_path: PathBuf) -> Self {
         Self {
@@ -121,8 +164,23 @@ impl ZeytunCoreProcessManager {
         // anything is staged or elevated.
         self.check_config(config_path)?;
         self.ensure_setuid(config_path)?;
+        #[cfg(target_os = "macos")]
+        let was_privileged = self.privileged.load(std::sync::atomic::Ordering::SeqCst);
         let (binary, config) = self.resolve_launch(config_path)?;
-        self.start_internal(&binary, &config)
+        let result = self.start_internal(&binary, &config);
+
+        // Leaving TUN: sockets the root core left in TIME_WAIT on our ports
+        // block an unprivileged bind for up to 2*MSL (30s on macOS); macOS
+        // won't share a port across users even with SO_REUSEADDR. The core
+        // avoids this on its control ports (SO_LINGER=0 as root), so this only
+        // covers leftovers such as proxy connections on the mixed inbound.
+        #[cfg(target_os = "macos")]
+        if was_privileged && !self.privileged.load(std::sync::atomic::Ordering::SeqCst) {
+            return retry_while_port_in_use(result, PORT_RELEASE_WAIT, || {
+                self.start_internal(&binary, &config)
+            });
+        }
+        result
     }
 
     /// Which binary runs which config. On macOS a TUN config runs on the
@@ -699,6 +757,53 @@ pub fn relaunch_as_admin() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn port_retry_stops_on_success() {
+        let mut calls = 0;
+        let result = super::retry_while_port_in_use_every(
+            Err("listen tcp 127.0.0.1:19999: bind: address already in use".into()),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err("bind: address already in use".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn port_retry_ignores_other_errors() {
+        let mut calls = 0;
+        let result = super::retry_while_port_in_use_every(
+            Err("config invalid".into()),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            || {
+                calls += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "config invalid");
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn port_retry_gives_up_after_budget() {
+        let result = super::retry_while_port_in_use_every(
+            Err("bind: address already in use".into()),
+            std::time::Duration::from_millis(30),
+            std::time::Duration::from_millis(5),
+            || Err("bind: address already in use".into()),
+        );
+        assert!(super::is_port_in_use_error(&result.unwrap_err()));
+    }
+
     #[test]
     fn tun_detection_parses_inbounds_not_substrings() {
         use serde_json::json;
