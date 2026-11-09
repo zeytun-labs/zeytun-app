@@ -29,6 +29,7 @@ ci-smoke = []
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 tonic-build = "0.11"
+sha2 = "0.10.9"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }

@@ -353,7 +353,10 @@ impl CoreLifecycle {
     }
 
     /// Compile + write config to disk without SIGHUP (live_rules bake for next restart).
-    pub fn write_config_only(&mut self, profile: &ZeytunCore) -> Result<(), String> {
+    pub fn write_config_only(
+        &mut self,
+        profile: &ZeytunCore,
+    ) -> Result<std::path::PathBuf, String> {
         let profile_model = ProfileConverter::convert(profile);
         let runtime_profile = self
             .compiler
@@ -362,10 +365,8 @@ impl CoreLifecycle {
         let config = self
             .config_builder
             .build(&runtime_profile, &profile.outbound_mode)?;
-        let _ = self
-            .config_store
-            .write_zeytun_core_config(&runtime_profile.name, &config)?;
-        Ok(())
+        self.config_store
+            .write_zeytun_core_config(&runtime_profile.name, &config)
     }
 
     pub fn reload(&mut self, profile: &ZeytunCore) -> Result<CoreRuntimeStatus, String> {

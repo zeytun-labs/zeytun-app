@@ -134,6 +134,53 @@ pub fn staged_config_path() -> PathBuf {
     Path::new(PRIVILEGED_ROOT).join("run").join("config.json")
 }
 
+/// SHA-256 of the staged config, written by the privileged script (root-owned,
+/// world-readable). The staged config itself is 0600, so this is how the app
+/// learns what root is currently running without another prompt.
+#[cfg(target_os = "macos")]
+fn staged_config_hash_path() -> PathBuf {
+    Path::new(PRIVILEGED_ROOT).join("run").join("config.sha256")
+}
+
+/// SHA-256 of the bundled core, baked in by `build.rs` from
+/// `resources/bin/<platform>/zeytun-core`. It lives inside the code-signed app
+/// binary, so replacing the core inside the .app cannot also replace the hash
+/// it is checked against.
+pub const EMBEDDED_CORE_SHA256: Option<&str> = option_env!("ZEYTUN_CORE_SHA256");
+
+/// The hash the privileged core must match. Release builds without an
+/// embedded hash refuse TUN rather than trust the file on disk; debug builds
+/// (no native resources at compile time) fall back to hashing the bundle.
+pub fn expected_core_sha256(bundled: &Path) -> Result<String, String> {
+    match EMBEDDED_CORE_SHA256 {
+        Some(hash) => Ok(hash.to_ascii_lowercase()),
+        None if cfg!(debug_assertions) => sha256_file(bundled),
+        None => Err(
+            "This build has no embedded zeytun-core hash, so TUN mode is disabled. Reinstall Zeytun."
+                .to_string(),
+        ),
+    }
+}
+
+/// True when root has already staged exactly `config_sha256`: the marker
+/// and staged config are root-owned and not writable by group/other, and the
+/// marker matches. Only root can write either file, so a match means root is
+/// set up to run this content and no new prompt is needed.
+#[cfg(target_os = "macos")]
+fn staged_config_matches(config_sha256: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let trusted = |path: &Path| {
+        fs::symlink_metadata(path).is_ok_and(|meta| {
+            meta.file_type().is_file() && is_trusted_root_file(meta.uid(), meta.mode(), false)
+        })
+    };
+    let marker = staged_config_hash_path();
+    trusted(&staged_config_path())
+        && trusted(&marker)
+        && fs::read_to_string(&marker)
+            .is_ok_and(|stored| stored.trim().eq_ignore_ascii_case(config_sha256))
+}
+
 /// Runs as root inside one admin prompt. Arguments arrive as positional
 /// parameters, never spliced into the script text:
 ///   $1 caller uid   $2 bundled core   $3 expected sha256 ("-" = keep core)
@@ -162,7 +209,12 @@ if [ "$expected" != "-" ]; then
 fi
 tmp=$(mktemp "$root/run/.config.XXXXXX")
 /usr/bin/sudo -n -u "#$uid" /bin/cat -- "$src_cfg" > "$tmp"
-chown root:wheel "$tmp"; chmod 600 "$tmp"; mv -f "$tmp" "$root/run/config.json"
+chown root:wheel "$tmp"; chmod 600 "$tmp"
+sum=$(mktemp "$root/run/.config-sha.XXXXXX")
+/usr/bin/shasum -a 256 "$tmp" | /usr/bin/cut -d' ' -f1 > "$sum"
+chown root:wheel "$sum"; chmod 644 "$sum"
+mv -f "$tmp" "$root/run/config.json"
+mv -f "$sum" "$root/run/config.sha256"
 "##;
 
 /// Make sure the root-owned core is installed and current, and stage
@@ -174,9 +226,18 @@ pub fn prepare_privileged_launch(user_config: &Path) -> Result<(PathBuf, PathBuf
 
     let bundled = bundled_core_source()
         .ok_or("Bundled zeytun-core not found; cannot install the privileged core")?;
-    let expected = sha256_file(bundled)?;
+    let expected = expected_core_sha256(bundled)?;
     let core = privileged_core_path();
-    let core_arg = if installed_core_is_trusted(&core, &expected) {
+    let core_trusted = installed_core_is_trusted(&core, &expected);
+
+    // Nothing to do when root already runs this exact config on a trusted
+    // core: no prompt for an unchanged config (restart, login autostart).
+    let config_sha256 = sha256_file(user_config)?;
+    if core_trusted && staged_config_matches(&config_sha256) {
+        return Ok((core, staged_config_path()));
+    }
+
+    let core_arg = if core_trusted {
         "-".to_string()
     } else {
         expected.clone()
@@ -229,9 +290,14 @@ pub fn prepare_privileged_launch(user_config: &Path) -> Result<(PathBuf, PathBuf
         );
     }
 
-    // Belt and braces: never spawn a root core we cannot vouch for.
+    // Belt and braces: never spawn a root core we cannot vouch for, and
+    // confirm root staged the content we validated (not a file swapped in
+    // between our hash and its copy).
     if !installed_core_is_trusted(&core, &expected) {
         return Err("Privileged zeytun-core failed verification after install".to_string());
+    }
+    if !staged_config_matches(&config_sha256) {
+        return Err("The core config changed while it was being staged. Try again.".to_string());
     }
     Ok((core, staged_config_path()))
 }
@@ -291,6 +357,19 @@ mod tests {
     fn verify_sha256_errors_on_missing_file() {
         let dir = ScratchDir::new();
         assert!(verify_sha256(&dir.path().join("missing"), ABC_SHA256).is_err());
+    }
+
+    #[test]
+    fn expected_hash_prefers_embedded_value() {
+        let dir = ScratchDir::new();
+        let bundled = dir.path().join("core");
+        fs::write(&bundled, b"abc").unwrap();
+        let expected = expected_core_sha256(&bundled).unwrap();
+        match EMBEDDED_CORE_SHA256 {
+            // The on-disk file must not be able to change the expected hash.
+            Some(embedded) => assert_eq!(expected, embedded.to_ascii_lowercase()),
+            None => assert_eq!(expected, ABC_SHA256),
+        }
     }
 
     #[test]

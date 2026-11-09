@@ -76,7 +76,7 @@ const LINUX_CORE_CAPS: &str = "cap_net_admin,cap_net_raw,cap_net_bind_service+ep
 /// True when the generated config declares a `tun` inbound. Parses JSON
 /// rather than substring-matching so formatting changes cannot hide TUN.
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
-fn config_uses_tun(config_path: &str) -> bool {
+pub(crate) fn config_uses_tun(config_path: &str) -> bool {
     std::fs::read_to_string(config_path)
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())

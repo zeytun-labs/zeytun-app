@@ -293,6 +293,19 @@ impl CoreManager {
         status
     }
 
+    /// Write the config `start()` is about to run, without starting anything,
+    /// and return its path. Mirrors `start_snapshot` so the bytes match; used
+    /// to stage the macOS privileged config (admin prompt) before the core
+    /// lock is taken for the real start.
+    pub fn write_start_config(&mut self) -> Result<PathBuf, String> {
+        let (mut snapshot, _revision) = self
+            .db
+            .profile_snapshot(&self.profile.id)
+            .map_err(|e| e.to_string())?;
+        snapshot.session_rules.clear();
+        self.lifecycle.write_config_only(&snapshot)
+    }
+
     fn start_snapshot(&mut self) -> Result<(), String> {
         let (mut snapshot, revision) = self
             .db

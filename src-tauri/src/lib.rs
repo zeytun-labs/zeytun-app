@@ -281,10 +281,37 @@ async fn core_start(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
-    // macOS TUN: the admin prompt (root-owned core install + config staging)
-    // happens inside `core.start()`, because the staged config only exists
-    // once the profile is compiled. It holds the core lock while shown; the
-    // launchd helper in docs/macos-privileged-core.md removes that prompt.
+    // macOS TUN: stage the root-owned config (admin prompt) *before* taking
+    // the core lock for the start, so the prompt doesn't freeze every other
+    // command. `start()` then finds the same config already staged and skips
+    // the prompt. Other paths that restart into TUN (profile switch, inbound
+    // mode, rule-set retry) still prompt under the lock when the config
+    // changed; the launchd helper in docs/macos-privileged-core.md removes
+    // that prompt entirely.
+    #[cfg(target_os = "macos")]
+    {
+        let config_path = {
+            let mut core = state.core.lock().await;
+            if core.is_running() {
+                None
+            } else {
+                Some(
+                    core.write_start_config()
+                        .map_err(crate::error::CommandError::Core)?,
+                )
+            }
+        };
+        if let Some(path) = config_path.filter(|path| {
+            crate::adapters::zeytun_core_process::config_uses_tun(&path.to_string_lossy())
+        }) {
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::adapters::privileged_core::prepare_privileged_launch(&path)
+            })
+            .await
+            .map_err(|e| crate::error::CommandError::Internal(format!("task failed: {e}")))?
+            .map_err(crate::error::CommandError::Core)?;
+        }
+    }
 
     let (status, is_global, clash_api, snapshot) = with_core_blocking(&state, |core| {
         let status = core.start()?;

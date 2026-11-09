@@ -79,22 +79,23 @@ root process.
 | Area | Change | Where |
 |---|---|---|
 | Install location | The setuid copy lives in `/Library/Application Support/Zeytun/bin/zeytun-core-<ver>`, `root:wheel` 4755, in `root:wheel` 755 directories. Older versions there are deleted on install. | `privileged_core.rs` |
-| Integrity | The app hashes the **bundled** core. The root script copies the bundle into a root-owned temp file (reading the source with `sudo -u <caller>`), hashes it, and only then runs `chown`/`chmod 4755`/`mv`. A mismatch deletes the temp file. The app re-checks owner, mode and hash before every privileged spawn. | `privileged_core.rs` |
+| Integrity | `build.rs` bakes the bundled core's SHA-256 into the signed app binary (`ZEYTUN_CORE_SHA256`); release builds without it refuse TUN. The root script copies the bundle into a root-owned temp file (reading the source with `sudo -u <caller>`), hashes it, and only then runs `chown`/`chmod 4755`/`mv`. A mismatch deletes the temp file. The app re-checks owner, mode and hash before every privileged spawn. | `privileged_core.rs` |
 | Old setuid copies | Any setuid `zeytun-core*` in the app-data bin dir is deleted at startup. The directory is the user's, so no privilege is needed. The unprivileged app-data copy is reinstalled whenever its hash differs from the bundle. | `manager.rs` |
-| Config | TUN configs are staged to `/Library/Application Support/Zeytun/run/config.json`, `root:wheel` 0600, in the same admin prompt. The core runs with cwd in that directory, so `cache.db` is root-owned too. | `privileged_core.rs`, `zeytun_core_process.rs` |
+| Config | TUN configs are staged to `/Library/Application Support/Zeytun/run/config.json`, `root:wheel` 0600, in the same admin prompt, plus a root-owned, world-readable `config.sha256`. When the core is trusted and that marker matches the config to run, no prompt is shown. After staging, the app re-checks the marker, so a config swapped mid-copy is rejected. | `privileged_core.rs`, `zeytun_core_process.rs` |
 | Non-TUN | Runs the app-data copy as the user. `check` always runs unprivileged on the user's file. | `zeytun_core_process.rs` |
 | Core: config trust | With euid 0, zeytun-core opens each config, `fstat`s that same descriptor and refuses unless the file is a regular file owned by root and not group- or world-writable. The directory that holds it must pass the same rule. Config from `stdin` is refused. | `cmd/sing-box/privilege*.go` |
-| Core: setuid mode | When real uid ≠ effective uid, only `run`, `check`, `version` and `help` are allowed. This is checked in `main()` before cobra runs, because `geoip`/`geosite` override `PersistentPreRun`. `-D` is refused and `SUDO_*` is ignored. | `cmd/sing-box/privilege*.go`, `cmd.go` |
+| Core: setuid mode | When real uid ≠ effective uid, only `run`, `check`, `version` and `help` are allowed. This is checked in `main()` before cobra runs, because `geoip`/`geosite` override `PersistentPreRun`. `-D` is refused and `SUDO_*` is ignored. `run`/`check` need exactly one `-c` file; the core `chdir`s into its directory and validates it by inode, so relative paths (`cache.db`) can't follow a symlink planted in the caller's cwd. Created files stay root-owned (no chown to the caller) and the caller's environment is dropped. | `cmd/sing-box/privilege*.go`, `cmd.go` |
 
 What this does not fix, and the UX cost:
 
-- **One admin prompt per TUN start and per TUN reload.** The staged config
-  can only be written by root, and `osascript ... with administrator
-  privileges` does not cache credentials across processes. Rules and
-  overlays pushed through the Clash API don't reload, so they don't prompt.
-  Changes that rebuild the config (proxy edits, mode switches) do.
-- The prompt runs while the core lock is held (inside `core.start()`), so
-  other commands wait until the user answers.
+- **One admin prompt whenever the TUN config changes.** Starting TUN again
+  on an unchanged config (restart, login autostart) skips the prompt via the
+  root-written `config.sha256`. Rules and overlays pushed through the Clash
+  API don't reload, so they don't prompt. Changes that rebuild the config
+  (proxy edits, mode switches) do.
+- `core_start` stages before taking the core lock, so its prompt doesn't
+  block other commands. Profile switches, inbound-mode changes and rule-set
+  retries that restart into TUN still prompt under the lock.
 - The root core still **reads** user-owned rule-set files referenced by
   absolute path. That is parser attack surface, but not a write primitive.
 - Anyone can still run the setuid core with a root-owned config they cannot
@@ -104,10 +105,9 @@ What this does not fix, and the UX cost:
   core on it. It is a config the admin approved, but a process running as
   the user can swap the app-data config just before staging, and the user
   approves whatever the prompt copies. The prompt cannot show what it copies.
-- The bundled core is trusted as the reference. If the user can write to
-  `/Applications/Zeytun.app`, they can replace it before the hash is taken.
-  macOS App Management protection (13+) blocks this for other apps. A
-  build-time pinned hash (see follow-ups) closes the gap.
+- The expected core hash is pinned at build time, so replacing the core
+  inside the app bundle is caught. Replacing the whole signed app binary is
+  out of scope (code signing / Gatekeeper).
 
 ## Recommendation
 
@@ -119,12 +119,9 @@ only design where the root side never parses a user-written file.
 
 ## Follow-ups
 
-1. Pin the expected core hash at build time: `build.rs` hashes
-   `resources/bin/<platform>/zeytun-core` into a constant, and
-   `prepare_privileged_launch` requires the bundle to match it.
-2. Option A: SMAppService daemon + XPC with a code-signing requirement.
-3. In the helper design, write the config from validated intent instead of
+1. Option A: SMAppService daemon + XPC with a code-signing requirement.
+2. In the helper design, write the config from validated intent instead of
    copying a file. Until then, consider rejecting `log.output` and absolute
    `cache_file.path` in the core whenever euid is 0.
-4. Uninstall: remove `/Library/Application Support/Zeytun` (admin prompt or
+3. Uninstall: remove `/Library/Application Support/Zeytun` (admin prompt or
    helper).
