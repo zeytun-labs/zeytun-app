@@ -61,7 +61,89 @@ pub struct ZeytunCoreProcessManager {
     watchdog: Mutex<Option<Child>>,
     #[cfg(target_os = "windows")]
     job: Mutex<Option<JobWrapper>>,
+    /// Unprivileged core (app data). Runs every non-TUN session and every
+    /// `check`; never setuid.
     binary_path: PathBuf,
+    /// macOS: the running child is the root-owned core on a staged config.
+    #[cfg(target_os = "macos")]
+    privileged: std::sync::atomic::AtomicBool,
+}
+
+/// Capabilities the core needs for TUN + auto_route on Linux.
+#[cfg(target_os = "linux")]
+const LINUX_CORE_CAPS: &str = "cap_net_admin,cap_net_raw,cap_net_bind_service+ep";
+
+/// True when the generated config declares a `tun` inbound. Parses JSON
+/// rather than substring-matching so formatting changes cannot hide TUN.
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+pub(crate) fn config_uses_tun(config_path: &str) -> bool {
+    std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|config| inbounds_include_tun(&config))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
+fn inbounds_include_tun(config: &serde_json::Value) -> bool {
+    config
+        .get("inbounds")
+        .and_then(|inbounds| inbounds.as_array())
+        .is_some_and(|inbounds| {
+            inbounds
+                .iter()
+                .any(|inbound| inbound.get("type").and_then(|t| t.as_str()) == Some("tun"))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_has_net_admin_cap(binary: &std::path::Path) -> bool {
+    Command::new("getcap")
+        .arg(binary)
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("cap_net_admin"))
+}
+
+/// How long to keep retrying a start that fails only because a previous root
+/// core's sockets still hold our ports: 2*MSL on macOS (30s) plus margin.
+#[cfg(target_os = "macos")]
+const PORT_RELEASE_WAIT: Duration = Duration::from_secs(35);
+#[cfg(any(target_os = "macos", test))]
+const PORT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(any(target_os = "macos", test))]
+fn is_port_in_use_error(error: &str) -> bool {
+    error.contains("address already in use")
+}
+
+/// Re-run `attempt` while it fails with "address already in use", until it
+/// succeeds, fails differently, or `budget` runs out. `first` is the result
+/// of the attempt already made.
+#[cfg(any(target_os = "macos", test))]
+fn retry_while_port_in_use(
+    first: Result<(), String>,
+    budget: Duration,
+    attempt: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    retry_while_port_in_use_every(first, budget, PORT_RETRY_INTERVAL, attempt)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn retry_while_port_in_use_every(
+    first: Result<(), String>,
+    budget: Duration,
+    interval: Duration,
+    mut attempt: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut result = first;
+    while let Err(error) = &result {
+        if !is_port_in_use_error(error) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(interval);
+        result = attempt();
+    }
+    result
 }
 
 impl ZeytunCoreProcessManager {
@@ -72,60 +154,93 @@ impl ZeytunCoreProcessManager {
             #[cfg(target_os = "windows")]
             job: Mutex::new(None),
             binary_path,
+            #[cfg(target_os = "macos")]
+            privileged: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub fn start(&self, config_path: &str) -> Result<(), String> {
+        // Validate with the unprivileged core, on the user's own file, before
+        // anything is staged or elevated.
+        self.check_config(config_path)?;
         self.ensure_setuid(config_path)?;
-        self.start_internal(config_path)
+        #[cfg(target_os = "macos")]
+        let was_privileged = self.privileged.load(std::sync::atomic::Ordering::SeqCst);
+        let (binary, config) = self.resolve_launch(config_path)?;
+        let result = self.start_internal(&binary, &config);
+
+        // Leaving TUN: sockets the root core left in TIME_WAIT on our ports
+        // block an unprivileged bind for up to 2*MSL (30s on macOS); macOS
+        // won't share a port across users even with SO_REUSEADDR. The core
+        // avoids this on its control ports (SO_LINGER=0 as root), so this only
+        // covers leftovers such as proxy connections on the mixed inbound.
+        #[cfg(target_os = "macos")]
+        if was_privileged && !self.privileged.load(std::sync::atomic::Ordering::SeqCst) {
+            return retry_while_port_in_use(result, PORT_RELEASE_WAIT, || {
+                self.start_internal(&binary, &config)
+            });
+        }
+        result
+    }
+
+    /// Which binary runs which config. On macOS a TUN config runs on the
+    /// root-owned core with a root-owned staged copy of the config (one admin
+    /// prompt); everything else runs unprivileged as the user.
+    #[cfg(target_os = "macos")]
+    fn resolve_launch(&self, config_path: &str) -> Result<(PathBuf, String), String> {
+        use std::sync::atomic::Ordering;
+        if !config_uses_tun(config_path) {
+            self.privileged.store(false, Ordering::SeqCst);
+            return Ok((self.binary_path.clone(), config_path.to_string()));
+        }
+        let (core, staged) =
+            crate::adapters::privileged_core::prepare_privileged_launch(Path::new(config_path))?;
+        self.privileged.store(true, Ordering::SeqCst);
+        Ok((core, staged.to_string_lossy().into_owned()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn resolve_launch(&self, config_path: &str) -> Result<(PathBuf, String), String> {
+        Ok((self.binary_path.clone(), config_path.to_string()))
     }
 
     /// Ensure the core binary has sufficient permissions before spawning.
-    /// On macOS: verifies/prompts for setuid-root permissions.
+    /// On macOS: handled by `resolve_launch` (root-owned core, staged config).
+    /// On Linux: grants file capabilities if TUN inbound is configured.
     /// On Windows: verifies process elevation if TUN inbound is configured.
     fn ensure_setuid(&self, config_path: &str) -> Result<(), String> {
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         {
             let _ = config_path;
-            use std::os::unix::fs::MetadataExt;
-
-            let meta = std::fs::metadata(&self.binary_path)
-                .map_err(|e| format!("Cannot stat zeytun-core binary: {e}"))?;
-
-            let is_root_owned = meta.uid() == 0;
-            let has_setuid = meta.mode() & 0o4000 != 0;
-
-            if is_root_owned && has_setuid {
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if !config_uses_tun(config_path) || linux_has_net_admin_cap(&self.binary_path) {
                 return Ok(());
             }
 
-            let binary_str = self.binary_path.to_string_lossy();
-            let script = format!(
-                "do shell script \"chown root '{binary_str}' && chmod 4755 '{binary_str}'\" with administrator privileges"
-            );
-
-            let output = Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
+            // File capabilities instead of setuid-root: the core gets only the
+            // network privileges TUN needs, not a full root shell. pkexec shows
+            // the desktop's polkit password prompt.
+            let output = Command::new("pkexec")
+                .args(["setcap", LINUX_CORE_CAPS])
+                .arg(&self.binary_path)
                 .output()
-                .map_err(|e| format!("Failed to execute osascript: {e}"))?;
+                .map_err(|e| format!("Failed to execute pkexec: {e}"))?;
 
             if output.status.success() {
                 Ok(())
             } else {
-                Err(
-                    "TUN mode requires root privileges. Please grant permissions when prompted."
-                        .to_string(),
-                )
+                Err(format!(
+                    "TUN mode needs network capabilities. Grant them when prompted, or run: sudo setcap {LINUX_CORE_CAPS} {}",
+                    self.binary_path.display()
+                ))
             }
         }
         #[cfg(target_os = "windows")]
         {
-            let config_content = std::fs::read_to_string(config_path).unwrap_or_default();
-            let is_tun = config_content.contains("\"type\": \"tun\"")
-                || config_content.contains("\"type\":\"tun\"");
-
-            if is_tun && !is_elevated() {
+            if config_uses_tun(config_path) && !is_elevated() {
                 return Err(
                     "TUN mode requires Administrator privileges on Windows. Please relaunch Zeytun as Administrator."
                         .to_string(),
@@ -133,14 +248,14 @@ impl ZeytunCoreProcessManager {
             }
             Ok(())
         }
-        #[cfg(not(any(unix, target_os = "windows")))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         {
             let _ = config_path;
             Ok(())
         }
     }
 
-    fn start_internal(&self, config_path: &str) -> Result<(), String> {
+    fn start_internal(&self, binary: &Path, config_path: &str) -> Result<(), String> {
         // Always stop existing child first — never early-return while still running
         // (that skipped new config after retry_rulesets write).
         {
@@ -152,14 +267,12 @@ impl ZeytunCoreProcessManager {
             }
         }
 
-        self.check_config(config_path)?;
-
         // ---- Tier 1: pre-flight cleanup ------------------------------------
         // Kill any orphaned cores from a previous run before spawning a new one.
         self.kill_orphaned_processes();
 
         // cwd = config dir so experimental.cache_file path "cache.db" lands next to config.
-        let mut cmd = Command::new(&self.binary_path);
+        let mut cmd = Command::new(binary);
         cmd.arg("run").arg("-c").arg(config_path);
         if let Some(dir) = std::path::Path::new(config_path).parent() {
             cmd.current_dir(dir);
@@ -224,6 +337,13 @@ impl ZeytunCoreProcessManager {
     fn kill_orphaned_processes(&self) {
         let self_pid = std::process::id();
         let expected_canonical = std::fs::canonicalize(&self.binary_path).ok();
+        // The root-owned core (macOS TUN) is ours too. Its real uid is the
+        // user's, so a leftover one can still be signalled from here.
+        #[cfg(target_os = "macos")]
+        let privileged_canonical =
+            std::fs::canonicalize(crate::adapters::privileged_core::privileged_core_path()).ok();
+        #[cfg(not(target_os = "macos"))]
+        let privileged_canonical: Option<PathBuf> = None;
         let expected_name = self
             .binary_path
             .file_name()
@@ -245,7 +365,7 @@ impl ZeytunCoreProcessManager {
                 &expected_canonical,
                 process.exe().and_then(|p| std::fs::canonicalize(p).ok()),
             ) {
-                proc_exe == *expected
+                proc_exe == *expected || privileged_canonical.as_ref() == Some(&proc_exe)
             } else {
                 let name_matches = process
                     .name()
@@ -346,6 +466,22 @@ impl ZeytunCoreProcessManager {
 
     pub fn reload(&self, config_path: &str) -> Result<(), String> {
         self.check_config(config_path)?;
+
+        // The root core only reads its root-owned staged copy: restage it
+        // (admin prompt) before SIGHUP, or restart when TUN was toggled.
+        #[cfg(target_os = "macos")]
+        {
+            use std::sync::atomic::Ordering;
+            let running_privileged = self.privileged.load(Ordering::SeqCst);
+            if running_privileged != config_uses_tun(config_path) {
+                return self.restart(config_path);
+            }
+            if running_privileged {
+                crate::adapters::privileged_core::prepare_privileged_launch(Path::new(
+                    config_path,
+                ))?;
+            }
+        }
 
         let guard = self.child.lock().map_err(|e| e.to_string())?;
         if let Some(child) = guard.as_ref() {
@@ -621,6 +757,66 @@ pub fn relaunch_as_admin() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn port_retry_stops_on_success() {
+        let mut calls = 0;
+        let result = super::retry_while_port_in_use_every(
+            Err("listen tcp 127.0.0.1:19999: bind: address already in use".into()),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err("bind: address already in use".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn port_retry_ignores_other_errors() {
+        let mut calls = 0;
+        let result = super::retry_while_port_in_use_every(
+            Err("config invalid".into()),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::ZERO,
+            || {
+                calls += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(result.unwrap_err(), "config invalid");
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn port_retry_gives_up_after_budget() {
+        let result = super::retry_while_port_in_use_every(
+            Err("bind: address already in use".into()),
+            std::time::Duration::from_millis(30),
+            std::time::Duration::from_millis(5),
+            || Err("bind: address already in use".into()),
+        );
+        assert!(super::is_port_in_use_error(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn tun_detection_parses_inbounds_not_substrings() {
+        use serde_json::json;
+        assert!(super::inbounds_include_tun(
+            &json!({"inbounds": [{"type": "mixed"}, {"type":"tun"}]})
+        ));
+        // A "tun" string elsewhere (e.g. an outbound tag) is not a TUN inbound.
+        assert!(!super::inbounds_include_tun(
+            &json!({"inbounds": [{"type": "mixed"}], "outbounds": [{"type": "tun"}]})
+        ));
+        assert!(!super::inbounds_include_tun(&json!({})));
+    }
+
     #[test]
     #[cfg(target_os = "windows")]
     fn test_is_elevated_callable() {

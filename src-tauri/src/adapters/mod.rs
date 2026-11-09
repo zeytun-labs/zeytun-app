@@ -5,6 +5,7 @@ pub mod dns_lookup;
 pub mod geoip_update;
 pub mod ip_info;
 pub mod net_probe;
+pub mod privileged_core;
 pub mod process_icon;
 pub mod process_resolve;
 pub mod system_proxy;
