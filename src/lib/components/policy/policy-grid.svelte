@@ -9,6 +9,7 @@
     CheckIcon,
     Delete01Icon,
     Edit01Icon,
+    ServerStack01Icon,
   } from "@hugeicons/core-free-icons";
 
   interface Props {
@@ -69,18 +70,26 @@
             </ContextMenu.Item>
             {#if (policy.kind ?? "selector") === "selector" && profileStore.getPolicyMembers(policy).length > 0}
               <ContextMenu.Separator />
-              {#each profileStore.getPolicyMembers(policy) as member (member.tag)}
-                <ContextMenu.Item
-                  onclick={() => onSelectMember(policy.tag, member.tag)}
-                >
-                  {#if policy.selected_member_tag === member.tag}
-                    <HugeiconsIcon icon={CheckIcon} />
-                  {:else}
-                    <span class="size-4"></span>
-                  {/if}
-                  <span class="max-w-48 truncate">{member.name}</span>
-                </ContextMenu.Item>
-              {/each}
+              <ContextMenu.Sub>
+                <ContextMenu.SubTrigger>
+                  <HugeiconsIcon icon={ServerStack01Icon} />
+                  <span>Members</span>
+                </ContextMenu.SubTrigger>
+                <ContextMenu.SubContent class="max-h-64">
+                  {#each profileStore.getPolicyMembers(policy) as member (member.tag)}
+                    <ContextMenu.Item
+                      onclick={() => onSelectMember(policy.tag, member.tag)}
+                    >
+                      {#if policy.selected_member_tag === member.tag}
+                        <HugeiconsIcon icon={CheckIcon} class="shrink-0" />
+                      {:else}
+                        <span class="size-4 shrink-0"></span>
+                      {/if}
+                      <span class="max-w-56 truncate">{member.name}</span>
+                    </ContextMenu.Item>
+                  {/each}
+                </ContextMenu.SubContent>
+              </ContextMenu.Sub>
             {/if}
             <ContextMenu.Separator />
             <ContextMenu.Item
