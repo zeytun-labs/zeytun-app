@@ -79,7 +79,10 @@ impl CoreManager {
             // whose normal startup performs process cleanup and system routing.
             platform_bin_dir.join("headless-core-not-installed")
         } else {
-            // Clear any dangling system proxy settings left by an earlier killed/crashed session
+            // Clear system proxy left by an earlier killed/crashed session.
+            // No-op unless that session's ownership marker is present, so a
+            // proxy the user configured themselves is never touched.
+            crate::adapters::system_proxy::SystemProxyManager::set_state_dir(&core_dir);
             let _ = crate::adapters::system_proxy::SystemProxyManager.disable();
             install_zeytun_core_binary(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
                 .map_err(crate::error::CommandError::Internal)?
@@ -102,6 +105,10 @@ impl CoreManager {
         };
 
         Ok(manager)
+    }
+
+    pub fn core_binary_path(&self) -> PathBuf {
+        self.lifecycle.process_manager().binary_path().to_path_buf()
     }
 
     pub fn preflight(&self) -> CorePreflightReport {

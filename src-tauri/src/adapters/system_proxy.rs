@@ -1,6 +1,69 @@
 // src-tauri/src/adapters/system_proxy.rs
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+
 pub struct SystemProxyManager;
+
+/// Marker file proving Zeytun (not the user or another app) turned the OS
+/// proxy on. Survives crashes / force-quit so the next launch can clean up
+/// only what we changed.
+static OWNERSHIP_MARKER: OnceLock<PathBuf> = OnceLock::new();
+/// In-process mirror of the marker, for when the marker path is unset or
+/// the file write failed.
+static OWNED_IN_PROCESS: AtomicBool = AtomicBool::new(false);
+
+const MARKER_FILE_NAME: &str = "system-proxy.owned";
+
+impl SystemProxyManager {
+    /// Register where the ownership marker lives. Call once, before any
+    /// `enable`/`disable` (first call wins).
+    pub fn set_state_dir(dir: &Path) {
+        let _ = OWNERSHIP_MARKER.set(dir.join(MARKER_FILE_NAME));
+    }
+
+    /// Point the OS proxy at Zeytun and record that we own it.
+    pub fn enable(&self, host: &str, port: u16) -> Result<(), String> {
+        // Record ownership *before* touching the OS so a crash mid-apply
+        // still leaves a marker for the next launch to clean up.
+        Self::mark_owned(host, port);
+        self.apply_enable(host, port)
+    }
+
+    /// Turn the OS proxy off, but only if Zeytun owns the current setting.
+    pub fn disable(&self) -> Result<(), String> {
+        if !Self::is_owned() {
+            // A proxy we never set belongs to the user (or another app).
+            return Ok(());
+        }
+        // Keep the marker on failure: a proxy left pointing at a dead local
+        // port breaks the user's network, so the next disable/launch retries.
+        self.apply_disable()?;
+        Self::clear_owned();
+        Ok(())
+    }
+
+    /// `true` when this process or a previous (crashed) run enabled the proxy.
+    fn is_owned() -> bool {
+        OWNED_IN_PROCESS.load(Ordering::SeqCst)
+            || OWNERSHIP_MARKER.get().is_some_and(|path| path.exists())
+    }
+
+    fn mark_owned(host: &str, port: u16) {
+        OWNED_IN_PROCESS.store(true, Ordering::SeqCst);
+        if let Some(path) = OWNERSHIP_MARKER.get() {
+            let _ = std::fs::write(path, format!("{}:{port}", normalize_proxy_host(host)));
+        }
+    }
+
+    fn clear_owned() {
+        OWNED_IN_PROCESS.store(false, Ordering::SeqCst);
+        if let Some(path) = OWNERSHIP_MARKER.get() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
 
 /// Normalize proxy target host. `0.0.0.0`, `::`, or empty string are unspecified
 /// bind addresses (INADDR_ANY) and illegal as connect destinations on Windows
@@ -16,7 +79,7 @@ fn normalize_proxy_host(host: &str) -> &str {
 impl SystemProxyManager {
     /// Enable system proxy across all active/enabled network services.
     /// Attempts all services; succeeds if at least one service was successfully configured.
-    pub fn enable(&self, host: &str, port: u16) -> Result<(), String> {
+    fn apply_enable(&self, host: &str, port: u16) -> Result<(), String> {
         let host = normalize_proxy_host(host);
         let services = self.network_services();
         let port_str = port.to_string();
@@ -61,7 +124,7 @@ impl SystemProxyManager {
     }
 
     /// Disable system proxy across all network services.
-    pub fn disable(&self) -> Result<(), String> {
+    fn apply_disable(&self) -> Result<(), String> {
         let mut first_error = None;
         for service in self.network_services() {
             for setting in [
@@ -127,7 +190,7 @@ impl SystemProxyManager {
         r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
     /// Enable system proxy in Windows registry and notify WinINet.
-    pub fn enable(&self, host: &str, port: u16) -> Result<(), String> {
+    fn apply_enable(&self, host: &str, port: u16) -> Result<(), String> {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
         use winreg::RegKey;
 
@@ -152,7 +215,7 @@ impl SystemProxyManager {
     }
 
     /// Disable system proxy in Windows registry and notify WinINet.
-    pub fn disable(&self) -> Result<(), String> {
+    fn apply_disable(&self) -> Result<(), String> {
         use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
         use winreg::RegKey;
 
@@ -182,11 +245,11 @@ impl SystemProxyManager {
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl SystemProxyManager {
-    pub fn enable(&self, _host: &str, _port: u16) -> Result<(), String> {
+    fn apply_enable(&self, _host: &str, _port: u16) -> Result<(), String> {
         Ok(())
     }
 
-    pub fn disable(&self) -> Result<(), String> {
+    fn apply_disable(&self) -> Result<(), String> {
         Ok(())
     }
 }

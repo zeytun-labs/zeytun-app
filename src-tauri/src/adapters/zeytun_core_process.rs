@@ -64,6 +64,85 @@ pub struct ZeytunCoreProcessManager {
     binary_path: PathBuf,
 }
 
+/// Capabilities the core needs for TUN + auto_route on Linux.
+#[cfg(target_os = "linux")]
+const LINUX_CORE_CAPS: &str = "cap_net_admin,cap_net_raw,cap_net_bind_service+ep";
+
+/// True when the generated config declares a `tun` inbound. Parses JSON
+/// rather than substring-matching so formatting changes cannot hide TUN.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn config_uses_tun(config_path: &str) -> bool {
+    std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|config| inbounds_include_tun(&config))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+fn inbounds_include_tun(config: &serde_json::Value) -> bool {
+    config
+        .get("inbounds")
+        .and_then(|inbounds| inbounds.as_array())
+        .is_some_and(|inbounds| {
+            inbounds
+                .iter()
+                .any(|inbound| inbound.get("type").and_then(|t| t.as_str()) == Some("tun"))
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn linux_has_net_admin_cap(binary: &std::path::Path) -> bool {
+    Command::new("getcap")
+        .arg(binary)
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("cap_net_admin"))
+}
+
+/// Make the core binary root-owned + setuid on macOS, prompting for an admin
+/// password if needed. No-op when already granted. Call this *without*
+/// holding the core lock: the prompt blocks until the user answers.
+#[cfg(target_os = "macos")]
+pub fn grant_macos_core_privileges(binary: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let meta =
+        std::fs::metadata(binary).map_err(|e| format!("Cannot stat zeytun-core binary: {e}"))?;
+
+    let is_root_owned = meta.uid() == 0;
+    let has_setuid = meta.mode() & 0o4000 != 0;
+
+    if is_root_owned && has_setuid {
+        return Ok(());
+    }
+
+    // The path travels as argv and is shell-quoted by AppleScript's
+    // `quoted form of`, so quotes in the install path cannot break
+    // out of the privileged command.
+    let output = Command::new("osascript")
+            .args([
+                "-e",
+                "on run argv",
+                "-e",
+                "set p to quoted form of (item 1 of argv)",
+                "-e",
+                "do shell script \"chown root \" & p & \" && chmod 4755 \" & p with administrator privileges",
+                "-e",
+                "end run",
+            ])
+            .arg(binary)
+            .output()
+            .map_err(|e| format!("Failed to execute osascript: {e}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(
+            "TUN mode requires root privileges. Please grant permissions when prompted."
+                .to_string(),
+        )
+    }
+}
+
 impl ZeytunCoreProcessManager {
     pub fn new(binary_path: PathBuf) -> Self {
         Self {
@@ -84,48 +163,38 @@ impl ZeytunCoreProcessManager {
     /// On macOS: verifies/prompts for setuid-root permissions.
     /// On Windows: verifies process elevation if TUN inbound is configured.
     fn ensure_setuid(&self, config_path: &str) -> Result<(), String> {
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         {
             let _ = config_path;
-            use std::os::unix::fs::MetadataExt;
-
-            let meta = std::fs::metadata(&self.binary_path)
-                .map_err(|e| format!("Cannot stat zeytun-core binary: {e}"))?;
-
-            let is_root_owned = meta.uid() == 0;
-            let has_setuid = meta.mode() & 0o4000 != 0;
-
-            if is_root_owned && has_setuid {
+            grant_macos_core_privileges(&self.binary_path)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if !config_uses_tun(config_path) || linux_has_net_admin_cap(&self.binary_path) {
                 return Ok(());
             }
 
-            let binary_str = self.binary_path.to_string_lossy();
-            let script = format!(
-                "do shell script \"chown root '{binary_str}' && chmod 4755 '{binary_str}'\" with administrator privileges"
-            );
-
-            let output = Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
+            // File capabilities instead of setuid-root: the core gets only the
+            // network privileges TUN needs, not a full root shell. pkexec shows
+            // the desktop's polkit password prompt.
+            let output = Command::new("pkexec")
+                .args(["setcap", LINUX_CORE_CAPS])
+                .arg(&self.binary_path)
                 .output()
-                .map_err(|e| format!("Failed to execute osascript: {e}"))?;
+                .map_err(|e| format!("Failed to execute pkexec: {e}"))?;
 
             if output.status.success() {
                 Ok(())
             } else {
-                Err(
-                    "TUN mode requires root privileges. Please grant permissions when prompted."
-                        .to_string(),
-                )
+                Err(format!(
+                    "TUN mode needs network capabilities. Grant them when prompted, or run: sudo setcap {LINUX_CORE_CAPS} {}",
+                    self.binary_path.display()
+                ))
             }
         }
         #[cfg(target_os = "windows")]
         {
-            let config_content = std::fs::read_to_string(config_path).unwrap_or_default();
-            let is_tun = config_content.contains("\"type\": \"tun\"")
-                || config_content.contains("\"type\":\"tun\"");
-
-            if is_tun && !is_elevated() {
+            if config_uses_tun(config_path) && !is_elevated() {
                 return Err(
                     "TUN mode requires Administrator privileges on Windows. Please relaunch Zeytun as Administrator."
                         .to_string(),
@@ -133,7 +202,7 @@ impl ZeytunCoreProcessManager {
             }
             Ok(())
         }
-        #[cfg(not(any(unix, target_os = "windows")))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         {
             let _ = config_path;
             Ok(())
@@ -621,6 +690,19 @@ pub fn relaunch_as_admin() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tun_detection_parses_inbounds_not_substrings() {
+        use serde_json::json;
+        assert!(super::inbounds_include_tun(
+            &json!({"inbounds": [{"type": "mixed"}, {"type":"tun"}]})
+        ));
+        // A "tun" string elsewhere (e.g. an outbound tag) is not a TUN inbound.
+        assert!(!super::inbounds_include_tun(
+            &json!({"inbounds": [{"type": "mixed"}], "outbounds": [{"type": "tun"}]})
+        ));
+        assert!(!super::inbounds_include_tun(&json!({})));
+    }
+
     #[test]
     #[cfg(target_os = "windows")]
     fn test_is_elevated_callable() {

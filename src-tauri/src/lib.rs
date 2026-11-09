@@ -281,6 +281,20 @@ async fn core_start(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
+    // Ask for the admin password *before* taking the core lock: the prompt
+    // blocks until answered, and holding the lock meanwhile would freeze
+    // every other command (tray, profile reads, status polling).
+    #[cfg(target_os = "macos")]
+    {
+        let binary = state.core.lock().await.core_binary_path();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::adapters::zeytun_core_process::grant_macos_core_privileges(&binary)
+        })
+        .await
+        .map_err(|e| crate::error::CommandError::Internal(format!("task failed: {e}")))?
+        .map_err(crate::error::CommandError::Internal)?;
+    }
+
     let (status, is_global, clash_api, snapshot) = with_core_blocking(&state, |core| {
         let status = core.start()?;
         let is_global = matches!(core.profile_get().outbound_mode, OutboundMode::Global);
@@ -2154,49 +2168,99 @@ pub fn run() {
                 }
 
                 if let Some(state) = app_handle.try_state::<DaemonState>() {
-                    if let Some(tx) = state.shutdown_tx.lock().unwrap().take() {
+                    if let Some(tx) = state
+                        .shutdown_tx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tx.send(());
                     }
-                    if let Some(handle) = state.daemon_handle.lock().unwrap().take() {
+                    if let Some(handle) = state
+                        .daemon_handle
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tauri::async_runtime::block_on(handle);
                     }
                 }
 
                 if let Some(state) = app_handle.try_state::<NetworkTestState>() {
-                    if let Some(handle) = state.task_handle.lock().unwrap().take() {
+                    if let Some(handle) = state
+                        .task_handle
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         handle.abort();
                     }
                 }
 
                 if let Some(state) = app_handle.try_state::<StunTestState>() {
-                    if let Some(handle) = state.task_handle.lock().unwrap().take() {
+                    if let Some(handle) = state
+                        .task_handle
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         handle.abort();
                     }
                 }
 
                 if let Some(state) = app_handle.try_state::<AutoUpdateState>() {
-                    if let Some(tx) = state.shutdown_tx.lock().unwrap().take() {
+                    if let Some(tx) = state
+                        .shutdown_tx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tx.send(());
                     }
-                    if let Some(handle) = state.task_handle.lock().unwrap().take() {
+                    if let Some(handle) = state
+                        .task_handle
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tauri::async_runtime::block_on(handle);
                     }
                 }
 
                 if let Some(state) = app_handle.try_state::<TempRuleGcState>() {
-                    if let Some(tx) = state.shutdown_tx.lock().unwrap().take() {
+                    if let Some(tx) = state
+                        .shutdown_tx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tx.send(());
                     }
-                    if let Some(handle) = state.task_handle.lock().unwrap().take() {
+                    if let Some(handle) = state
+                        .task_handle
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         handle.abort();
                     }
                 }
 
                 if let Some(state) = app_handle.try_state::<WakeMonitorState>() {
-                    if let Some(tx) = state.shutdown_tx.lock().unwrap().take() {
+                    if let Some(tx) = state
+                        .shutdown_tx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         let _ = tx.send(());
                     }
-                    if let Some(handle) = state.task_handle.lock().unwrap().take() {
+                    if let Some(handle) = state
+                        .task_handle
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
                         handle.abort();
                     }
                 }
