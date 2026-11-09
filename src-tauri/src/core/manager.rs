@@ -2002,9 +2002,11 @@ fn install_zeytun_core_binary(
     };
 
     let installed_path = platform_bin_dir.join(versioned_core_binary_name(binary_name));
-    if installed_path.exists() {
-        return Ok(installed_path);
-    }
+
+    // Older builds made the app-data copy setuid-root. A root binary in a
+    // user-writable directory is the privilege-escalation hole, so drop it.
+    #[cfg(unix)]
+    crate::adapters::privileged_core::remove_stale_setuid_cores(platform_bin_dir);
 
     let bundled_core = resource_dir
         .and_then(|dir| find_zeytun_core_binary_in_resource_dir(dir, binary_name))
@@ -2012,6 +2014,24 @@ fn install_zeytun_core_binary(
             let dev_resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
             find_zeytun_core_binary_in_resource_dir(&dev_resource_dir, binary_name)
         });
+
+    if let Some(source) = &bundled_core {
+        crate::adapters::privileged_core::set_bundled_core_source(source);
+    }
+
+    if installed_path.exists() {
+        // Reuse the copy only while it still matches the bundle byte for byte.
+        let matches_bundle = bundled_core.as_deref().is_none_or(|source| {
+            crate::adapters::privileged_core::sha256_file(source)
+                .and_then(|hash| {
+                    crate::adapters::privileged_core::verify_sha256(&installed_path, &hash)
+                })
+                .is_ok()
+        });
+        if matches_bundle {
+            return Ok(installed_path);
+        }
+    }
 
     if let Some(source) = bundled_core {
         fs::create_dir_all(platform_bin_dir)

@@ -61,7 +61,12 @@ pub struct ZeytunCoreProcessManager {
     watchdog: Mutex<Option<Child>>,
     #[cfg(target_os = "windows")]
     job: Mutex<Option<JobWrapper>>,
+    /// Unprivileged core (app data). Runs every non-TUN session and every
+    /// `check`; never setuid.
     binary_path: PathBuf,
+    /// macOS: the running child is the root-owned core on a staged config.
+    #[cfg(target_os = "macos")]
+    privileged: std::sync::atomic::AtomicBool,
 }
 
 /// Capabilities the core needs for TUN + auto_route on Linux.
@@ -70,7 +75,7 @@ const LINUX_CORE_CAPS: &str = "cap_net_admin,cap_net_raw,cap_net_bind_service+ep
 
 /// True when the generated config declares a `tun` inbound. Parses JSON
 /// rather than substring-matching so formatting changes cannot hide TUN.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 fn config_uses_tun(config_path: &str) -> bool {
     std::fs::read_to_string(config_path)
         .ok()
@@ -78,7 +83,7 @@ fn config_uses_tun(config_path: &str) -> bool {
         .is_some_and(|config| inbounds_include_tun(&config))
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
 fn inbounds_include_tun(config: &serde_json::Value) -> bool {
     config
         .get("inbounds")
@@ -98,51 +103,6 @@ fn linux_has_net_admin_cap(binary: &std::path::Path) -> bool {
         .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("cap_net_admin"))
 }
 
-/// Make the core binary root-owned + setuid on macOS, prompting for an admin
-/// password if needed. No-op when already granted. Call this *without*
-/// holding the core lock: the prompt blocks until the user answers.
-#[cfg(target_os = "macos")]
-pub fn grant_macos_core_privileges(binary: &std::path::Path) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-
-    let meta =
-        std::fs::metadata(binary).map_err(|e| format!("Cannot stat zeytun-core binary: {e}"))?;
-
-    let is_root_owned = meta.uid() == 0;
-    let has_setuid = meta.mode() & 0o4000 != 0;
-
-    if is_root_owned && has_setuid {
-        return Ok(());
-    }
-
-    // The path travels as argv and is shell-quoted by AppleScript's
-    // `quoted form of`, so quotes in the install path cannot break
-    // out of the privileged command.
-    let output = Command::new("osascript")
-            .args([
-                "-e",
-                "on run argv",
-                "-e",
-                "set p to quoted form of (item 1 of argv)",
-                "-e",
-                "do shell script \"chown root \" & p & \" && chmod 4755 \" & p with administrator privileges",
-                "-e",
-                "end run",
-            ])
-            .arg(binary)
-            .output()
-            .map_err(|e| format!("Failed to execute osascript: {e}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(
-            "TUN mode requires root privileges. Please grant permissions when prompted."
-                .to_string(),
-        )
-    }
-}
-
 impl ZeytunCoreProcessManager {
     pub fn new(binary_path: PathBuf) -> Self {
         Self {
@@ -151,22 +111,50 @@ impl ZeytunCoreProcessManager {
             #[cfg(target_os = "windows")]
             job: Mutex::new(None),
             binary_path,
+            #[cfg(target_os = "macos")]
+            privileged: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     pub fn start(&self, config_path: &str) -> Result<(), String> {
+        // Validate with the unprivileged core, on the user's own file, before
+        // anything is staged or elevated.
+        self.check_config(config_path)?;
         self.ensure_setuid(config_path)?;
-        self.start_internal(config_path)
+        let (binary, config) = self.resolve_launch(config_path)?;
+        self.start_internal(&binary, &config)
+    }
+
+    /// Which binary runs which config. On macOS a TUN config runs on the
+    /// root-owned core with a root-owned staged copy of the config (one admin
+    /// prompt); everything else runs unprivileged as the user.
+    #[cfg(target_os = "macos")]
+    fn resolve_launch(&self, config_path: &str) -> Result<(PathBuf, String), String> {
+        use std::sync::atomic::Ordering;
+        if !config_uses_tun(config_path) {
+            self.privileged.store(false, Ordering::SeqCst);
+            return Ok((self.binary_path.clone(), config_path.to_string()));
+        }
+        let (core, staged) =
+            crate::adapters::privileged_core::prepare_privileged_launch(Path::new(config_path))?;
+        self.privileged.store(true, Ordering::SeqCst);
+        Ok((core, staged.to_string_lossy().into_owned()))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn resolve_launch(&self, config_path: &str) -> Result<(PathBuf, String), String> {
+        Ok((self.binary_path.clone(), config_path.to_string()))
     }
 
     /// Ensure the core binary has sufficient permissions before spawning.
-    /// On macOS: verifies/prompts for setuid-root permissions.
+    /// On macOS: handled by `resolve_launch` (root-owned core, staged config).
+    /// On Linux: grants file capabilities if TUN inbound is configured.
     /// On Windows: verifies process elevation if TUN inbound is configured.
     fn ensure_setuid(&self, config_path: &str) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
             let _ = config_path;
-            grant_macos_core_privileges(&self.binary_path)
+            Ok(())
         }
         #[cfg(target_os = "linux")]
         {
@@ -209,7 +197,7 @@ impl ZeytunCoreProcessManager {
         }
     }
 
-    fn start_internal(&self, config_path: &str) -> Result<(), String> {
+    fn start_internal(&self, binary: &Path, config_path: &str) -> Result<(), String> {
         // Always stop existing child first — never early-return while still running
         // (that skipped new config after retry_rulesets write).
         {
@@ -221,14 +209,12 @@ impl ZeytunCoreProcessManager {
             }
         }
 
-        self.check_config(config_path)?;
-
         // ---- Tier 1: pre-flight cleanup ------------------------------------
         // Kill any orphaned cores from a previous run before spawning a new one.
         self.kill_orphaned_processes();
 
         // cwd = config dir so experimental.cache_file path "cache.db" lands next to config.
-        let mut cmd = Command::new(&self.binary_path);
+        let mut cmd = Command::new(binary);
         cmd.arg("run").arg("-c").arg(config_path);
         if let Some(dir) = std::path::Path::new(config_path).parent() {
             cmd.current_dir(dir);
@@ -293,6 +279,13 @@ impl ZeytunCoreProcessManager {
     fn kill_orphaned_processes(&self) {
         let self_pid = std::process::id();
         let expected_canonical = std::fs::canonicalize(&self.binary_path).ok();
+        // The root-owned core (macOS TUN) is ours too. Its real uid is the
+        // user's, so a leftover one can still be signalled from here.
+        #[cfg(target_os = "macos")]
+        let privileged_canonical =
+            std::fs::canonicalize(crate::adapters::privileged_core::privileged_core_path()).ok();
+        #[cfg(not(target_os = "macos"))]
+        let privileged_canonical: Option<PathBuf> = None;
         let expected_name = self
             .binary_path
             .file_name()
@@ -314,7 +307,7 @@ impl ZeytunCoreProcessManager {
                 &expected_canonical,
                 process.exe().and_then(|p| std::fs::canonicalize(p).ok()),
             ) {
-                proc_exe == *expected
+                proc_exe == *expected || privileged_canonical.as_ref() == Some(&proc_exe)
             } else {
                 let name_matches = process
                     .name()
@@ -415,6 +408,22 @@ impl ZeytunCoreProcessManager {
 
     pub fn reload(&self, config_path: &str) -> Result<(), String> {
         self.check_config(config_path)?;
+
+        // The root core only reads its root-owned staged copy: restage it
+        // (admin prompt) before SIGHUP, or restart when TUN was toggled.
+        #[cfg(target_os = "macos")]
+        {
+            use std::sync::atomic::Ordering;
+            let running_privileged = self.privileged.load(Ordering::SeqCst);
+            if running_privileged != config_uses_tun(config_path) {
+                return self.restart(config_path);
+            }
+            if running_privileged {
+                crate::adapters::privileged_core::prepare_privileged_launch(Path::new(
+                    config_path,
+                ))?;
+            }
+        }
 
         let guard = self.child.lock().map_err(|e| e.to_string())?;
         if let Some(child) = guard.as_ref() {

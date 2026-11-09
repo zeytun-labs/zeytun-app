@@ -281,19 +281,10 @@ async fn core_start(
     state: tauri::State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<CoreRuntimeStatus, crate::error::CommandError> {
-    // Ask for the admin password *before* taking the core lock: the prompt
-    // blocks until answered, and holding the lock meanwhile would freeze
-    // every other command (tray, profile reads, status polling).
-    #[cfg(target_os = "macos")]
-    {
-        let binary = state.core.lock().await.core_binary_path();
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::adapters::zeytun_core_process::grant_macos_core_privileges(&binary)
-        })
-        .await
-        .map_err(|e| crate::error::CommandError::Internal(format!("task failed: {e}")))?
-        .map_err(crate::error::CommandError::Internal)?;
-    }
+    // macOS TUN: the admin prompt (root-owned core install + config staging)
+    // happens inside `core.start()`, because the staged config only exists
+    // once the profile is compiled. It holds the core lock while shown; the
+    // launchd helper in docs/macos-privileged-core.md removes that prompt.
 
     let (status, is_global, clash_api, snapshot) = with_core_blocking(&state, |core| {
         let status = core.start()?;
