@@ -107,7 +107,7 @@ fn linux_has_net_admin_cap(binary: &std::path::Path) -> bool {
 /// core's sockets still hold our ports: 2*MSL on macOS (30s) plus margin.
 #[cfg(target_os = "macos")]
 const PORT_RELEASE_WAIT: Duration = Duration::from_secs(35);
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 const PORT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 #[cfg(any(target_os = "macos", test))]
@@ -118,7 +118,7 @@ fn is_port_in_use_error(error: &str) -> bool {
 /// Re-run `attempt` while it fails with "address already in use", until it
 /// succeeds, fails differently, or `budget` runs out. `first` is the result
 /// of the attempt already made.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn retry_while_port_in_use(
     first: Result<(), String>,
     budget: Duration,
