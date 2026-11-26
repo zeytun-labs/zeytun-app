@@ -62,7 +62,7 @@ Zeytun is a cross-platform desktop app: one Tauri interface on top of a sing-box
 
 | Platform | Status |
 |---|---|
-| macOS · Apple Silicon (`arm64`) | **Available** — download from [Releases](https://github.com/zeytun-labs/zeytun-app/releases) |
+| macOS · Apple Silicon (`arm64`) | **Available** — download from [Releases](https://github.com/zeytun-labs/zeytun-app/releases) or [Homebrew](#from-installation-to-your-first-route-macos) |
 | Windows · x64 | In progress — built and tested in CI, not yet published |
 | Linux | Planned |
 | macOS · Intel | Not yet built |
@@ -72,7 +72,13 @@ Zeytun is a cross-platform desktop app: one Tauri interface on top of a sing-box
 
 ### From installation to your first route (macOS)
 
-1. Download the Apple Silicon `.dmg` from Releases and move **Zeytun.app** to **Applications**.
+1. Download the Apple Silicon `.dmg` from Releases and move **Zeytun.app** to **Applications**, or install it with [Homebrew](https://github.com/zeytun-labs/homebrew-tap):
+   ```bash
+   brew tap zeytun-labs/tap
+   brew trust zeytun-labs/tap
+   brew install --cask zeytun
+   ```
+   Zeytun updates itself either way. `brew uninstall --zap --cask zeytun` also removes the TUN core in `/Library/Application Support/Zeytun`.
 2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. If you trust the source, approve the app in **System Settings → Privacy & Security → Open Anyway**, or clear quarantine in Terminal:
    ```bash
    xattr -cr /Applications/Zeytun.app
