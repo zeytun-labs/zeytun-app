@@ -3,6 +3,12 @@ import { coreSetHideOnClose } from '$lib/core/api';
 
 export const SETTINGS_STORAGE_KEY = "zeytun-settings";
 
+/**
+ * Bump when stored settings need a one-time migration; see `migrateSettings`.
+ * 2: pre-release updates default to on while Zeytun ships only beta builds.
+ */
+export const SETTINGS_VERSION = 2;
+
 export interface Settings {
   launchAtLogin: boolean;
   autoUpdateGeoIp: boolean;
@@ -15,12 +21,15 @@ export interface Settings {
   enableFakeIp: boolean;
   connectionAskEnabled: boolean;
   hideOnClose: boolean;
+  settingsVersion: number;
 }
 
 export const defaultSettings: Settings = {
   launchAtLogin: false,
   autoUpdateGeoIp: true,
-  receivePrereleaseUpdates: false,
+  // Every Zeytun release is currently a beta; with this off, the updater would
+  // offer nothing at all.
+  receivePrereleaseUpdates: true,
   internetTestUrl: "google.com",
   proxyTestUrl: "http://cp.cloudflare.com/",
   networkConfigUrl: "https://mensura.cdn-apple.com/api/v1/gm/config",
@@ -29,7 +38,24 @@ export const defaultSettings: Settings = {
   enableFakeIp: false,
   connectionAskEnabled: false,
   hideOnClose: true,
+  settingsVersion: SETTINGS_VERSION,
 };
+
+/**
+ * Merge stored settings over the defaults and apply one-time migrations.
+ * Settings are saved as a whole object, so a stored `false` may just be an
+ * old default rather than a user choice.
+ */
+export function migrateSettings(stored: Partial<Settings>): Settings {
+  const settings: Settings = { ...defaultSettings, ...stored };
+  const version = stored.settingsVersion ?? 1;
+  if (version < 2) {
+    // v1 stored the old `false` default for everyone who saved any setting.
+    settings.receivePrereleaseUpdates = true;
+  }
+  settings.settingsVersion = SETTINGS_VERSION;
+  return settings;
+}
 
 class SettingsStore {
   settings = $state<Settings>({ ...defaultSettings });
@@ -51,7 +77,8 @@ class SettingsStore {
       const stored = localStorage.getItem(SETTINGS_STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        this.settings = { ...defaultSettings, ...parsed };
+        this.settings = migrateSettings(parsed);
+        if ((parsed.settingsVersion ?? 1) < SETTINGS_VERSION) this.save();
       }
 
       // Sync real OS autostart state with the UI state.
