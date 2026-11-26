@@ -36,7 +36,7 @@ required merge order.
 Use the [issue forms](https://github.com/zeytun-labs/zeytun-app/issues/new/choose).
 Report one problem per issue.
 
-For bugs, include the Zeytun version or source commit, macOS version, steps to
+For bugs, include the Zeytun version or source commit, OS and version, steps to
 reproduce, and expected versus actual behavior. For networking problems, include
 the relevant capture and routing modes. Attach sanitized logs or screenshots
 only when they help explain the problem.

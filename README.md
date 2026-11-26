@@ -4,13 +4,13 @@
 
 # Zeytun
 
-**App-aware network control for macOS.**
+**App-aware network control for your desktop.**
 
 Understand your connections. Decide how they're routed.
 
 Free and open source.
 
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-6B8F71)](https://github.com/zeytun-labs/zeytun-app/releases) ![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-black?logo=apple) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
+[![Status: Beta](https://img.shields.io/badge/status-beta-6B8F71)](https://github.com/zeytun-labs/zeytun-app/releases) [![macOS: available](https://img.shields.io/badge/macOS-available-black?logo=apple)](#platforms) [![Windows: in progress](https://img.shields.io/badge/Windows-in%20progress-lightgrey?logo=windows)](#platforms) [![Linux: planned](https://img.shields.io/badge/Linux-planned-lightgrey?logo=linux&logoColor=white)](#platforms) [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 
 [Features](#features) · [Get started](#get-started) · [Support development](#support)
 
@@ -56,14 +56,21 @@ Prompts have a timeout. If you do not respond, the configured final route applie
 
 ## Get started
 
-**Release target:** macOS on Apple Silicon (`arm64`). Intel, Windows, and Linux builds are not currently offered.
+### Platforms
+
+Zeytun is a cross-platform desktop app: one Tauri interface on top of a sing-box–based network core. Published builds are rolling out one platform at a time.
+
+| Platform | Status |
+|---|---|
+| macOS · Apple Silicon (`arm64`) | **Available** — download from [Releases](https://github.com/zeytun-labs/zeytun-app/releases) |
+| Windows · x64 | In progress — built and tested in CI, not yet published |
+| Linux | Planned |
+| macOS · Intel | Not yet built |
 
 > [!NOTE]
-> Zeytun is in alpha. The first macOS release is being prepared, and there is no public download yet. Follow [Releases](https://github.com/zeytun-labs/zeytun-app/releases) for published builds, or [build from source](CONTRIBUTING.md#development-setup).
+> Zeytun is in beta. Expect rough edges, and follow [Releases](https://github.com/zeytun-labs/zeytun-app/releases) for new builds. On a platform without a published build, you can [build from source](CONTRIBUTING.md#development-setup).
 
-### From installation to your first route
-
-Once a public build is available:
+### From installation to your first route (macOS)
 
 1. Download the Apple Silicon `.dmg` from Releases and move **Zeytun.app** to **Applications**.
 2. Open Zeytun. These alpha builds are not Apple-notarized, so macOS may block the first launch. If you trust the source, approve the app in **System Settings → Privacy & Security → Open Anyway**, or clear quarantine in Terminal:
@@ -72,7 +79,7 @@ Once a public build is available:
    ```
 3. Add subscriptions under **Policy → Subscriptions**, or import proxy links in **Policy → Proxies & Policies**. Export or import native `.zeytun.json` profile documents from the profile menu. Select a proxy in the group you want to use.
 4. Choose **Global Proxy** to use your selected proxy, or **Rule-based Proxy** to follow routing rules. Zeytun starts in **Direct Outbound** mode on each launch.
-5. Enable **System Proxy** for applications that respect macOS proxy settings, or **TUN** for tunnel-based capture. TUN requires administrator permission.
+5. Enable **System Proxy** for applications that respect the system proxy settings, or **TUN** for tunnel-based capture. TUN requires administrator permission.
 6. Open **Traffic Monitor** to inspect the connections handled by Zeytun and create rules from them.
 
 Some settings need **Restart Core** before they take effect. To try Connection Ask, enable it under **Settings → Network**, restart the core, and use Rule-based Proxy mode.
@@ -85,7 +92,7 @@ Country lookups for IP details and flags use the bundled database until a downlo
 
 ## Help and feedback
 
-Found a bug or have a use case the app does not cover? [Open an issue](https://github.com/zeytun-labs/zeytun-app/issues) with your macOS version, Zeytun version, and steps to reproduce it.
+Found a bug or have a use case the app does not cover? [Open an issue](https://github.com/zeytun-labs/zeytun-app/issues) with your operating system and version, Zeytun version, and steps to reproduce it.
 
 Remove subscription URLs, proxy credentials, and identifying network details from screenshots and logs. For security concerns, follow the [private reporting guidance](CONTRIBUTING.md#security) instead of posting exploit details publicly.
 
