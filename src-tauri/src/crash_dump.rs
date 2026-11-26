@@ -423,7 +423,9 @@ mod tests {
         for i in 0..250 {
             log(format!("test log line {i}"));
         }
-        let ring = LOG_RING.lock().unwrap();
+        let ring = LOG_RING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(ring.len(), LOG_RING_CAP);
         assert_eq!(ring.back().unwrap(), "test log line 249");
     }

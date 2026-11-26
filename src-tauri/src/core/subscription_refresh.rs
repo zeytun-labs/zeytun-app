@@ -71,7 +71,12 @@ impl RefreshWorkers {
     }
 
     pub fn cancel_job(&self, job_id: &str) -> bool {
-        if let Some(cancel) = self.jobs.lock().unwrap().get(job_id) {
+        if let Some(cancel) = self
+            .jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(job_id)
+        {
             cancel.store(true, Ordering::SeqCst);
             true
         } else {
@@ -88,7 +93,10 @@ impl RefreshWorkers {
     }
 
     pub fn register_job(&self, job_id: String, cancel: Arc<AtomicBool>) {
-        self.jobs.lock().unwrap().insert(job_id, cancel);
+        self.jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(job_id, cancel);
     }
     pub async fn refresh(
         self: &Arc<Self>,
@@ -140,7 +148,10 @@ impl RefreshWorkers {
         }
         let key = (profile_id.clone(), source_id.clone());
         let (flight, owner) = {
-            let mut flights = self.flights.lock().unwrap();
+            let mut flights = self
+                .flights
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(f) = flights
                 .get(&key)
                 .filter(|f| f.generation == source.generation)
@@ -161,7 +172,12 @@ impl RefreshWorkers {
         if !owner {
             loop {
                 let notified = flight.done.notified();
-                if let Some(result) = flight.result.lock().unwrap().clone() {
+                if let Some(result) = flight
+                    .result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     return result;
                 }
                 notified.await;
@@ -182,9 +198,15 @@ impl RefreshWorkers {
                     base,
                 )
                 .await;
-            *task_flight.result.lock().unwrap() = Some(result);
+            *task_flight
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
             {
-                let mut flights = workers.flights.lock().unwrap();
+                let mut flights = workers
+                    .flights
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if flights
                     .get(&key)
                     .is_some_and(|f| f.sequence == task_flight.sequence)
@@ -199,7 +221,12 @@ impl RefreshWorkers {
         });
         loop {
             let notified = flight.done.notified();
-            if let Some(result) = flight.result.lock().unwrap().clone() {
+            if let Some(result) = flight
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+            {
                 return result;
             }
             notified.await;
@@ -267,7 +294,10 @@ impl RefreshWorkers {
             match summary {
                 Ok(summary) => {
                     let failed = !summary.errors.is_empty();
-                    let mut retries = workers.retries.lock().unwrap();
+                    let mut retries = workers
+                        .retries
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if failed {
                         let failures = retries
                             .get(&key_copy)

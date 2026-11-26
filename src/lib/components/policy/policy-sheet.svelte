@@ -152,14 +152,30 @@
 
   function toggleMember(proxyId: string) {
     if ($formData.members.includes(proxyId)) {
+      // Weights stay: save maps only selected members, and re-selecting
+      // restores the user's custom weight instead of resetting it to 1.
       $formData.members = $formData.members.filter((id) => id !== proxyId);
-      delete memberWeights[proxyId];
     } else {
       $formData.members = [...$formData.members, proxyId];
       if (!(proxyId in memberWeights)) {
         memberWeights[proxyId] = 1;
       }
     }
+  }
+
+  function selectAllMembers() {
+    const allTags = enabledProxies.map((p) => p.tag);
+    // Union keeps already-selected members that are currently disabled.
+    $formData.members = [...new Set([...$formData.members, ...allTags])];
+    for (const tag of allTags) {
+      if (!(tag in memberWeights)) {
+        memberWeights[tag] = 1;
+      }
+    }
+  }
+
+  function deselectAllMembers() {
+    $formData.members = [];
   }
 </script>
 
@@ -333,12 +349,37 @@
             <Form.Field {form} name="members" class="flex flex-col flex-1">
               <Form.Control>
                 {#snippet children({ props })}
-                  <div class="flex justify-between items-end">
-                    <Form.Label>Members</Form.Label>
-                    <Form.Description class="pr-2 text-xs"
-                      >{$formData.members
-                        .length}/{enabledProxies.length}</Form.Description
-                    >
+                  <div class="flex items-center justify-between pb-1.5">
+                    <div class="flex items-center gap-2">
+                      <Form.Label>Members</Form.Label>
+                      <Form.Description class="pr-2 text-xs"
+                        >{$formData.members
+                          .length}/{enabledProxies.length}</Form.Description
+                      >
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        class="text-xs text-muted-foreground hover:text-foreground"
+                        disabled={enabledProxies.every((p) => $formData.members.includes(p.tag))}
+                        onclick={selectAllMembers}
+                      >
+                        Select all
+                      </Button>
+                      <span class="text-border text-xs" aria-hidden="true">•</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        class="text-xs text-muted-foreground hover:text-foreground"
+                        disabled={$formData.members.length === 0}
+                        onclick={deselectAllMembers}
+                      >
+                        Deselect all
+                      </Button>
+                    </div>
                   </div>
                   <ScrollArea
                     class="rounded-lg border border-border/50 flex-1 min-h-0 h-0"

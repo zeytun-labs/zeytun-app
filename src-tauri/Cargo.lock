@@ -7387,7 +7387,7 @@ dependencies = [
 
 [[package]]
 name = "zeytun"
-version = "0.1.0-beta"
+version = "0.2.0-beta"
 dependencies = [
  "ab_glyph",
  "base64 0.22.1",
@@ -7409,6 +7409,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "strum",
  "strum_macros",
  "sysinfo",

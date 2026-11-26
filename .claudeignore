@@ -1,0 +1,61 @@
+# Files Claude should skip when reading/searching this repo.
+# Syntax follows .gitignore.
+
+# Dependencies & package caches
+node_modules/
+.pnpm-store/
+.cache/
+
+# Build output
+build/
+.svelte-kit/
+package/
+src-tauri/target/
+src-tauri/gen/schemas/
+vite.config.*.timestamp-*
+
+# Generated code (regenerate with `pnpm gen:proto`)
+src/gen/
+
+# Lockfiles (large, machine-written)
+pnpm-lock.yaml
+src-tauri/Cargo.lock
+
+# Binaries, sidecars, downloaded assets
+src-tauri/resources/bin/
+src-tauri/bin/
+src-tauri/resources/*.mmdb
+src-tauri/resources/fonts/
+src-tauri/Assets.car
+src-tauri/icons/
+static/fonts/
+*.png
+*.icns
+*.ico
+*.car
+*.ttf
+*.woff
+*.woff2
+*.mmdb
+
+# Knowledge-graph artifacts (keep GRAPH_REPORT.md readable)
+graphify-out/cache/
+graphify-out/graph.json
+graphify-out/graph.html
+graphify-out/*.json
+
+# Local agent/tooling state
+.hermes/
+.agents/
+.kilocode/
+.factory/
+.mimocode/
+.antigravitycli/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# OS noise
+.DS_Store

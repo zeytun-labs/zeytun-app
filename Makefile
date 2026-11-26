@@ -9,7 +9,9 @@ CORE_REPO ?= https://github.com/zeytun-labs/zeytun-core.git
 CORE_REF ?= zeytun-port
 CORE_SRC ?= .cache/zeytun-core
 CORE_VERSION ?= zeytun-custom
-CORE_TAGS_BASE := with_quic with_grpc with_dhcp with_wireguard with_utls with_acme with_clash_api with_v2ray_api with_gvisor with_embedded_tor with_tailscale with_ccm with_ocm with_cloudflared badlinkname
+# Match the published macOS core: zeytun-core's release/DEFAULT_BUILD_TAGS
+# (minus Naive, added below) plus the gRPC/V2Ray API the app uses.
+CORE_TAGS_BASE := with_gvisor with_quic with_dhcp with_wireguard with_utls with_acme with_clash_api with_tailscale with_ccm with_ocm with_cloudflared with_usbip with_openvpn with_openconnect badlinkname tfogo_checklinkname0 with_grpc with_v2ray_api
 CORE_TAGS ?= $(CORE_TAGS_BASE) with_naive_outbound
 UNAME_M := $(shell uname -m)
 TARGET ?= $(if $(filter arm64 aarch64,$(UNAME_M)),macos-aarch64,macos-x86_64)

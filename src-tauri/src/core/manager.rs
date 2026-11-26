@@ -79,8 +79,19 @@ impl CoreManager {
             // whose normal startup performs process cleanup and system routing.
             platform_bin_dir.join("headless-core-not-installed")
         } else {
-            // Clear any dangling system proxy settings left by an earlier killed/crashed session
+            // Clear system proxy left by an earlier killed/crashed session.
+            // No-op unless that session's ownership marker is present, so a
+            // proxy the user configured themselves is never touched.
+            crate::adapters::system_proxy::SystemProxyManager::set_state_dir(&core_dir);
             let _ = crate::adapters::system_proxy::SystemProxyManager.disable();
+            // Older builds ran a root core in app data, leaving root-owned
+            // caches (cache.db) the unprivileged core can't open.
+            #[cfg(unix)]
+            for path in crate::adapters::privileged_core::remove_foreign_owned_files(
+                &config_dir.join("zeytun-core"),
+            ) {
+                events.info("Removed stale root-owned file", path.display().to_string());
+            }
             install_zeytun_core_binary(&bin_dir, &platform_bin_dir, resource_dir.as_deref())
                 .map_err(crate::error::CommandError::Internal)?
         };
@@ -102,6 +113,10 @@ impl CoreManager {
         };
 
         Ok(manager)
+    }
+
+    pub fn core_binary_path(&self) -> PathBuf {
+        self.lifecycle.process_manager().binary_path().to_path_buf()
     }
 
     pub fn preflight(&self) -> CorePreflightReport {
@@ -284,6 +299,19 @@ impl CoreManager {
             != Some(self.profile.id.as_str())
             || status.applied_revision != Some(status.saved_revision);
         status
+    }
+
+    /// Write the config `start()` is about to run, without starting anything,
+    /// and return its path. Mirrors `start_snapshot` so the bytes match; used
+    /// to stage the macOS privileged config (admin prompt) before the core
+    /// lock is taken for the real start.
+    pub fn write_start_config(&mut self) -> Result<PathBuf, String> {
+        let (mut snapshot, _revision) = self
+            .db
+            .profile_snapshot(&self.profile.id)
+            .map_err(|e| e.to_string())?;
+        snapshot.session_rules.clear();
+        self.lifecycle.write_config_only(&snapshot)
     }
 
     fn start_snapshot(&mut self) -> Result<(), String> {
@@ -1995,9 +2023,11 @@ fn install_zeytun_core_binary(
     };
 
     let installed_path = platform_bin_dir.join(versioned_core_binary_name(binary_name));
-    if installed_path.exists() {
-        return Ok(installed_path);
-    }
+
+    // Older builds made the app-data copy setuid-root. A root binary in a
+    // user-writable directory is the privilege-escalation hole, so drop it.
+    #[cfg(unix)]
+    crate::adapters::privileged_core::remove_stale_setuid_cores(platform_bin_dir);
 
     let bundled_core = resource_dir
         .and_then(|dir| find_zeytun_core_binary_in_resource_dir(dir, binary_name))
@@ -2005,6 +2035,24 @@ fn install_zeytun_core_binary(
             let dev_resource_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources");
             find_zeytun_core_binary_in_resource_dir(&dev_resource_dir, binary_name)
         });
+
+    if let Some(source) = &bundled_core {
+        crate::adapters::privileged_core::set_bundled_core_source(source);
+    }
+
+    if installed_path.exists() {
+        // Reuse the copy only while it still matches the bundle byte for byte.
+        let matches_bundle = bundled_core.as_deref().is_none_or(|source| {
+            crate::adapters::privileged_core::sha256_file(source)
+                .and_then(|hash| {
+                    crate::adapters::privileged_core::verify_sha256(&installed_path, &hash)
+                })
+                .is_ok()
+        });
+        if matches_bundle {
+            return Ok(installed_path);
+        }
+    }
 
     if let Some(source) = bundled_core {
         fs::create_dir_all(platform_bin_dir)
