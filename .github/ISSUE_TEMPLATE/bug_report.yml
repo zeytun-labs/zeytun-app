@@ -52,8 +52,8 @@ body:
   - type: input
     id: environment
     attributes:
-      label: macOS version and hardware
-      placeholder: macOS version, Apple Silicon model or architecture
+      label: Operating system and hardware
+      placeholder: e.g. macOS 15.2 on Apple Silicon (M2), or Windows 11 x64
     validations:
       required: true
   - type: textarea
