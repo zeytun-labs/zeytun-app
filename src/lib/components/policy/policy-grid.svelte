@@ -7,6 +7,7 @@
   import { HugeiconsIcon } from "@hugeicons/svelte";
   import {
     CheckIcon,
+    Tick02Icon,
     Delete01Icon,
     Edit01Icon,
     ServerStack01Icon,
@@ -77,15 +78,19 @@
                 </ContextMenu.SubTrigger>
                 <ContextMenu.SubContent class="max-h-64">
                   {#each profileStore.getPolicyMembers(policy) as member (member.tag)}
+                    <!-- Same layout as select-item: label first, tick at the end. -->
                     <ContextMenu.Item
+                      class="pr-8"
                       onclick={() => onSelectMember(policy.tag, member.tag)}
                     >
-                      {#if policy.selected_member_tag === member.tag}
-                        <HugeiconsIcon icon={CheckIcon} class="shrink-0" />
-                      {:else}
-                        <span class="size-4 shrink-0"></span>
-                      {/if}
                       <span class="max-w-56 truncate">{member.name}</span>
+                      <span
+                        class="absolute end-2 flex size-3.5 items-center justify-center"
+                      >
+                        {#if policy.selected_member_tag === member.tag}
+                          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
+                        {/if}
+                      </span>
                     </ContextMenu.Item>
                   {/each}
                 </ContextMenu.SubContent>

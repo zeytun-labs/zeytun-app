@@ -37,7 +37,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'sha256-bzwLC+CRiyL42b/ymiyUMBAAkmLpCO7aGsLJlCNRY7g=' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:",
+      "csp": "default-src 'self'; script-src 'self' 'sha256-aTpxaDqM0eBuX0EmYhFNuMsaiBSHyfbmgfdqu8bpw1g=' 'sha256-uYqvlbec2BVX++nMKgeI63HAqLwuOYxQ3Vl2kMXGgfo='; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:",
       "assetProtocol": {
         "enable": true,
         "scope": [
